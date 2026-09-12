@@ -40,3 +40,24 @@ RTE/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ---- 智能体（AI）工具私有目录：不提交 ----
+.reasonix/
+.codebuddy/
+.cursor/
+.claude/
+.continue/
+.windsurf/
+.trae/
+.qoder/
+.aider*
+.codex/
+node_modules/
+
+# ---- Python（tools/ 脚本产物）----
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
