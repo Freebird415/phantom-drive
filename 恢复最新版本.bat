@@ -60,7 +60,7 @@ if errorlevel 1 (
 )
 chcp 936 >nul
 
-rem ---- 2. 展示将要丢弃的内容 ----
+rem ---- 2. 展示差异并选择操作 ----
 echo.
 echo [2/3] 以下是你本地与最新版本的差异：
 chcp 65001 >nul
@@ -68,8 +68,6 @@ git status --short
 echo --------------------------------------------
 git log origin/main..HEAD --oneline
 chcp 936 >nul
-echo.
-echo   （新增的文件都会保留；其余改动会被还原成 GitHub 上的版本）
 echo.
 
 set "dirty="
@@ -82,54 +80,74 @@ for /f "delims=" %%i in ('git ls-files --others --exclude-standard') do set "unt
 set "ahead="
 for /f "delims=" %%i in ('git log origin/main..HEAD --oneline') do set "ahead=1"
 
-if not defined dirty if not defined ahead goto :nothing_to_do
-if defined ahead goto :warn_ahead
-goto :confirm
+if not defined dirty if not defined ahead if not defined untracked goto :nothing_to_do
 
-:nothing_to_do
-echo   本地已经和 GitHub 上的最新版本一致，没有需要恢复的改动。
 if defined untracked (
-    echo   （检测到新增的未跟踪文件，恢复操作不会影响它们）
+    echo   新增的文件：
+    chcp 65001 >nul
+    git ls-files --others --exclude-standard
+    chcp 936 >nul
+    echo.
 )
-echo.
-pause
-exit /b 0
+if defined ahead (
+    echo   [注意] 上面列表里有"本地未上传的提交"，恢复后它们会消失！
+    echo.
+)
 
-:warn_ahead
-echo   [注意] 上面列表里有"本地未上传的提交"，恢复后它们会消失！
+echo   请选择操作：
+echo     1 = 还原已跟踪的改动（新增文件保留）  ← 推荐
+echo     2 = 完全恢复（新增文件也删除）
+echo     0 = 取消
 echo.
-goto :confirm
-
-:confirm
-echo   确认要丢弃以上全部改动、恢复成 GitHub 上的最新版本吗？
-set /p ok="请输入 YES 确认（其他任意输入 = 取消）："
-if /i not "%ok%"=="YES" (
+:choose_action
+set "act="
+set /p act="请输入（1/2/0）："
+if "%act%"=="0" (
     echo   已取消，什么都没有改动。
     echo.
     pause
     exit /b 0
 )
+if "%act%"=="1" goto :do_restore
+if "%act%"=="2" goto :do_restore
+echo   [错误] 请输入 1、2 或 0。
+goto :choose_action
 
-rem ---- 3. 执行恢复 ----
+:nothing_to_do
+echo   本地已经和 GitHub 上的最新版本完全一致，没有任何需要恢复的东西。
+echo.
+pause
+exit /b 0
+
+:do_restore
 echo.
 echo [3/3] 正在恢复……
 chcp 65001 >nul
-rem 先取消暂存：保证"git add 过但没提交"的新文件也不会被删
+rem 先取消暂存：保证"git add 过但没提交"的新文件也能按选择处理
 git reset -q
 git reset --hard origin/main
-chcp 936 >nul
-if errorlevel 1 (
-    echo.
-    echo [错误] 恢复失败，请把本窗口截图发到群里。
-    echo.
-    pause
-    exit /b 1
+if errorlevel 1 goto :restore_fail
+if "%act%"=="2" (
+    git clean -fd
+    if errorlevel 1 goto :restore_fail
 )
-
+chcp 936 >nul
 echo.
 echo ============================================
-echo   [完成] 已恢复到 GitHub 上的最新版本。
+if "%act%"=="2" (
+    echo   [完成] 已完全恢复（新增文件已删除）
+) else (
+    echo   [完成] 已还原到最新版本（新增文件已保留）
+)
 echo ============================================
 echo.
 pause
 exit /b 0
+
+:restore_fail
+chcp 936 >nul
+echo.
+echo [错误] 恢复失败，请把本窗口截图发到群里。
+echo.
+pause
+exit /b 1
