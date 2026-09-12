@@ -1,0 +1,42 @@
+# ---- 编译产物 ----
+.pio/
+.pioenvs/
+.piolibdeps/
+Debug/
+Release/
+Objects/
+Listings/
+*.o
+*.d
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.htm
+*.crf
+*.dep
+*.lnp
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+*.scvd
+JLinkLog.txt
+RTE/
+
+# ---- CAD / 3D 自动备份 ----
+~$*
+*.bak
+*.tmp
+*.swp
+*.sldasm.bak
+*.sldprt.bak
+
+# ---- 系统 ----
+Thumbs.db
+desktop.ini
+.DS_Store
