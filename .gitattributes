@@ -1,0 +1,5 @@
+# 统一换行符：Windows 脚本用 CRLF，shell 脚本用 LF
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
