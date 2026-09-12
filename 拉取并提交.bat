@@ -1,18 +1,19 @@
 @echo off
 chcp 936 >nul
-title 提交更改 - phantom-drive
+title 拉取并提交 - phantom-drive
 
 rem ============================================================
-rem  一键提交（GBK 编码，中文 Windows 双击即用）：拉取 -> 显示改动 -> 填写说明 -> 提交 -> 上传
+rem  一键拉取并提交（GBK 编码，中文 Windows 双击即用）
 rem  双击运行即可，不需要敲任何命令
+rem  没有改动时会自动结束（只想更新文件的人也可以放心用）
 rem ============================================================
 
-rem ---- 切到仓库根目录（本脚本位于 仓库\提交操作\ 里）----
-cd /d "%~dp0.."
+rem ---- 切到仓库根目录（本脚本就放在仓库根目录）----
+cd /d "%~dp0"
 
 echo.
 echo ============================================
-echo    phantom-drive 一键提交
+echo    phantom-drive 拉取并提交
 echo ============================================
 echo.
 
@@ -29,17 +30,7 @@ if errorlevel 1 (
 git rev-parse --is-inside-work-tree >nul 2>&1
 if errorlevel 1 (
     echo [错误] 当前文件夹不是 Git 仓库。
-    echo 请确认你是双击的 phantom-drive 文件夹里的脚本。
-    echo.
-    pause
-    exit /b 1
-)
-
-set "uemail="
-for /f "delims=" %%i in ('git config user.email') do set "uemail=%%i"
-if not defined uemail (
-    echo [错误] 还没有配置提交身份（名字 / 邮箱）。
-    echo 请先按《说明书.md》第 1.4 节执行两条 git config 命令，然后重试。
+    echo 请确认本脚本放在 phantom-drive 仓库文件夹里。
     echo.
     pause
     exit /b 1
@@ -52,6 +43,53 @@ if exist ".git\MERGE_HEAD" (
     pause
     exit /b 1
 )
+
+rem ---- 0.1 身份检查：第一次运行引导填写并保存 ----
+set "uname="
+set "uemail="
+chcp 65001 >nul
+for /f "delims=" %%i in ('git config user.name') do set "uname=%%i"
+for /f "delims=" %%i in ('git config user.email') do set "uemail=%%i"
+chcp 936 >nul
+if not defined uname goto :ask_identity
+if not defined uemail goto :ask_identity
+goto :identity_ready
+
+:ask_identity
+echo [首次使用] 需要先填写你的提交身份（只需填一次，以后自动记住）。
+echo    姓名：填你的真名（如 王政淋），会显示在提交记录里
+echo    邮箱：填注册 GitHub 用的邮箱，用于把你的提交关联到你的账号
+echo.
+:ask_name
+set "gname="
+set /p gname="请输入姓名："
+if not defined gname (
+    echo    姓名不能为空，请重新输入。
+    goto :ask_name
+)
+:ask_email
+set "gemail="
+set /p gemail="请输入邮箱："
+if not defined gemail (
+    echo    邮箱不能为空，请重新输入。
+    goto :ask_email
+)
+git config --global user.name "%gname%"
+git config --global user.email "%gemail%"
+rem 重新从 git 读回（读取时必须切到 UTF-8，否则中文会被双重转换）
+chcp 65001 >nul
+set "uname="
+for /f "delims=" %%i in ('git config user.name') do set "uname=%%i"
+set "uemail="
+for /f "delims=" %%i in ('git config user.email') do set "uemail=%%i"
+chcp 936 >nul
+echo.
+echo    已保存，以后不用再填。
+echo.
+
+:identity_ready
+echo    当前提交身份：%uname%（%uemail%）
+echo.
 
 git config pull.rebase false >nul 2>&1
 git config core.quotepath false >nul 2>&1
@@ -84,7 +122,7 @@ echo.
 set "has_changes="
 for /f "delims=" %%i in ('git status --porcelain') do set "has_changes=1"
 if not defined has_changes (
-    echo   没有检测到任何改动，无需提交。
+    echo   没有检测到任何改动 —— 你的文件已经是最新的，没有东西需要提交。
     echo.
     pause
     exit /b 0
