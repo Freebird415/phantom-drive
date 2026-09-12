@@ -69,7 +69,7 @@ echo --------------------------------------------
 git log origin/main..HEAD --oneline
 chcp 936 >nul
 echo.
-echo   （?? 开头的是新增文件，恢复不会删除它们；其余改动会被还原）
+echo   （新增的文件都会保留；其余改动会被还原成 GitHub 上的版本）
 echo.
 
 set "dirty="
@@ -114,6 +114,8 @@ rem ---- 3. 执行恢复 ----
 echo.
 echo [3/3] 正在恢复……
 chcp 65001 >nul
+rem 先取消暂存：保证"git add 过但没提交"的新文件也不会被删
+git reset -q
 git reset --hard origin/main
 chcp 936 >nul
 if errorlevel 1 (
