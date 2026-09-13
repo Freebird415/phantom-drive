@@ -61,3 +61,6 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# ---- 实验日志（本地存档，不入库）----
+logs/
