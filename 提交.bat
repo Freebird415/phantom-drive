@@ -95,7 +95,7 @@ git config pull.rebase false >nul 2>&1
 git config core.quotepath false >nul 2>&1
 
 rem ---- 1. 显示改动（文件清单 + 行数统计 + 新增文件）----
-echo [1/3] 你本地的改动：
+echo [1/4] 你本地的改动：
 chcp 65001 >nul
 git status --short
 chcp 936 >nul
@@ -129,8 +129,32 @@ chcp 936 >nul
 :no_untracked
 echo.
 
-rem ---- 2. 填写提交说明 ----
-echo [2/3] 请选择这次提交的类型：
+rem ---- 2. 提醒页：先确认本次已拉取 ----
+echo [2/4] 提交前提醒：请确认本次开工前已经运行过「拉取.bat」。
+echo.
+echo     · 已经拉取过（本地就是最新版本） →  输入 Y 继续
+echo     · 还没拉取 / 不确定              →  输入 N 退出，先双击「拉取.bat」
+echo.
+:ask_pulled
+set "pulled="
+set /p pulled="请确认已完成拉取 (Y/N)："
+if /i "%pulled%"=="Y" goto :pulled_ok
+if /i "%pulled%"=="N" (
+    echo.
+    echo   已取消提交，什么都没有改动。
+    echo   请先双击「拉取.bat」同步云端最新版本，然后再运行本脚本。
+    echo.
+    pause
+    exit /b 0
+)
+echo [错误] 请输入 Y 或 N。
+goto :ask_pulled
+
+:pulled_ok
+echo.
+
+rem ---- 3. 填写提交说明 ----
+echo [3/4] 请选择这次提交的类型：
 echo    1 = feat   新功能 / 新代码
 echo    2 = fix    修改错误
 echo    3 = docs   文档
@@ -176,7 +200,7 @@ if /i not "%ok%"=="Y" (
 
 rem ---- 3. 提交并上传 ----
 echo.
-echo [3/3] 正在提交并上传……
+echo [4/4] 正在提交并上传……
 chcp 65001 >nul
 git add -A
 git commit -m "%msg%"
