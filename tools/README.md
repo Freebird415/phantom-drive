@@ -26,6 +26,14 @@ python tools/plot.py logs/<某次实验目录>                  # 单独出图
 python -m pip install pyserial      # matplotlib 一般随 Python 自带
 ```
 
+## 要求与约定
+
+- 实验日志一律落到 `logs/<时间>_<描述>/`，**logs/ 不入库**（`.gitignore` 已覆盖）
+- 每次采集都会自动带上参数快照（`$P` 帧）——没有快照的日志等于"半黑盒"，不要用来下结论
+- 采集脚本必须用**限时循环**，不能写 `while True: readline()`（板子 100 Hz 持续输出会永远读不完）
+- 协议改动要同步 `docs/遥测协议.md`（改动需双方确认）
+- 相关任务：P01
+
 ## 约定
 
 - 协议改动要同步 `docs/遥测协议.md`（改动需双方确认）
