@@ -1,11 +1,11 @@
 @echo off
 chcp 936 >nul
-title 拉取并提交 - phantom-drive
+title 提交 - phantom-drive
 
 rem ============================================================
-rem  一键拉取并提交（GBK 编码，中文 Windows 双击即用）
-rem  双击运行即可，不需要敲任何命令
-rem  没有改动时会自动结束（只想更新文件的人也可以放心用）
+rem  提交并上传（只负责提交，不负责拉取）
+rem  正确用法：开工前先双击「拉取.bat」，改完文件再双击本脚本
+rem  GBK 编码，中文 Windows 双击即用，不需要敲任何命令
 rem ============================================================
 
 rem ---- 切到仓库根目录（本脚本就放在仓库根目录）----
@@ -13,7 +13,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================
-echo    phantom-drive 拉取并提交
+echo    phantom-drive 提交
 echo ============================================
 echo.
 
@@ -37,7 +37,7 @@ if errorlevel 1 (
 )
 
 if exist ".git\MERGE_HEAD" (
-    echo [错误] 仓库目前处于"冲突未解决"状态。
+    echo [错误] 仓库目前处于“冲突未解决”状态。
     echo 请不要继续操作，直接找组长处理。
     echo.
     pause
@@ -94,42 +94,43 @@ echo.
 git config pull.rebase false >nul 2>&1
 git config core.quotepath false >nul 2>&1
 
-rem ---- 1. 拉取最新 ----
-echo [1/4] 正在拉取最新版本……
-chcp 65001 >nul
-git pull --no-edit
-if errorlevel 1 (
-    chcp 936 >nul
-    echo.
-    echo [错误] 拉取失败（可能是网络问题，或与别人的改动冲突）。
-    echo 请把本窗口截图发到群里，不要自己乱试。
-    echo.
-    pause
-    exit /b 1
-)
-chcp 936 >nul
-
-rem ---- 2. 显示改动 ----
-echo.
-echo [2/4] 你本地的改动：
+rem ---- 1. 显示改动（文件清单 + 行数统计 + 新增文件）----
+echo [1/3] 你本地的改动：
 chcp 65001 >nul
 git status --short
-echo --------------------------------------------
-git diff --stat
 chcp 936 >nul
 echo.
+echo ---- 行数统计（已跟踪的文件）----
+chcp 65001 >nul
+git diff --stat HEAD
+chcp 936 >nul
 
 set "has_changes="
 for /f "delims=" %%i in ('git status --porcelain') do set "has_changes=1"
 if not defined has_changes (
-    echo   没有检测到任何改动 —— 你的文件已经是最新的，没有东西需要提交。
+    echo.
+    echo   没有检测到任何改动 —— 没有东西需要提交。
+    echo   如果你是想同步云端最新版本，请双击「拉取.bat」。
     echo.
     pause
     exit /b 0
 )
 
-rem ---- 3. 填写提交说明 ----
-echo [3/4] 请选择这次提交的类型：
+set "untracked="
+chcp 65001 >nul
+for /f "delims=" %%i in ('git ls-files --others --exclude-standard') do set "untracked=1"
+chcp 936 >nul
+if not defined untracked goto :no_untracked
+echo.
+echo ---- 新增的文件（会被一起提交）----
+chcp 65001 >nul
+git ls-files --others --exclude-standard
+chcp 936 >nul
+:no_untracked
+echo.
+
+rem ---- 2. 填写提交说明 ----
+echo [2/3] 请选择这次提交的类型：
 echo    1 = feat   新功能 / 新代码
 echo    2 = fix    修改错误
 echo    3 = docs   文档
@@ -173,9 +174,9 @@ if /i not "%ok%"=="Y" (
     exit /b 0
 )
 
-rem ---- 4. 提交并上传 ----
+rem ---- 3. 提交并上传 ----
 echo.
-echo [4/4] 正在提交并上传……
+echo [3/3] 正在提交并上传……
 chcp 65001 >nul
 git add -A
 git commit -m "%msg%"
@@ -192,12 +193,27 @@ git push
 if errorlevel 1 (
     chcp 936 >nul
     echo.
-    echo [错误] 上传失败。
-    echo 请关闭本窗口，重新双击本脚本再试一次（它会先拉取最新版本）。
-    echo 如果仍然失败，把截图发到群里。
-    echo.
-    pause
-    exit /b 1
+    echo [提示] 上传被拒绝 —— 云端有别人的新改动（你这次开工前可能忘了先拉取）。
+    echo        正在自动合并云端版本，请稍等……
+    chcp 65001 >nul
+    git pull --no-edit
+    if errorlevel 1 (
+        chcp 936 >nul
+        echo.
+        echo [错误] 自动合并失败（可能冲突）。请把本窗口截图发到群里，不要自己乱试。
+        echo.
+        pause
+        exit /b 1
+    )
+    git push
+    if errorlevel 1 (
+        chcp 936 >nul
+        echo.
+        echo [错误] 上传仍然失败。请把本窗口截图发到群里。
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 chcp 936 >nul
@@ -205,6 +221,7 @@ echo.
 echo ============================================
 echo   [完成] 已上传成功！
 echo   可以打开 GitHub 网页确认你的提交。
+echo   下次开工前记得先双击「拉取.bat」。
 echo ============================================
 echo.
 pause
