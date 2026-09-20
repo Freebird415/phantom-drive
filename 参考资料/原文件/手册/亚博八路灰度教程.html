@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="x-ua-compatible" content="ie=edge">
+<meta name="fragment" content="!">
+<meta content="Yahboom team is constantly looking for and screening cutting-edge technologies, committing to making it an open source project to help those in need to realize his ideas and dreams through the promotion of open source culture and knowledge. Yahboom has launched a number of smart cars and modules, development kits, and opens corresponding SDK (software development kit) and a large number of routines and rich teaching materials, as well as continuous updates and maintenances of SDK and teaching materials." name="description">
+<meta content="Yahboom Technology, Yahboom, Smart robot, Yahboom study, Yahboom Download, Yahboom video, Yahboom learning file" name="keywords">
+<meta name="twitter:card" content="Yahboom">
+<meta name="twitter:site" content="@Yahboom">
+<meta name="twitter:creator" content="@Yahboom">
+<meta name="twitter:image" content="https://www.yahboom.net/img/logo-1.png">
+<meta property="og:title" content="Yahboom">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://www.yahboom.net/img/logo-1.png">
+<meta property="og:description" content="Yahboom">
+<title>8-channel Grayscale Tracking Module</title>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-RZR8BQKQZJ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-RZR8BQKQZJ');
+</script>
+
+
+<link rel="stylesheet" href="https://www.yahboom.net/public/css/3.3.7-bootstrap.min.css">
+<script src="https://www.yahboom.net/public/js/2.1.1-jquery.min.js"></script>
+<script src="https://www.yahboom.net/public/js/3.3.7-bootstrap.min.js"></script>
+
+
+<!-- ico -->
+<link rel="shortcut icon" type="image/x-icon" href="https://img.yahboom.net/img/robotico.ico">
+<link rel="apple-touch-icon-precomposed" sizes="144x144" href="https://img.yahboom.net/img/robotico.ico">
+<link rel="apple-touch-icon-precomposed" sizes="114x114" href="https://img.yahboom.net/img/robotico.ico">
+<link rel="apple-touch-icon-precomposed" sizes="72x72" href="https://img.yahboom.net/img/robotico.ico">
+<link rel="apple-touch-icon-precomposed" href="https://img.yahboom.net/img/robotico.ico">
+<!--网站核心css-->
+<link rel="stylesheet" type="text/css" href="https://www.yahboom.net/public/css/base.css">
+<link rel="stylesheet" type="text/css" href="https://www.yahboom.net/public/css/download.css">
+<link rel="stylesheet" type="text/css" href="https://www.yahboom.net/public/assets/css/icons.css">
+</head>
+<style>
+/*/
+#loader:before,#loader:after{
+	border-top-color: #02c8ec !important;
+}
+/*定义滚动条高宽及背景 高宽分别对应横竖滚动条的尺寸*/
+.md-sidebar::-webkit-scrollbar
+{
+    width: 6px;
+    height: 6px;
+    background-color: #F5F5F5;
+}
+
+/*定义滚动条轨内阴圆角*/
+.md-sidebar::-webkit-scrollbar-track
+{
+    -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,0.3);
+    border-radius: 10px;
+    background-color: #F5F5F5;
+}
+ 
+/*定义滑块 内阴圆角*/
+.md-sidebar::-webkit-scrollbar-thumb
+{
+    border-radius: 10px;
+    -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,.3);
+    background-color: #555;
+}
+/*兼容IE*/
+.md-container{
+	scrollbar-arrow-color: #f4ae21; /**//*三角箭头的颜/   
+	scrollbar-face-color: #333; /**//*立体滚动条的颜色*/   
+	scrollbar-3dlight-color: #666; /**//*立体滚动条亮边的颜色*/   
+	scrollbar-highlight-color: #666; /**//*滚动条空白部分的颜色*/   
+	scrollbar-shadow-color: #999; /**//*立体滚动条阴影的颜色*/   
+	scrollbar-darkshadow-color: #666; /**//*立体滚动条强阴影的颜/   
+	scrollbar-track-color: #666; /**//*立体滚动条背景颜/   
+	scrollbar-base-color:#f8f8f8; /**//*滚动条的基本颜色*/   
+}
+</style>
+<body class="loaded">
+
+<style>
+.navbar-collapse a{
+	font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol";
+}
+.row{
+	height:85px;
+}
+li.nav-store a.btn-store {
+    color: #fff;
+    position: relative;
+    max-width: 100px;
+    border-radius: 4px;
+    font-weight: 600;
+    background-image: linear-gradient(-180deg,#42b7ff,#1897f2);
+	display: inline-block;
+    font-size: 14px;
+    vertical-align: middle;
+    height: 30px;
+    line-height: 14px;
+    padding: 8px 16px;
+}
+li.nav-store a.btn-store:hover {
+    background-image: linear-gradient(-180deg,#6bcbff,#42b7ff);
+}
+li.nav-store a.btn-store:active {
+    background-image: linear-gradient(-180deg,#1897f2,#42b7ff);
+}
+.nav-store{
+	padding: 17px 10px 17px 0;
+    margin-right: 24px;
+}
+/*----------*/
+.relative {
+    position: relative;
+}
+.nav-content-wrap>ul li {
+    font-size: 14px;
+}
+.drop-down {
+    display: none;
+    position: absolute;
+    z-index: 2;
+    top: 60px;
+    left: -15%;
+    text-align: center;
+    background: #fff;
+    box-shadow: 1px 1px 6px 0 rgba(100,100,100,0.2);
+    color: #253858;
+    padding: 0;
+    min-width: 165px;
+    border-radius: 8px;
+}
+.nav-support:hover .drop-down {
+	display: block;
+	animation: drop-down 0.3s ease-in-out forwards;
+}
+ul .nav-support:hover .drop-down {
+    display: block;
+    animation: drop-down 0.3s ease-in-out forwards;
+}
+.drop-down:after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: -3px;
+    transform: translate(-50%, -90%);
+    width: 100%;
+    height: 10px;
+    width: 0px;
+    border: 16px solid;
+    border-color: #fff;
+    border-top-color: transparent;
+    border-left-color: transparent;
+    border-right-color: transparent;
+    cursor: pointer;
+}
+.drop-down li:not(:last-child) {
+    border: 0 solid #c2dfff;
+    border-bottom-width: 1px;
+}
+.drop-down li {
+    list-style: none;
+    margin-right: 0;
+}
+.drop-down li:hover{
+    background: #ebeff2;
+}
+.drop-down li a {
+	text-decoration: none;
+    padding: 16px 0;
+    white-space: nowrap;
+    display: inline-block;
+    color: #303233;
+    line-height: 1;
+	font-size: 12px;
+    height: auto;
+    background: 0 0;
+    text-align: center;
+    width: 100%;
+}
+.drop-down li a:hover {
+    color: #1EAAFF;
+}
+#fixed-top{
+	border-bottom: 2px solid rgb(40 167 225);
+	z-index: 9;
+}
+.nav-item .nav-link{
+	padding: 25px 16px;
+    display: inline-block;
+    transition: all .3s;
+    vertical-align: middle;
+    line-height: 14px;
+    font-weight: 400;
+    cursor: pointer;
+    font-size: 15px;
+    color: #3b3e40;
+}
+#fixed-top.row{
+    margin-right: 0px;
+    margin-left: 0px;
+}
+</style>
+<nav id="fixed-top" class="protected row clearfix navbar-collapse">
+	<nav class="bg-indigo">
+		<a href="https://www.yahboom.net/home" class="navbar-brand navbar-collapse">
+        	<img src="https://img.yahboom.net/img/logo-1.png" class="img-responsive" alt="Cinque Terre" width="298">
+        </a>
+        <div class="navbar-collapse" style="width: 100%;">
+        	<ul class="navbar-nav mr-auto">
+            	<li class="nav-item"><a href="https://www.yahboom.net/home" class="nav-link">Home</a></li>
+                <li class="nav-item"><a href="https://www.yahboom.net/download" class="nav-link">Learn</a></li>
+				<li class="nav-item"><a href="https://www.yahboom.net/programme" class="nav-link">Solution</a></li>
+				<li class="nav-item category-item relative nav-support">
+					<a target="_self" class="ga-data nav-link">
+						Software
+						<span class="l" style="margin: 0;">∨</span>
+					</a>
+					<ul class="drop-down">
+						<li><a href="https://www.yahboom.net/software/app" target="" >Controlling software</a></li>
+						<li><a href="https://www.yahboom.net/software/pc" target="" >Programming software</a></li>
+					</ul>
+				</li>
+                <li class="nav-item"><a href="https://www.yahboom.net/aboutus" class="nav-link">About us</a></li>
+            </ul>
+			<ul style="padding: 0;margin-bottom:0;width: 25%;text-align: right;">
+				<li class="nav-store">
+					<a href="https://category.yahboom.net/" class="dui-btn-buy btn-store ga-data" target="_blank"><span>Store</span></a>
+				</li>
+			</ul>
+        </div>
+	</nav>
+</nav>
+<!-- <script src="https://www.yahboom.net/public/js/bootstrap.min.js"></script> -->
+<script>
+$(function(){
+	$('.nav-support').hover(function(){
+		$(this).find('span').text('∧');
+	},function(){
+		$(this).find('span').text('∨');
+	});
+})
+
+$(document).ready(function(){
+    $(".dropdown").hover(           
+        function() {
+            $('.menu_1', this).stop( true, true ).slideDown("fast");
+			$('.menu_1').css('display','block');
+            $(this).toggleClass('open');
+        },
+        function() {
+            $('.menu_1', this).stop( true, true ).slideUp("fast");
+			$('.menu_1').css('display','none');
+            $(this).toggleClass('open'); 
+        }
+    );
+	$(".dropdown2").hover(           
+        function() {
+            $('.menu_2', this).stop( true, true ).slideDown("fast");
+			$('.menu_2').css('display','block');
+            $(this).toggleClass('open');
+        },
+        function() {
+            $('.menu_2', this).stop( true, true ).slideUp("fast");
+			$('.menu_2').css('display','none');
+            $(this).toggleClass('open'); 
+        }
+    );
+	$("#search_for").click(function(){
+		$('#w_form').submit();
+	})
+});
+</script>
+<script charset="UTF-8" id="LA_COLLECT" src="//sdk.51.la/js-sdk-pro.min.js"></script>
+<script>LA.init({id:"3LAJqYFkNeYPVrVk",ck:"3LAJqYFkNeYPVrVk",autoTrack:true})</script>
+<div class="md-header" data-md-component="header" data-md-state="shadow"></div>
+<div class="md-container" >
+	<!-- 身子 -->
+	<main class="md-main">
+		<div class="md-main__inner md-grid" data-md-component="container" style="padding-top: 0;">
+			<!-- lock-->
+			<div class="md-sidebar md-sidebar--primary" data-md-component="navigation" data-md-state="" style="background: #ffffff;z-index: 999;overflow: auto;height: 100%;">
+				<div class="md-sidebar__scrollwrap">
+					<label class="md-nav__title md-nav__title--site" for="drawer">8-channel Grayscale Tracking Module<i class="fa-book"></i></label>
+					<div class="study_2">
+						<!-- 1 -->
+						<div class="jumbotron_bianzhon">
+													<div style="margin-bottom:0px;background: #ffffff;position: relative;">
+								<div style="font-size: 17px;border-bottom: 0px solid #c8c8c8;padding-left: 0px;padding-left: 15px;margin-top: .625em;display: inline-block;" id="1" class="study_2_3_a" title="0. Precautions for use" data-toggle="tooltip">
+									0. Precautions for use<i class="en-arrow-down5"></i>
+																	</div>
+								<samp style="color: #757575;font-weight: 500;font-size: 20px;"></samp>
+								<div class="study_1_2_b study_show subNav">
+                                                                            <ul>
+                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16899)" title="Identifying Defective Solutions" data-toggle="tooltip">                                                            Identifying Defective Solutions                                                        </a>
+                                                    </li>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        </ul>
+                                                                        <div class="clear"></div>
+								</div>
+							</div>
+													<div style="margin-bottom:0px;background: #ffffff;position: relative;">
+								<div style="font-size: 17px;border-bottom: 0px solid #c8c8c8;padding-left: 0px;padding-left: 15px;margin-top: .625em;display: inline-block;" id="1" class="study_2_3_a" title="1.About 8-channel tracking module" data-toggle="tooltip">
+									1.About 8-channel tracking module<i class="en-arrow-down5"></i>
+																	</div>
+								<samp style="color: #757575;font-weight: 500;font-size: 20px;"></samp>
+								<div class="study_1_2_b study_show subNav">
+                                                                            <ul>
+                                                                                                <li>
+                                                        <a href="javascript:void(0)" onclick="build(16880)" title="8-channel grayscale module introduction" data-toggle="tooltip">                                                            8-channel grayscale module introduction                                                        </a>
+                                                    </li>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    </ul>
+                                                                        <div class="clear"></div>
+								</div>
+							</div>
+													<div style="margin-bottom:0px;background: #ffffff;position: relative;">
+								<div style="font-size: 17px;border-bottom: 0px solid #c8c8c8;padding-left: 0px;padding-left: 15px;margin-top: .625em;display: inline-block;" id="1" class="study_2_3_a" title="2.MCU data reading" data-toggle="tooltip">
+									2.MCU data reading<i class="en-arrow-down5"></i>
+																			<img width='20' style="margin-left:5px" src="https://img.yahboom.net/images/1-140104201U8.gif" alt="new">
+																	</div>
+								<samp style="color: #757575;font-weight: 500;font-size: 20px;"></samp>
+								<div class="study_1_2_b study_show subNav">
+                                                                            <ul>
+                                                                                                                                                                                        <li>
+                                                        <a href="javascript:void(0)" onclick="build(16882)" title="1.MSPM0G3507" data-toggle="tooltip">                                                            1.MSPM0G3507                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(20384)" title="2.MSPM0G3519" data-toggle="tooltip">                                                            2.MSPM0G3519                                                                <img width='20' style="margin-left:5px" src="https://img.yahboom.net/images/1-140104201U8.gif" alt="new">
+                                                                                                                    </a>
+                                                    </li>
+                                                                                                                                                <li>
+                                                        <a href="javascript:void(0)" onclick="build(16884)" title="3.STM32F103C8T6" data-toggle="tooltip">                                                            3.STM32F103C8T6                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16888)" title="4.ESP32" data-toggle="tooltip">                                                            4.ESP32                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16889)" title="5.Arduino" data-toggle="tooltip">                                                            5.Arduino                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16890)" title="6. Raspberry Pi Pico" data-toggle="tooltip">                                                            6. Raspberry Pi Pico                                                        </a>
+                                                    </li>
+                                                                                                                                                                                </ul>
+                                                                        <div class="clear"></div>
+								</div>
+							</div>
+													<div style="margin-bottom:0px;background: #ffffff;position: relative;">
+								<div style="font-size: 17px;border-bottom: 0px solid #c8c8c8;padding-left: 0px;padding-left: 15px;margin-top: .625em;display: inline-block;" id="1" class="study_2_3_a" title="3.Car gray line tracking" data-toggle="tooltip">
+									3.Car gray line tracking<i class="en-arrow-down5"></i>
+																	</div>
+								<samp style="color: #757575;font-weight: 500;font-size: 20px;"></samp>
+								<div class="study_1_2_b study_show subNav">
+                                                                            <ul>
+                                                                                                                                                                                                                                    <li>
+                                                        <a href="javascript:void(0)" onclick="build(16891)" title="1. MSPM0 Smart Car" data-toggle="tooltip">                                                            1. MSPM0 Smart Car                                                        </a>
+                                                    </li>
+                                                                                                                                                                                                                                        <li>
+                                                        <a href="javascript:void(0)" onclick="build(16892)" title="2. STM32 development board for small car" data-toggle="tooltip">                                                            2. STM32 development board for small car                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16893)" title="3. ESP32 wheeled car chassis V1" data-toggle="tooltip">                                                            3. ESP32 wheeled car chassis V1                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16894)" title="4. Arduino Wheeled Car Chassis V2" data-toggle="tooltip">                                                            4. Arduino Wheeled Car Chassis V2                                                        </a>
+                                                    </li>
+                                                                                                                                                                                            <li>
+                                                        <a href="javascript:void(0)" onclick="build(16895)" title="5. Raspberry Pi Pico Wheel Car Chassis V2" data-toggle="tooltip">                                                            5. Raspberry Pi Pico Wheel Car Chassis V2                                                        </a>
+                                                    </li>
+                                                                                                                                    </ul>
+                                                                        <div class="clear"></div>
+								</div>
+							</div>
+												</div>
+													<!-- Download -->
+							<div style="margin-top:20px;">
+								<div class="md-nav__title_d" id="5">Download<i class="fa-cloud-download"></i></div>
+								<div class="video_list">
+									<ul style="width:100%;padding-left: 15px;">
+																					<li class="md-nav__link--active">
+																									<a href="https://drive.google.com/drive/folders/1fGIShnCoPn17A1k05lzNIGRirvep_1wu" download target="_blank" title="Code" data-toggle="tooltip">Code<i class="fa-cloud-download"></i></a>
+																							</li>
+																					<li class="md-nav__link--active">
+																									<a href="https://drive.google.com/drive/folders/1aflE9YZRYV8cTJl_T4lvbgNtf63Kj_Ij" download target="_blank" title="3D Model File" data-toggle="tooltip">3D Model File<i class="fa-cloud-download"></i></a>
+																							</li>
+																					<li class="md-nav__link--active">
+																									<a href="https://drive.google.com/drive/folders/1DwaAY0mGTX5piIPXyWBAzF_vfKd3rquN" download target="_blank" title="Serial Port Assistant" data-toggle="tooltip">Serial Port Assistant<i class="fa-cloud-download"></i></a>
+																							</li>
+																			</ul>
+									<div class="clear"></div>
+								</div>
+							</div>
+						                            <div class="button_r"><a href="https://github.com/YahboomTechnology/8-channel-grayscale-tracking-module" class="download" target="_blank">Download ZIP</a></div>
+                        					</div>
+				</div>
+			</div>
+			<!-- -->
+			<div class="md-content" style="margin-left: 24.2rem;margin-right: 13.2rem;">
+				<article class="md-content__inner md-typeset">
+					<h1>Welcome to 8-channel Grayscale Tracking Module repository</h1>
+				
+										
+
+					<h2 class="content_title"></h2>
+					<hr>
+					<div class="video_content">
+											</div>
+					<div class="content">
+												<div id="slider" class="ccslider" style="text-align:center;">
+														<img src="https://img.yahboom.net/images/newsimg/6912d3b2ef5e6.jpg" style="height: 100%;width:100%;">
+													</div>
+					</div>
+				</article>
+				<div class="page">
+					<a href="javascript:void(0)" class="md-left md-footer-nav__link" data-toggle="tooltip"><i class="im-arrow-left3"></i><div></div></a>
+					<a href="javascript:void(0)" class="md-right md-footer-nav__link" data-toggle="tooltip"><i class="im-arrow-right3"></i><div></div></a>
+				</div>
+			</div>
+		</div>
+	</main>
+	<!-- -->
+	<footer class="md-footer"></footer>
+</div>
+<!-- loader -->
+<link rel="stylesheet" type="text/css" href="https://www.yahboom.net/public/jq/loading/loader.css">
+<div id="loader-wrapper">
+    <div id="loader"></div>
+    <div class="loader-section section-left"></div>
+    <div class="loader-section section-right"></div>
+    <div class="load_title">Loading...</div>
+</div>
+<!-- footer -->
+<script src="https://www.yahboom.net/public/js/facebook_wait.js"></script>
+<style>
+.footer-copyright li a:hover {
+    color: #f2f2f2;
+}
+.footer-change-country:hover .gray {
+    display: none;
+}
+.footer-change-country:hover .white {
+    display: block;
+}
+.footer-change-country .gray{
+    display: block;
+	width: 14px;
+    margin-right: 5px;
+}
+.footer-change-country .white {
+    display: none;
+	width: 14px;
+    margin-right: 5px;
+}
+#current-region-placeholder a{
+	display: inline;
+	text-decoration: blink;
+	color: #757575;
+}
+#current-region-placeholder a:hover{
+	color: rgb(253 253 253);
+}
+</style>
+<div class="footer">
+	<div class="container" style="width: 1300px;">
+		<div class="footer-row">
+			<div class="col-md-3 footer-grids mail">
+				<img src="https://img.yahboom.net/images/logo-2.png" class="img-responsive img-display" width="268">
+				<form action="https://www.yahboom.net/subscription" method="post">
+					<h4>Subscribe:</h4>
+					<input type="Email" placeholder="Email" name="Email" required="">
+					<input type="submit" value="Subscribe">
+				</form>
+				<ul class="social-icons">
+					<li><a href="javascript:void(0)" class="facebook" id="facebook" title="facebook"></a></li>
+					<li><a href="javascript:void(0)" class="p" id="twitter" title="Twitter"></a></li>
+					<li><a href="https://www.youtube.com/channel/UCaishn63yF9Q_jKWEiaacFw" target="_blank" class="y" id="youtube" title="Youtube"></a></li>
+					<li><a href="https://www.instagram.com/yahboom/" target="_blank" class="i" id="instagram" title="Instagram"></a></li>
+				</ul>
+				<ul class="social-icons" style="padding: 0 !important;">
+					<div class="footer-change-country" style="display: flex;-webkit-box-align: center;-moz-align-items: center;align-items: center;height: 24px;margin: 0;padding: 0;border: 0;font-size: 100%;font-weight: 400;vertical-align: baseline;background: 0 0;color: #9fa3a6;float: left;">
+						<img class="icon-locale gray" src="//www2.djicdn.com/assets/images/v3/foot/language-7441fda2976c3a423628f392d6fc2498.svg">
+						<img class="icon-locale white" src="//www2.djicdn.com/assets/images/v3/foot/language-white-4d09967be3fd63008e12859a0d408c04.svg">
+						<div id="change-locale" class="change-locale ga-data">
+							<span id="current-region-placeholder"><a href="https://www.yahboom.com" style="font-size: 12px;">简体中文</a> / <a href="javascript:void(0)" style="font-size: 12px;">English</a></span>
+						</div>
+					</div>
+				</ul>
+			</div>
+			<div class="col-md-1 footer-grids mail"></div>
+			<div class="col-md-2 footer-grids" style="margin: 10px;">
+				<h3>COMPANY</h3>
+				<ul>
+					<li><a href="https://www.yahboom.net/aboutus">About us</a></li>
+					<li><a href="https://www.yahboom.net/aboutus#header7">Team Style</a></li>
+					<li><a href="https://category.yahboom.net/blogs/news" target="_blank">Blog</a></li>
+				</ul>
+			</div>
+			<div class="col-md-2 footer-grids" style="margin: 10px;">
+				<h3>WHERE TO BUY</h3>
+				<ul>
+					<li><a href="https://category.yahboom.net/" target="_blank">Yahboom Online Store</a></li>
+					<li><a href="https://www.amazon.com/yahboom" target="_blank">Amazon</a></li>
+					<li><a href="https://yahboom.en.alibaba.com/" target="_blank">Alibaba</a></li>
+					<li><a href="https://www.aliexpress.com/store/912535029" target="_blank">AliExpress</a></li>
+				</ul>
+			</div>
+			<div class="col-md-2 footer-grids" style="margin: 10px;width: auto;">
+				<h3>TECHNOLOGY SUPPORT</h3>
+				<ul>
+					<li>Email: <br/>support@yahboom.com</li>
+					<!-- <li>WhatsApp: <br/>+86 18682378128</li> -->
+				</ul>
+			</div>
+			<div class="col-md-2 footer-grids" style="margin: 10px;width: auto;">
+				<h3>BE A DISTRIBUTOR </h3>
+				<ul>
+					<li>Email: <br/>sales@yahboom.com</li>
+					<!-- <li>WhatsApp: <br/>+86 13163737198</li> -->
+				</ul>
+			</div>
+			<!-- <div class="clearfix"> </div> -->
+		</div>
+	</div>
+</div>
+
+
+
+
+<!-- footer end -->
+<script>
+$(function(){
+	/*loader*/
+	//$('.row').css('z-index','999999999');
+	//$('#loader-wrapper .load_title').remove();
+	/*导航标题颜色*/
+	//$(".nav-item:eq(3) a").css('color','#00d8ff');
+	//导航栏收
+	//$("#fixed-top").animate({"height":'100px'},500);
+	//title
+	$('.content a').attr('data-toggle','tooltip');
+	//$("[data-toggle='tooltip']").tooltip();//title提示，已取消
+	$(".study_2_3_a").click(function(){
+		var display=$(this).siblings(".study_show").find("ul").css("display");
+		$(".study_show ul").css("display","none");
+		$(".study_show").css("height","0px");
+		var height=$(this).siblings(".study_show").find('ul').height();//$(this).siblings(".study_show").find("ul li").length*(18+8.75)+"px";
+		//还原所有箭
+		$('.study_2_3_a').find("i").attr("class","en-arrow-down5");
+		if(display=='none'){
+			$(this).siblings(".study_show").find("ul").css("display","block");
+			$(this).siblings(".study_show").css("height",height);
+			$(this).find("i").attr("class","en-arrow-up5");
+		}else{
+			$(this).siblings(".study_show").find("ul").css("display","none");
+			$(this).siblings(".study_show").css("height","0px");
+			$(this).find("i").attr("class","en-arrow-down5");
+		}
+	})
+	//排序宽度
+	$('.page').width($('.md-content').width());
+})
+function build(id){
+	$('body').removeClass('loaded');
+	$.ajax({
+		contentType: "application/x-www-form-urlencoded",
+		url: 'https://www.yahboom.net/build',
+		dataType: "json",
+		data: "id="+id,
+		success: function(msg){
+			/*console.log(msg);*/
+			page(id);
+			if(msg!=null)
+			{
+				$('.video_content,.md-content__inner h2,.content').empty();
+				$('.md-content__inner h2').append(msg[0].name);
+				$.each(msg[1],function(n,vo){
+					var div=null;
+					if(vo[2]!='')
+					{
+						div='<h3>'+vo[0]+'</h3><div style="text-align: left;width:700px; margin:0 auto;"><samp style="font-size:20px;">'+vo[3]+'</samp><a href="'+vo[2]+'" download="" class="download" style="margin-left: 10px;" title="'+vo[3]+'" data-toggle="tooltip">&nbsp;Download<i class="fa-cloud-download"></i></a></div><div style="margin-top:10px;"><div class="close_light_bg" id="close_light_bg"></div><div class="video" id="CuPlayer'+n+'">'+vo[1]+'</div></div>';
+					}else{
+						div='<h3>'+vo[0]+'</h3><div style="margin-top:10px;"><div class="close_light_bg" id="close_light_bg"></div><div class="video" id="CuPlayer'+n+'">'+vo[1]+'</div></div>';
+					}
+					$('.video_content').append(div);
+				})
+				$('.content').append(msg[0].content);
+				$('.content a').attr('data-toggle','tooltip');
+				$(".md-content .md-typeset [data-toggle='tooltip']").attr('download','');
+				//$("[data-toggle='tooltip']").tooltip();
+				/*loaded加载动画*/
+				$('body').addClass('loaded');
+				$('.md-content img').attr('data-action','zoom');
+				$("html,body").animate({ scrollTop: 0 }, 500);
+				window.setInterval("reinitIframe()", 200);
+				
+                $('#documentation_test').on('load', function() {
+                	$(document).ready(function() {
+                		$('#documentation_test').contents().find('a').click(function(event) {
+                			
+                			var id = getHashFromUrl($(this).attr('href'))
+                			
+                			if(id == null){
+                    			event.preventDefault(); // 阻止默认行为，即不在当前iframe中打开链接
+                    			var url = $(this).attr('href'); // 获取链接的URL
+                    			window.open(url, '_blank'); // 在新窗口中打开链接
+                			}else{
+                    			// 或使用 setTimeout 微延迟
+                    			setTimeout(() => {
+                    			    var iframe = document.getElementById("documentation_test");
+                    				const targets = iframe.contentDocument.getElementsByName(id);
+                                    if (targets.length) {
+                                      targets[0].scrollIntoView(); // 滚动到第一个
+                                    }
+                    			}, 20);                  			
+                			}
+                
+              		
+
+                		});
+                	});
+                });				
+				
+			}
+		},
+		error: function (XMLHttpRequest, textStatus, errorThrown) {
+			$('body').addClass('loaded');
+			// 状态码
+			console.log(XMLHttpRequest.status);
+			// 状
+			console.log(XMLHttpRequest.readyState);
+			// 错误信息   
+			console.log(textStatus);
+		}
+	});
+}
+
+function getHashFromUrl(url) {
+  const index = url.indexOf('#');
+  if (index !== -1) {
+    // 从 # 的下一个位置开始截取
+    return url.substring(index + 1);
+  }
+  return null; // 或 ''，表示没有 #
+}
+
+
+
+function reinitIframe(){
+
+	var iframe = document.getElementById("documentation_test");
+	try{
+	var bHeight = iframe.contentWindow.document.body.scrollHeight;
+	var dHeight = iframe.contentWindow.document.documentElement.scrollHeight;
+	var height = Math.max(bHeight, dHeight);
+	iframe.height = height;
+	
+	
+	
+	//console.log(height);
+	}catch (ex){}
+}	
+function page(t){
+	t='build('+t+')';
+	var i=0;
+	$('.jumbotron_bianzhon .study_1_2_b li a').each(function(e){
+		var a=$(this).text().replace(/(^\s*)|(\s*$)/g,"");
+		var b=$(this).attr('onclick');//.replace(/(^\s*)|(\s*$)/g,"");
+		if(t==b){
+			var c=i-1;
+			if(c>=0){
+				var id1=$('.jumbotron_bianzhon .study_1_2_b li a').eq(c).attr('onclick');
+				var name1=$('.jumbotron_bianzhon .study_1_2_b li a').eq(c).text().replace(/(^\s*)|(\s*$)/g,"");
+				$('.md-left').attr('onclick',id1);
+				$('.md-left').attr('data-original-title',name1);
+				$('.md-left div').text(name1);
+			}else{
+				$('.md-left').attr('onclick','');
+				$('.md-left').attr('data-original-title','');
+				$('.md-left div').text('');
+			}
+			var d=i+1;
+			var id2=$('.jumbotron_bianzhon .study_1_2_b li a').eq(d).attr('onclick');
+			var name2=$('.jumbotron_bianzhon .study_1_2_b li a').eq(d).text().replace(/(^\s*)|(\s*$)/g,"");
+			if(name2!=''){
+				$('.md-right').attr('onclick',id2);
+				$('.md-right').attr('data-original-title',name2);
+				$('.md-right div').text(name2);
+			}else{
+				$('.md-right').attr('onclick','');
+				$('.md-right').attr('data-original-title','');
+				$('.md-right div').text('');
+			}
+			//$("[data-toggle='tooltip']").tooltip();
+		}
+		i++;
+	})
+}
+function download_txt(url,name){
+	$.ajax({
+		type: "post",
+		url: 'https://www.yahboom.net/download_txt',
+		dataType: "json",
+		data: "url="+url+"&name="+name,
+		success: function(msg){
+			//console.log(msg);
+		}
+	});
+}
+</script>
+<script src="https://www.yahboom.net/public/js/application-c35428f87f.js"></script>
+<script>
+//app.initialize({l:{base:".."}})
+</script>
+</body>
+</html>

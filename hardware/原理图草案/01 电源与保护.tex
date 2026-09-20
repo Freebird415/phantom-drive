@@ -1,0 +1,126 @@
+% =============================================================================
+%  全车电气连接原理图 · 图 01 —— 电源与保护（元件级）
+%  依据：docs/引脚分配表.md v0.2 + 电气连接规范.md §电源
+%  决策记录：
+%    · 保险丝 3A 慢断（两台 JGB37-520 同时启动/堵转，2A 余量不足）
+%    · 3.3V 不由本板产生 —— 核心板自带 RT9193 LDO，本板只送 5V（方案 A，2026-09-20 定）
+%      ⇒ 本板禁止再把自产 3.3V 灌进核心板 3V3 脚（两颗 LDO 会对打）
+%    · 电机侧用现成 JST-XH 6P 座，不经过排针
+%  版面约定（改图请守住）：12V 干线 y=0；5V 母线 y=-3.6；接地干线 y=-10.5 唯一接地符号；
+%    12V 支路下拉全部落在 x ≤ 16.6，故与下方母线不相交。
+%  编译：见同目录 生成接线图.py（在 ASCII 临时目录里跑 xelatex，避开中文路径）
+% =============================================================================
+\documentclass{article}
+\usepackage[paperwidth=50cm,paperheight=25cm,margin=0pt]{geometry}
+\usepackage{fontspec}\setmainfont{Latin Modern Roman}
+\usepackage{xeCJK}\setCJKmainfont{Microsoft YaHei}
+\usepackage{amsmath, amssymb, siunitx}
+\usepackage[american]{circuitikz}
+\ctikzset{bipoles/length=1.2cm}
+\usepackage[active,tightpage]{preview}
+\PreviewEnvironment{circuitikz}
+\setlength\PreviewBorder{8pt}
+\pagestyle{empty}
+\begin{document}
+\begin{circuitikz}
+\small
+
+% ---------------------------------------------------------------- 12V 干线（y = 0）
+\draw (0,0) node[ocirc]{} node[above=3pt, align=center, font=\footnotesize]
+      {$J_1$\\DC005 座\\+ 2P 焊盘}
+      to[short] (1.4,0)
+      to[switch, l={$SW_1$\ 总开关}] (3.4,0)
+      to[fuse, l={$F_1$\ 3\,A 慢断（可换座）}] (5.4,0)
+      to[short] (6.2,0);
+
+% Q1 反接保护（画成模块块，器件与封装由 H02 定案）
+\draw[rounded corners=2pt] (6.2,-0.62) rectangle (8.6,0.62);
+\node[align=center, font=\small] at (7.4,0) {$Q_1$\ P-MOS\\反接保护};
+\draw (8.6,0) -- (21.0,0);
+\fill (9.6,0) circle (1.3pt);                     % 节点 A
+
+% ---- C1 470µF / C2 0.1µF
+\draw (10.6,0) -- (10.6,-2.2) to[C] (10.6,-4.2) -- (10.6,-10.5);
+\node[anchor=west, font=\footnotesize] at (10.85,-2.75) {$C_1$};
+\node[anchor=west, font=\footnotesize] at (10.85,-3.30) {470\,\si{\micro\farad}/25V};
+\fill (10.6,0) circle (1.3pt);
+
+\draw (13.2,0) -- (13.2,-2.7) to[C] (13.2,-4.0) -- (13.2,-10.5);
+\node[anchor=west, font=\footnotesize] at (13.45,-2.95) {$C_2$};
+\node[anchor=west, font=\footnotesize] at (13.45,-3.50) {0.1\,\si{\micro\farad}};
+\fill (13.2,0) circle (1.3pt);
+
+% ---- 12V 电压检测分压 → PB0
+\draw (15.2,0) -- (15.2,-1.6) to[R] (15.2,-3.0);
+\node[anchor=west, font=\footnotesize] at (15.45,-1.95) {$R_4$ 100\,k$\Omega$};
+\fill (15.2,0) circle (1.3pt);
+\fill (15.2,-3.0) circle (1.3pt);
+\draw (15.2,-3.0) to[R] (15.2,-5.4) -- (15.2,-10.5);
+\node[anchor=west, font=\footnotesize] at (15.45,-3.85) {$R_5$ 10\,k$\Omega$};
+\draw (15.2,-3.0) -- (17.2,-3.0) to[C] (17.2,-5.4) -- (17.2,-10.5);
+\node[anchor=west, font=\footnotesize] at (17.45,-3.55) {$C_7$ 100\,nF};
+\draw (17.2,-3.0) -- (18.9,-3.0) node[ocirc]{} node[below=2pt, font=\footnotesize]{$\to$ PB0\ (ADC1\_IN8)};
+
+% ---- VM 输出（大电流，不经过排针）
+\draw (19.6,0) -- (19.6,1.5) node[ocirc]{} node[right=2pt, font=\footnotesize]{$\to$ TB6612 \textbf{VM}（大电流焊盘）};
+\fill (19.6,0) circle (1.3pt);
+
+% ---------------------------------------------------------------- 12V → 5V（MP1584 模块，竖放）
+\draw[rounded corners=2pt] (20.0,-0.6) rectangle (22.0,-3.0);
+\node[rotate=90, font=\small] at (21.0,-1.8) {MP1584};
+\node[anchor=west, font=\footnotesize, align=left] at (22.3,-1.4) {$U_1$ 降压模块\\12V$\to$5V，$\geq$2\,A};
+\draw (21.0,0) -- (21.0,-0.6);
+\draw (21.0,-3.0) -- (21.0,-3.6);
+
+% ---------------------------------------------------------------- 5V 母线（y = -3.6）
+\draw (21.0,-3.6) -- (28.0,-3.6);
+\fill (21.0,-3.6) circle (1.3pt);
+
+\draw (22.0,-3.6) -- (22.0,-5.0) to[C] (22.0,-6.2) -- (22.0,-10.5);
+\node[anchor=west, font=\footnotesize] at (22.25,-5.25) {$C_3$ 10\,\si{\micro\farad}};
+\fill (22.0,-3.6) circle (1.3pt);
+\draw (24.0,-3.6) -- (24.0,-5.0) to[C] (24.0,-6.2) -- (24.0,-10.5);
+\node[anchor=west, font=\footnotesize] at (24.25,-5.25) {$C_4$ 0.1\,\si{\micro\farad}};
+\fill (24.0,-3.6) circle (1.3pt);
+
+% ---- 12V 指示灯 LED1 画在 04 图（不占 IO，1k 限流）
+
+% ---- 5V 输出
+\draw (25.8,-3.6) -- (25.8,-2.1) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{5V：灰度 / 超声波 /\\HC06 / TB6612 逻辑};
+\fill (25.8,-3.6) circle (1.3pt);
+
+% ---------------------------------------------------------------- 3.3V（由核心板 LDO 供给，本板不产生）
+\draw[rounded corners=2pt] (26.4,-4.4) rectangle (28.6,-6.4);
+\node[align=center, font=\footnotesize] at (27.5,-5.4) {核心板\\RT9193};
+\draw (28.0,-3.6) -- (28.0,-4.4);
+\draw (28.0,-6.4) -- (28.0,-7.2);
+
+% ---------------------------------------------------------------- 3.3V 母线（y = -7.2，由核心板供给）
+\draw (28.0,-7.2) -- (34.4,-7.2);
+
+\draw (29.0,-7.2) -- (29.0,-8.4) to[C] (29.0,-9.2) -- (29.0,-10.5);
+\node[anchor=west, font=\footnotesize] at (29.25,-8.55) {$C_5$ 10\,\si{\micro\farad}};
+\fill (29.0,-7.2) circle (1.3pt);
+\draw (31.0,-7.2) -- (31.0,-8.4) to[C] (31.0,-9.2) -- (31.0,-10.5);
+\node[anchor=west, font=\footnotesize] at (31.25,-8.55) {$C_6$ 0.1\,\si{\micro\farad}};
+\fill (31.0,-7.2) circle (1.3pt);
+\draw (33.0,-7.2) -- (33.0,-8.0) to[R] (33.0,-9.0) to[leD] (33.0,-9.9) -- (33.0,-10.5);
+\node[anchor=west, font=\footnotesize] at (33.25,-8.2) {$R_3$ 1\,k$\Omega$};
+\node[anchor=west, font=\footnotesize] at (33.25,-9.25) {$LED_2$ 3.3V};
+\fill (33.0,-7.2) circle (1.3pt);
+
+\draw (34.4,-7.2) -- (34.4,-5.7) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{3.3V：编码器 / OLED /\\MPU6050（$\leq$300\,mA）};
+
+% ---------------------------------------------------------------- 接地干线（y = -10.5）
+\draw (0,-10.5) node[ground]{} -- (33.0,-10.5);
+\draw (0,0) -- (0,-10.5);                          % J1 的 GND
+
+% ---------------------------------------------------------------- 页脚
+\node[anchor=west, font=\footnotesize, align=left] at (0,-11.9)
+  {\textbf{硬性要求}：全车只有一块 12V 锂电池（规则硬要求，多电源每轮 $-10\%$）；总开关 + 保险丝 + P-MOS 反接保护为必需项；\\
+   12V / 5V / 3.3V / GND 各留 $\geq$1 个测试点（TP）；大电流回路（12V $\to$ TB6612 $\to$ JST-XH 座 $\to$ 电机）不经过排针；\\
+   \textbf{3.3V 由核心板 RT9193 输出}（本板只送 5V，禁止再灌 3.3V）；核心板 5V 脚与 3V3 脚\textbf{只能接一个}；\\
+   每个模块接口的 5V 支路串 0$\Omega$ 跳线或自恢复保险丝，挑故障时可单独断开；12V 指示灯 $LED_1$ 见 04 图（1k 限流）。};
+
+\end{circuitikz}
+\end{document}
