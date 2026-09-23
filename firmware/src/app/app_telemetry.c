@@ -92,12 +92,11 @@ static void handle_command(char *line)
 
     /* ---- OLED (I2C2) ---- */
     if (strcmp(line, "OLSCAN") == 0) {
-        uint8_t a7 = Ol_Present();
-        if (a7) { printf("OLSCAN> 应答 7bit=0x%02X\r\n", (unsigned)a7); }
-        else    { printf("OLSCAN> 无应答（查 VCC=3.3V / SCL->PB10 / SDA->PB11 / 共地）\r\n"); }
+        Ol_Present();
         return;
     }
     if (strcmp(line, "OLED") == 0) { Ol_PrintDebug(); return; }
+    if (strcmp(line, "OLEDTXT") == 0) { Ol_TextTest(); return; }
 
     /* ---- 在线调参 ---- */
     if (strncmp(line, "SET ", 4) == 0) {
