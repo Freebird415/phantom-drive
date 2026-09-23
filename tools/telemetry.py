@@ -19,6 +19,7 @@ CSV_COLUMNS = [
     "err", "pwm_l", "pwm_r", "state",
     "kp", "ki", "kd", "base_speed",
     "code", "note",
+    "l_mm", "r_mm",
 ]
 
 
@@ -28,6 +29,7 @@ def parse_line(line: str):
     $T,ms,s0..s7,err,pwm_l,pwm_r,state           14 段
     $P,ms,kp,ki,kd,base_speed                     6 段
     $E,ms,code,note                               4 段
+    $U,ms,l_mm,r_mm                               4 段（超声波，-1=无回波）
     """
     line = line.strip()
     if not line.startswith("$"):
@@ -53,6 +55,8 @@ def parse_line(line: str):
             }
         if parts[0] == "$E" and len(parts) == 4:
             return "E", {"ms": int(parts[1]), "code": int(parts[2]), "note": parts[3]}
+        if parts[0] == "$U" and len(parts) == 4:
+            return "U", {"ms": int(parts[1]), "l_mm": int(parts[2]), "r_mm": int(parts[3])}
     except ValueError:
         return None
     return None
@@ -93,7 +97,7 @@ class Recorder:
     def __init__(self, out_dir: Path, note: str, port: str, baud: int, seconds: float):
         self.dir = out_dir
         self.note = note
-        self.counts = {"T": 0, "P": 0, "E": 0, "raw": 0}
+        self.counts = {"T": 0, "P": 0, "E": 0, "U": 0, "raw": 0}
         self.events: list[dict] = []
         self.params: list[dict] = []
         self.raw_lines: list[str] = []
@@ -138,7 +142,8 @@ class Recorder:
                  f"- 时长：{self.meta['seconds']} 秒",
                  f"- 代码版本：`{self.meta['commit']}`"
                  + ("（**有未提交改动**）" if self.meta["firmware_dirty"] else ""),
-                 f"- 收到：{self.counts['T']} 帧遥测 / {self.counts['P']} 帧参数 / {self.counts['E']} 个事件", ""]
+                 f"- 收到：{self.counts['T']} 帧遥测 / {self.counts['P']} 帧参数 / "
+                 f"{self.counts['E']} 个事件 / {self.counts['U']} 帧超声波", ""]
         if self.events:
             lines += ["## 事件", ""]
             lines += [f"- {e['ms'] / 1000:.2f}s  事件 {e['code']}：{e['note']}" for e in self.events]

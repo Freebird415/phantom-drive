@@ -38,24 +38,27 @@ def main():
 
     rows = telemetry.load_csv(csv_path)
     t_frames = [r for r in rows if r["kind"] == "T"]
+    u_frames = [r for r in rows if r["kind"] == "U"]
     events = [r for r in rows if r["kind"] == "E"]
     params = [r for r in rows if r["kind"] == "P"]
 
-    if not t_frames:
-        sys.exit("日志里没有 $T 遥测帧，画不了图。先确认采集时是否收到数据。")
+    if not t_frames and not u_frames:
+        sys.exit("日志里既没有 $T 也没有 $U 帧，画不了图。先确认采集时是否收到数据。")
 
-    t = [int(r["ms"]) / 1000 for r in t_frames]
-    err = [float(r["err"]) for r in t_frames]
-    pwm_l = [int(r["pwm_l"]) for r in t_frames]
-    pwm_r = [int(r["pwm_r"]) for r in t_frames]
+    t = [int(r["ms"]) / 1000 for r in t_frames] or [0.0]
+    err = [float(r["err"]) for r in t_frames] or [0.0]
+    pwm_l = [int(r["pwm_l"]) for r in t_frames] or [0]
+    pwm_r = [int(r["pwm_r"]) for r in t_frames] or [0]
     sensors = [[int(r[f"s{i}"]) for r in t_frames] for i in range(8)]
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 8), sharex=True)
+    n_panels = 4 if u_frames else 3
+    fig, axes = plt.subplots(n_panels, 1, figsize=(11, 2.6 * n_panels), sharex=True)
 
     # ① 八路传感器：黑色=压线，一眼看出线走到了哪一路
-    axes[0].imshow(sensors, aspect="auto", cmap="Greys",
-                   interpolation="nearest",
-                   extent=[t[0], t[-1], 7.5, -0.5])
+    if t_frames:
+        axes[0].imshow(sensors, aspect="auto", cmap="Greys",
+                       interpolation="nearest",
+                       extent=[t[0], t[-1], 7.5, -0.5])
     axes[0].set_ylabel("传感器 0-7")
     axes[0].set_title("循迹传感器（黑=压线）")
 
@@ -72,6 +75,19 @@ def main():
     axes[2].set_xlabel("时间 (s)")
     axes[2].set_title("左右轮 PWM")
     axes[2].legend(loc="upper right", fontsize=8)
+
+    # ④ 超声波（有 $U 帧才画）：-1 = 无回波，断开显示（不连成假线）
+    if u_frames:
+        nan = float("nan")
+        tu = [int(r["ms"]) / 1000 for r in u_frames]
+        lm = [int(r["l_mm"]) if int(r["l_mm"]) >= 0 else nan for r in u_frames]
+        rm = [int(r["r_mm"]) if int(r["r_mm"]) >= 0 else nan for r in u_frames]
+        axes[3].plot(tu, lm, label="左 PA4/PA5", color="#1f77b4", lw=1.2)
+        axes[3].plot(tu, rm, label="右 PA1/PB5", color="#d62728", lw=1.2)
+        axes[3].set_ylabel("mm")
+        axes[3].set_xlabel("时间 (s)")
+        axes[3].set_title("超声波测距（-1 = 无回波，已断开）")
+        axes[3].legend(loc="upper right", fontsize=8)
 
     # 事件：竖虚线 + 标注
     for e in events:
