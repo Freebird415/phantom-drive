@@ -16,6 +16,7 @@
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
+#include "drv/drv_mpu6050.h"
 #include "app/app_telemetry.h"
 
 #include <stdio.h>
@@ -32,6 +33,7 @@ int main(void)
     Mo_Init();
     En_Init();
     Hmi_Init();
+    Mpu_Init();
     Bsp_UartInit();
     Tlm_Init();
 

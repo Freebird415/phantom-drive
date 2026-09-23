@@ -20,6 +20,10 @@ uint32_t Bsp_Micros(void);
 void Bsp_UartInit(void);
 UART_HandleTypeDef *Bsp_Uart(void);
 
+/* ---- 串口2：USART2 115200 8N1（PA2 = TX，PA3 = RX）→ BLE 蓝牙调试通道 ---- */
+void Bsp_Uart2Init(void);
+UART_HandleTypeDef *Bsp_Uart2(void);
+
 /* ---- 指示灯：核心板 PC13（低电平点亮） ---- */
 void Bsp_LedInit(void);
 void Bsp_LedToggle(void);

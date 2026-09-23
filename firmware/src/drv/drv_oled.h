@@ -26,6 +26,7 @@
 #define OLED_H      64
 
 void    Ol_Init(void);          /* I2C2 初始化 */
+I2C_HandleTypeDef *Ol_Bus(void); /* 暴露 I2C2 句柄（MPU6050 等共用同一条总线） */
 void    Ol_Present(void);       /* 探测并打印地址（0x3C/0x3D） */
 void    Ol_PrintDebug(void);    /* 初始化 + 画棋盘测试图案（bring-up） */
 void    Ol_TextTest(void);      /* ★ 中英文混排测试页 + 报告缺失字符 */

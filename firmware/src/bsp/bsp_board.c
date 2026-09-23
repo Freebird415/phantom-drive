@@ -67,6 +67,19 @@ int _write(int fd, char *ptr, int len)
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 {
     GPIO_InitTypeDef gpio = {0};
+
+    if (huart->Instance == USART2) {          /* BLE：PA2=TX / PA3=RX */
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+        __HAL_RCC_USART2_CLK_ENABLE();
+        gpio.Pin = GPIO_PIN_2; gpio.Mode = GPIO_MODE_AF_PP; gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(GPIOA, &gpio);
+        gpio.Pin = GPIO_PIN_3; gpio.Mode = GPIO_MODE_INPUT; gpio.Pull = GPIO_PULLUP;
+        HAL_GPIO_Init(GPIOA, &gpio);
+        HAL_NVIC_SetPriority(USART2_IRQn, 1, 0);
+        HAL_NVIC_EnableIRQ(USART2_IRQn);
+        return;
+    }
+
     if (huart->Instance != USART1) { return; }
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -143,4 +156,27 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c)
         gpio.Speed = GPIO_SPEED_FREQ_HIGH;
         HAL_GPIO_Init(GPIOB, &gpio);
     }
+}
+
+/* ==================== USART2（BLE 蓝牙调试通道） ==================== */
+static UART_HandleTypeDef s_huart2;
+
+UART_HandleTypeDef *Bsp_Uart2(void) { return &s_huart2; }
+
+void Bsp_Uart2Init(void)
+{
+    s_huart2.Instance          = USART2;
+    s_huart2.Init.BaudRate     = 115200;
+    s_huart2.Init.WordLength   = UART_WORDLENGTH_8B;
+    s_huart2.Init.StopBits     = UART_STOPBITS_1;
+    s_huart2.Init.Parity       = UART_PARITY_NONE;
+    s_huart2.Init.Mode         = UART_MODE_TX_RX;
+    s_huart2.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+    s_huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+    if (HAL_UART_Init(&s_huart2) != HAL_OK) { while (1) { } }
+}
+
+void USART2_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&s_huart2);
 }

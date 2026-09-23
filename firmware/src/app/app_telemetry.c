@@ -10,6 +10,7 @@
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
+#include "drv/drv_mpu6050.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -43,6 +44,11 @@ void Tlm_SendU(uint32_t ms, int32_t l_mm, int32_t r_mm)
 {
     printf("$U,%u,%d,%d\r\n", (unsigned)ms, (int)l_mm, (int)r_mm);
 }
+
+/* ---- BLE（USART2）回声：手机发什么就回什么，同时打到 USART1 调试口 ---- */
+static char    s_bleline[64];
+static uint8_t s_blerlen = 0;
+static uint8_t s_blebyte;
 
 /* ==================== 收命令 ====================
    重要：中断里**只收行**，命令执行放到主循环（Tlm_Poll）。
@@ -86,6 +92,17 @@ static void handle_command(char *line)
         char c = line[5];
         s_us_auto = (c == '0') ? 0u : (c == '2') ? 2u : (c == '3') ? 3u : 1u;
         printf("# AUTO=%u\r\n", (unsigned)s_us_auto);
+        return;
+    }
+
+    /* ---- MPU6050（诊断用） ---- */
+    if (strcmp(line, "MPU") == 0) { Mpu_PrintDebug(); return; }
+
+    /* ---- BLE：主动发一句给手机 ---- */
+    if (strncmp(line, "BT ", 3) == 0) {
+        printf("# BLE> %s\r\n", line + 3);
+        HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)(line + 3), (uint16_t)strlen(line + 3), 100);
+        HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)"\r\n", 2, 100);
         return;
     }
 
@@ -147,6 +164,17 @@ static void handle_command(char *line)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+    if (huart->Instance == USART2) {          /* BLE：原样回声 + 打到调试口 */
+        char c = (char)s_blebyte;
+        HAL_UART_Transmit(Bsp_Uart2(), &s_blebyte, 1, 50);
+        if (c == '\n' || c == '\r') {
+            if (s_blerlen > 0) { s_bleline[s_blerlen] = 0; printf("# BLE< %s\r\n", s_bleline); s_blerlen = 0; }
+        } else if (s_blerlen < sizeof(s_bleline) - 1) {
+            s_bleline[s_blerlen++] = c;
+        } else { s_blerlen = 0; }
+        HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        return;
+    }
     if (huart->Instance == USART1) {
         char c = (char)s_rxbyte;
         if (c == '\n' || c == '\r') {
@@ -179,4 +207,5 @@ void Tlm_Poll(void)
 void Tlm_Init(void)
 {
     HAL_UART_Receive_IT(Bsp_Uart(), &s_rxbyte, 1);
+    HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);   /* BLE 通道也开收 */
 }

@@ -53,6 +53,8 @@ void Ol_Init(void)
     (void)HAL_I2C_Init(&s_i2c2);
 }
 
+I2C_HandleTypeDef *Ol_Bus(void) { return &s_i2c2; }
+
 void Ol_Present(void)
 {
     uint8_t a = ol_probe();
