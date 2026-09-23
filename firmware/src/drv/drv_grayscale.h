@@ -1,0 +1,35 @@
+/* =============================================================================
+ *  drv_grayscale.h —— 感为八路灰度（I2C 模式）
+ *
+ *  接线（见 docs/引脚分配表.md v3.0，模块 16P 针序）：
+ *      1 = GND   2 = +5V        15 = SCL → PB8    16 = SDA → PB9
+ *      （5~12 并行、13/14 串行：本设计不用）
+ *
+ *  ⚠️ 三条硬约束（不满足会时通时不通，甚至打坏器件）：
+ *   1) **上拉必须是 5V**：感为手册原文「如果外置上拉源，灰度传感器要求总线最低上拉源为
+ *      72% 的供电电压」→ 72%×5V = 3.6V，**3.3V 上拉不达标**。
+ *      面包板阶段最省事的做法：**把感为板载的「SCL上拉 / SDA上拉」跳线帽插上**（板载 5V/10k）。
+ *      PB8/PB9 是 FT（5V 容忍）脚，open-drain 允许 5V 上拉。
+ *   2) 一个 I2C 总线上**只允许一处上拉源** —— 插了板载跳帽就不要再并 3.3V 上拉。
+ *   3) 这条总线（I2C1，上拉 5V）**绝不能**挂 3.3V 器件（OLED / MPU6050 走 I2C2）。
+ *
+ *  I2C 7bit 地址 = 0b1001_11_AD1_AD0：不装跳线帽 = **0x4C**；两颗都装 = 0x4F。
+ *  命令符（手册 §7）：0xAA ping→0x66 ｜ 0xDD 读数字量(1B) ｜ 0xB0 连续读模拟量(8B)
+ *                    0xB1~0xB8 单路模拟 ｜ 0xC0 重启 ｜ 0xC1 版本 ｜ 0xDE 错误信息
+ * ========================================================================== */
+#ifndef DRV_GRAYSCALE_H
+#define DRV_GRAYSCALE_H
+
+#include "stm32f1xx_hal.h"
+#include <stdint.h>
+
+#define GR_ADDR7        0x4C        /* 7bit 地址（HAL 内部左移） */
+
+void    Gr_Init(void);
+uint8_t Gr_Ping(void);              /* 1 = 收到 0x66，设备在线 */
+uint8_t Gr_ReadDigital(void);       /* 1 字节：bit0=第1路 … bit7=第8路（手册：LED 亮=1） */
+uint8_t Gr_ReadAnalog(uint8_t out[8]);  /* 8 路模拟量 0~255 */
+void    Gr_Scan(void);              /* 扫 I2C 总线：哪些地址有应答（排查接线/上拉/地址最有效） */
+void    Gr_PrintDebug(void);        /* 打一行人可读：ping + 数字量 + 8 路模拟量 */
+
+#endif /* DRV_GRAYSCALE_H */

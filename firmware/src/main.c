@@ -11,6 +11,7 @@
  * ========================================================================== */
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
+#include "drv/drv_grayscale.h"
 #include "app/app_telemetry.h"
 
 #include <stdio.h>
@@ -22,6 +23,7 @@ int main(void)
     Bsp_TimeInit();          /* DWT：µs 计时，超声波要用 */
     Bsp_LedInit();
     Us_Init();
+    Gr_Init();
     Bsp_UartInit();
     Tlm_Init();
 

@@ -5,6 +5,7 @@
 #include "app_telemetry.h"
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
+#include "drv/drv_grayscale.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -62,6 +63,14 @@ static void handle_command(char *line)
     }
     if (strcmp(line, "GET") == 0) {
         Tlm_SendParams();
+        return;
+    }
+    if (strcmp(line, "GRSCAN") == 0) {          /* 扫总线：接线/上拉/地址排错用 */
+        Gr_Scan();
+        return;
+    }
+    if (strcmp(line, "GR") == 0) {              /* 灰度自检：ping + 数字量 + 8 路模拟量 */
+        Gr_PrintDebug();
         return;
     }
     if (line[0] == 'U' && line[1] == 'S') {        /* US / "US <id> <n>" —— 对着串口调接线用 */
