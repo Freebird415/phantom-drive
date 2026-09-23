@@ -15,6 +15,7 @@
 #include "drv/drv_oled.h"
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
+#include "drv/drv_hmi.h"
 #include "app/app_telemetry.h"
 
 #include <stdio.h>
@@ -30,6 +31,7 @@ int main(void)
     Ol_Init();
     Mo_Init();
     En_Init();
+    Hmi_Init();
     Bsp_UartInit();
     Tlm_Init();
 

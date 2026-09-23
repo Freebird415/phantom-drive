@@ -9,6 +9,7 @@
 #include "drv/drv_oled.h"
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
+#include "drv/drv_hmi.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -85,6 +86,17 @@ static void handle_command(char *line)
         char c = line[5];
         s_us_auto = (c == '0') ? 0u : (c == '2') ? 2u : (c == '3') ? 3u : 1u;
         printf("# AUTO=%u\r\n", (unsigned)s_us_auto);
+        return;
+    }
+
+    /* ---- 人机：按键 + 蜂鸣器 ---- */
+    if (strcmp(line, "KEY") == 0)  { Hmi_PrintDebug(); return; }
+    if (strncmp(line, "BEEP", 4) == 0) {
+        int ms = 200;
+        if (line[4] == ' ') { (void)sscanf(line + 5, "%d", &ms); }
+        if (ms < 1) { ms = 1; } if (ms > 3000) { ms = 3000; }
+        printf("HMI> 蜂鸣 %d ms\r\n", ms);
+        Hmi_Beep((uint16_t)ms);
         return;
     }
 
