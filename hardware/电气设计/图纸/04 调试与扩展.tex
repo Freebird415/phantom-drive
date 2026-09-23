@@ -1,0 +1,142 @@
+\documentclass{article}
+\usepackage[paperwidth=60cm,paperheight=120cm,margin=0pt]{geometry}
+\usepackage{fontspec}\setmainfont{Latin Modern Roman}
+\usepackage{xeCJK}\setCJKmainfont{Microsoft YaHei}
+\usepackage{amsmath, amssymb, siunitx}
+\usepackage[american]{circuitikz}
+\ctikzset{bipoles/length=1.2cm}
+% 不用 standalone：它自家的裁边在 xelatex 下不生效，长图会被 letter 页面截掉尾部。
+% 改用 preview 把页面尺寸严格设成内容尺寸（自动裁边）。
+\usepackage[active,tightpage]{preview}
+\PreviewEnvironment{circuitikz}
+\setlength\PreviewBorder{8pt}
+\pagestyle{empty}
+\begin{document}
+
+\begin{circuitikz}
+\small
+\node[anchor=east, font=\bfseries\small] at (4.55,0.00) {MCU\ /\ 电源};
+\node[anchor=west, font=\bfseries\small] at (4.95,0.00) {网络名};
+\node[anchor=west, font=\bfseries\small] at (12.45,0.00) {连接器针脚};
+\node[anchor=west, font=\bfseries\small] at (12.30,-0.60) {BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-0.98) {按实物做封装（不要按 HC-06 4P 底板猜）；VCC 取 3.3V（模块标称 2.2~5V）；天线端朝板边并留 keep-out};
+\node[anchor=east, font=\small] at (4.55,-1.84) {—\ \textperiodcentered\ GPIO1：悬空/预留};
+\draw (4.85,-1.84) -- (12.30,-1.84);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-1.79) {NC};
+\node[anchor=west, font=\small] at (12.48,-1.84) {1\,--\,GPIO1};
+\node[anchor=east, font=\small] at (4.55,-2.58) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-2.58) -- (12.30,-2.58);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-2.53) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-2.58) {2\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-3.32) {GND};
+\draw (4.85,-3.32) -- (12.30,-3.32);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-3.27) {GND};
+\node[anchor=west, font=\small] at (12.48,-3.32) {3\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-4.06) {PA3\ \textperiodcentered\ USART2\_RX};
+\draw (4.85,-4.06) -- (12.30,-4.06);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.01) {BLE\_TXD};
+\node[anchor=west, font=\small] at (12.48,-4.06) {4\,--\,TXD};
+\node[anchor=east, font=\small] at (4.55,-4.80) {PA2\ \textperiodcentered\ USART2\_TX};
+\draw (4.85,-4.80) -- (12.30,-4.80);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.75) {BLE\_RXD};
+\node[anchor=west, font=\small] at (12.48,-4.80) {5\,--\,RXD};
+\node[anchor=east, font=\small] at (4.55,-5.54) {—\ \textperiodcentered\ GPIO2：悬空/预留};
+\draw (4.85,-5.54) -- (12.30,-5.54);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-5.49) {NC};
+\node[anchor=west, font=\small] at (12.48,-5.54) {6\,--\,GPIO2};
+\draw[rounded corners=2pt] (12.30,-1.42) rectangle (18.40,-5.84);
+\node[anchor=west, font=\bfseries\small] at (12.30,-6.44) {遥测串口 USB-TTL（XH2.54-4P）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-6.82) {USART1 · 115200 8N1（后续可升 460800）· 帧格式见 docs/遥测协议.md（已冻结）};
+\node[anchor=east, font=\small] at (4.55,-7.68) {5V\ \textperiodcentered\ TTL 电源脚可不接};
+\draw (4.85,-7.68) -- (12.30,-7.68);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-7.63) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-7.68) {1\,--\,5V};
+\node[anchor=east, font=\small] at (4.55,-8.42) {PA9\ \textperiodcentered\ USART1\_TX};
+\draw (4.85,-8.42) -- (12.30,-8.42);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-8.37) {UART1\_TX};
+\node[anchor=west, font=\small] at (12.48,-8.42) {2\,--\,RXD};
+\node[anchor=east, font=\small] at (4.55,-9.16) {PA10\ \textperiodcentered\ USART1\_RX};
+\draw (4.85,-9.16) -- (12.30,-9.16);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-9.11) {UART1\_RX};
+\node[anchor=west, font=\small] at (12.48,-9.16) {3\,--\,TXD};
+\node[anchor=east, font=\small] at (4.55,-9.90) {GND};
+\draw (4.85,-9.90) -- (12.30,-9.90);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-9.85) {GND};
+\node[anchor=west, font=\small] at (12.48,-9.90) {4\,--\,GND};
+\draw[rounded corners=2pt] (12.30,-7.26) rectangle (18.40,-10.20);
+\node[anchor=west, font=\bfseries\small] at (12.30,-10.80) {SWD 调试排针（1×5）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-11.18) {NRST 必须引出：关掉 JTAG 后靠它「连接下复位」救板（核心板自带 4pin SWD 没有 NRST）};
+\node[anchor=east, font=\small] at (4.55,-12.04) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-12.04) -- (12.30,-12.04);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-11.99) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-12.04) {1\,--\,3V3};
+\node[anchor=east, font=\small] at (4.55,-12.78) {PA13};
+\draw (4.85,-12.78) -- (12.30,-12.78);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-12.73) {SWDIO};
+\node[anchor=west, font=\small] at (12.48,-12.78) {2\,--\,SWDIO};
+\node[anchor=east, font=\small] at (4.55,-13.52) {PA14};
+\draw (4.85,-13.52) -- (12.30,-13.52);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-13.47) {SWCLK};
+\node[anchor=west, font=\small] at (12.48,-13.52) {3\,--\,SWCLK};
+\node[anchor=east, font=\small] at (4.55,-14.26) {NRST\ \textperiodcentered\ 核心板 R 脚};
+\draw (4.85,-14.26) -- (12.30,-14.26);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-14.21) {NRST};
+\node[anchor=west, font=\small] at (12.48,-14.26) {4\,--\,NRST};
+\node[anchor=east, font=\small] at (4.55,-15.00) {GND};
+\draw (4.85,-15.00) -- (12.30,-15.00);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-14.95) {GND};
+\node[anchor=west, font=\small] at (12.48,-15.00) {5\,--\,GND};
+\draw[rounded corners=2pt] (12.30,-11.62) rectangle (18.40,-15.30);
+\node[anchor=west, font=\bfseries\small] at (12.30,-15.90) {按键 / 蜂鸣器 / 指示灯};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-16.28) {核心板已自带复位键、BOOT0 跳线帽、电源灯 → PCB 上不重复};
+\node[anchor=east, font=\small] at (4.55,-17.14) {PA12\ \textperiodcentered\ 板上已有 1.5k 上拉};
+\draw (4.85,-17.14) -- (12.30,-17.14);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-17.09) {KEY};
+\node[anchor=west, font=\small] at (12.48,-17.14) {—\,--\,用户按键 → GND};
+\node[anchor=east, font=\small] at (4.55,-17.88) {PB15\ \textperiodcentered\ 1k 基极电阻};
+\draw (4.85,-17.88) -- (12.30,-17.88);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-17.83) {BUZZER};
+\node[anchor=west, font=\small] at (12.48,-17.88) {—\,--\,NPN(S8050) → 有源蜂鸣器 → 5V，并联续流二极管};
+\node[anchor=east, font=\small] at (4.55,-18.62) {12V\ \textperiodcentered\ 1k 限流};
+\draw (4.85,-18.62) -- (12.30,-18.62);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-18.57) {LED\_12V};
+\node[anchor=west, font=\small] at (12.48,-18.62) {—\,--\,12V 电源指示灯 → GND};
+\draw[rounded corners=2pt] (12.30,-16.72) rectangle (18.40,-18.92);
+\node[anchor=west, font=\bfseries\small] at (12.30,-19.52) {预留排针（2×4）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-19.90) {3 路空闲 IO（PA15/PB3/PB4 需关 JTAG）+ 电源；示波器 / 逻辑分析仪 / 后续扩展};
+\node[anchor=east, font=\small] at (4.55,-20.76) {PA15\ \textperiodcentered\ 需关 JTAG};
+\draw (4.85,-20.76) -- (12.30,-20.76);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-20.71) {SPARE1};
+\node[anchor=west, font=\small] at (12.48,-20.76) {1\,--\,SPARE1};
+\node[anchor=east, font=\small] at (4.55,-21.50) {PB3\ \textperiodcentered\ 需关 JTAG};
+\draw (4.85,-21.50) -- (12.30,-21.50);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-21.45) {SPARE2};
+\node[anchor=west, font=\small] at (12.48,-21.50) {2\,--\,SPARE2};
+\node[anchor=east, font=\small] at (4.55,-22.24) {PB4\ \textperiodcentered\ 需关 JTAG};
+\draw (4.85,-22.24) -- (12.30,-22.24);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-22.19) {SPARE3};
+\node[anchor=west, font=\small] at (12.48,-22.24) {3\,--\,SPARE3};
+\node[anchor=east, font=\small] at (4.55,-22.98) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-22.98) -- (12.30,-22.98);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-22.93) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-22.98) {4\,--\,3V3};
+\node[anchor=east, font=\small] at (4.55,-23.72) {5V};
+\draw (4.85,-23.72) -- (12.30,-23.72);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-23.67) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-23.72) {5\,--\,5V};
+\node[anchor=east, font=\small] at (4.55,-24.46) {GND};
+\draw (4.85,-24.46) -- (12.30,-24.46);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-24.41) {GND};
+\node[anchor=west, font=\small] at (12.48,-24.46) {6\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-25.20) {GND};
+\draw (4.85,-25.20) -- (12.30,-25.20);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-25.15) {GND};
+\node[anchor=west, font=\small] at (12.48,-25.20) {7\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-25.94) {12V\ \textperiodcentered\ 经保险丝+反接保护};
+\draw (4.85,-25.94) -- (12.30,-25.94);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-25.89) {12V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-25.94) {8\,--\,12V};
+\draw[rounded corners=2pt] (12.30,-20.34) rectangle (18.40,-26.24);
+\node[anchor=west, font=\scriptsize\itshape] at (0,-27.14) {网络名 = 嘉立创 EDA 里的网络标号：两边同名即同一根线。电源（12V\_BUS / 5V\_BUS / 3V3\_LOGIC / GND）同样用网络标号表示，不画共用母线。逐针定义与电气约束见 电气连接规范.md；引脚契约见 docs/引脚分配表.md。};
+\end{circuitikz}
+\end{document}

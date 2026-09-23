@@ -1,0 +1,119 @@
+\documentclass{article}
+\usepackage[paperwidth=60cm,paperheight=120cm,margin=0pt]{geometry}
+\usepackage{fontspec}\setmainfont{Latin Modern Roman}
+\usepackage{xeCJK}\setCJKmainfont{Microsoft YaHei}
+\usepackage{amsmath, amssymb, siunitx}
+\usepackage[american]{circuitikz}
+\ctikzset{bipoles/length=1.2cm}
+% 不用 standalone：它自家的裁边在 xelatex 下不生效，长图会被 letter 页面截掉尾部。
+% 改用 preview 把页面尺寸严格设成内容尺寸（自动裁边）。
+\usepackage[active,tightpage]{preview}
+\PreviewEnvironment{circuitikz}
+\setlength\PreviewBorder{8pt}
+\pagestyle{empty}
+\begin{document}
+
+\begin{circuitikz}
+\small
+\node[anchor=east, font=\bfseries\small] at (4.55,0.00) {MCU\ /\ 电源};
+\node[anchor=west, font=\bfseries\small] at (4.95,0.00) {网络名};
+\node[anchor=west, font=\bfseries\small] at (12.45,0.00) {连接器针脚};
+\node[anchor=west, font=\bfseries\small] at (12.30,-0.60) {TB6612FNG 电机驱动模块};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-0.98) {方向线用 PB0/PB1/PB12/PB13（无需关 JTAG）；VM 大电流不走排针；AIN/BIN/STBY 各 10k 下拉};
+\node[anchor=east, font=\small] at (4.55,-1.84) {PA8\ \textperiodcentered\ TIM1\_CH1};
+\draw (4.85,-1.84) -- (12.30,-1.84);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-1.79) {PWM\_L};
+\node[anchor=west, font=\small] at (12.48,-1.84) {1\,--\,PWMA};
+\node[anchor=east, font=\small] at (4.55,-2.58) {PA11\ \textperiodcentered\ TIM1\_CH4};
+\draw (4.85,-2.58) -- (12.30,-2.58);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-2.53) {PWM\_R};
+\node[anchor=west, font=\small] at (12.48,-2.58) {2\,--\,PWMB};
+\node[anchor=east, font=\small] at (4.55,-3.32) {PB0};
+\draw (4.85,-3.32) -- (12.30,-3.32);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-3.27) {AIN1\_L};
+\node[anchor=west, font=\small] at (12.48,-3.32) {3\,--\,AIN1};
+\node[anchor=east, font=\small] at (4.55,-4.06) {PB1};
+\draw (4.85,-4.06) -- (12.30,-4.06);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.01) {AIN2\_L};
+\node[anchor=west, font=\small] at (12.48,-4.06) {4\,--\,AIN2};
+\node[anchor=east, font=\small] at (4.55,-4.80) {PB12};
+\draw (4.85,-4.80) -- (12.30,-4.80);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.75) {BIN1\_R};
+\node[anchor=west, font=\small] at (12.48,-4.80) {5\,--\,BIN1};
+\node[anchor=east, font=\small] at (4.55,-5.54) {PB13};
+\draw (4.85,-5.54) -- (12.30,-5.54);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-5.49) {BIN2\_R};
+\node[anchor=west, font=\small] at (12.48,-5.54) {6\,--\,BIN2};
+\node[anchor=east, font=\small] at (4.55,-6.28) {PB14\ \textperiodcentered\ 10k 上拉 + 跳线};
+\draw (4.85,-6.28) -- (12.30,-6.28);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-6.23) {STBY};
+\node[anchor=west, font=\small] at (12.48,-6.28) {7\,--\,STBY};
+\node[anchor=east, font=\small] at (4.55,-7.02) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-7.02) -- (12.30,-7.02);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-6.97) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-7.02) {8\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-7.76) {GND};
+\draw (4.85,-7.76) -- (12.30,-7.76);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-7.71) {GND};
+\node[anchor=west, font=\small] at (12.48,-7.76) {9\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-8.50) {12V\ \textperiodcentered\ 470~1000µF 就近};
+\draw (4.85,-8.50) -- (12.30,-8.50);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-8.45) {12V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-8.50) {10\,--\,VM};
+\draw[rounded corners=2pt] (12.30,-1.42) rectangle (18.40,-8.80);
+\node[anchor=west, font=\bfseries\small] at (12.30,-9.40) {左电机 JST-XH 6P 座（电机自带线）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-9.78) {针序=电机尾板实测：1 M1 / 2 GND / 3 C2 / 4 C1 / 5 VCC / 6 M2；C1/C2 串 100Ω、可选并 1nF};
+\node[anchor=east, font=\small] at (4.55,-10.64) {TB6612 AO1\ \textperiodcentered\ 大电流};
+\draw (4.85,-10.64) -- (12.30,-10.64);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-10.59) {MOTOR\_L\_M1};
+\node[anchor=west, font=\small] at (12.48,-10.64) {1\,--\,M1};
+\node[anchor=east, font=\small] at (4.55,-11.38) {GND};
+\draw (4.85,-11.38) -- (12.30,-11.38);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-11.33) {GND};
+\node[anchor=west, font=\small] at (12.48,-11.38) {2\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-12.12) {PB7\ \textperiodcentered\ TIM4\_CH2};
+\draw (4.85,-12.12) -- (12.30,-12.12);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-12.07) {ENC\_L\_C2};
+\node[anchor=west, font=\small] at (12.48,-12.12) {3\,--\,C2};
+\node[anchor=east, font=\small] at (4.55,-12.86) {PB6\ \textperiodcentered\ TIM4\_CH1};
+\draw (4.85,-12.86) -- (12.30,-12.86);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-12.81) {ENC\_L\_C1};
+\node[anchor=west, font=\small] at (12.48,-12.86) {4\,--\,C1};
+\node[anchor=east, font=\small] at (4.55,-13.60) {5V\ \textperiodcentered\ 实测编码器走 5V};
+\draw (4.85,-13.60) -- (12.30,-13.60);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-13.55) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-13.60) {5\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-14.34) {TB6612 AO2\ \textperiodcentered\ 大电流};
+\draw (4.85,-14.34) -- (12.30,-14.34);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-14.29) {MOTOR\_L\_M2};
+\node[anchor=west, font=\small] at (12.48,-14.34) {6\,--\,M2};
+\draw[rounded corners=2pt] (12.30,-10.22) rectangle (18.40,-14.64);
+\node[anchor=west, font=\bfseries\small] at (12.30,-15.24) {右电机 JST-XH 6P 座（电机自带线）};
+\node[anchor=east, font=\small] at (4.55,-16.08) {TB6612 BO1\ \textperiodcentered\ 大电流};
+\draw (4.85,-16.08) -- (12.30,-16.08);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-16.03) {MOTOR\_R\_M1};
+\node[anchor=west, font=\small] at (12.48,-16.08) {1\,--\,M1};
+\node[anchor=east, font=\small] at (4.55,-16.82) {GND};
+\draw (4.85,-16.82) -- (12.30,-16.82);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-16.77) {GND};
+\node[anchor=west, font=\small] at (12.48,-16.82) {2\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-17.56) {PA7\ \textperiodcentered\ TIM3\_CH2};
+\draw (4.85,-17.56) -- (12.30,-17.56);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-17.51) {ENC\_R\_C2};
+\node[anchor=west, font=\small] at (12.48,-17.56) {3\,--\,C2};
+\node[anchor=east, font=\small] at (4.55,-18.30) {PA6\ \textperiodcentered\ TIM3\_CH1};
+\draw (4.85,-18.30) -- (12.30,-18.30);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-18.25) {ENC\_R\_C1};
+\node[anchor=west, font=\small] at (12.48,-18.30) {4\,--\,C1};
+\node[anchor=east, font=\small] at (4.55,-19.04) {5V\ \textperiodcentered\ 实测编码器走 5V};
+\draw (4.85,-19.04) -- (12.30,-19.04);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-18.99) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-19.04) {5\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-19.78) {TB6612 BO2\ \textperiodcentered\ 大电流};
+\draw (4.85,-19.78) -- (12.30,-19.78);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-19.73) {MOTOR\_R\_M2};
+\node[anchor=west, font=\small] at (12.48,-19.78) {6\,--\,M2};
+\draw[rounded corners=2pt] (12.30,-15.66) rectangle (18.40,-20.08);
+\node[anchor=west, font=\scriptsize\itshape] at (0,-20.98) {网络名 = 嘉立创 EDA 里的网络标号：两边同名即同一根线。电源（12V\_BUS / 5V\_BUS / 3V3\_LOGIC / GND）同样用网络标号表示，不画共用母线。逐针定义与电气约束见 电气连接规范.md；引脚契约见 docs/引脚分配表.md。};
+\end{circuitikz}
+\end{document}

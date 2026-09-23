@@ -1,85 +1,123 @@
 {
   "_readme": "全车电气连接网络表（机器可读）。生成自 生成接线图.py，勿手改；改数据后重跑脚本。",
+  "_version": "v3.0",
   "_authority": [
     "docs/引脚分配表.md",
-    "hardware/原理图草案/电气连接规范.md"
+    "hardware/电气设计/电气连接规范.md"
   ],
-  "_generated": "2026-09-20",
   "board": {
-    "mcu": "STM32F103C8T6 最小系统板（Blue Pill 克隆；micro-USB；板载 8MHz + 32.768kHz 晶振）",
+    "mcu": "STM32F103C8T6 最小系统板（Blue Pill 克隆；micro-USB；板载 8MHz + 32.768kHz 晶振；板载 RT9193 LDO）",
+    "pcb": "单板（功率与逻辑同板）",
     "unusable_pins": {
       "PD0": "8MHz 晶振占用",
       "PD1": "8MHz 晶振占用",
       "PC14": "32.768kHz 晶振占用",
-      "PC15": "32.768kHz 晶振占用"
+      "PC15": "32.768kHz 晶振占用",
+      "PB2": "BOOT1 —— 复位时被拉高会从 SRAM 启动，禁止接任何会拉高的信号/按键",
+      "PA13/PA14": "保留给 SWD，不得作 GPIO"
     },
-    "supply": "单电源 12V 锂电 → 3A 慢断保险丝 → P-MOS 反接保护 → TB6612 VM；MP1584→5V；3.3V 由核心板 RT9193 输出",
+    "jtag": "关闭 JTAG 保留 SWD（__HAL_AFIO_REMAP_SWJ_NOJTAG）→ 释放 PA15/PB3/PB4 作预留；NRST 已引到 SWD 排针，可用「连接下复位」恢复",
+    "supply": "单电源 12V 锂电 → DC005/2P焊盘 → T3A 慢断保险丝 → AO4407A P-MOS 反接保护 → 总开关 → 12V_BUS；MP1584 → 5V_BUS；3V3_LOGIC 由核心板 RT9193 输出（≤300mA）",
     "power_buses": [
-      "12V",
-      "5V",
-      "3V3",
+      "12V_BUS",
+      "5V_BUS",
+      "3V3_LOGIC",
       "GND"
+    ],
+    "power_rules": [
+      "核心板 5V 脚与 3V3 脚只能接一个（本项目接 5V）；本板不得自行产生 3.3V",
+      "I2C1（灰度）上拉 5V；I2C2（OLED+MPU6050）上拉 3.3V；两条总线绝不并联"
     ]
   },
   "pinmap": {
-    "PA0": "ENC_L_A · TIM2_CH1 编码器",
-    "PA1": "ENC_L_B · TIM2_CH2 编码器",
-    "PA2": "USART2_TX · HC-06",
-    "PA3": "USART2_RX · HC-06",
-    "PA4": "US_L_TRIG",
-    "PA5": "US_L_ECHO（2k/3.3k 分压）",
-    "PA6": "ENC_R_A · TIM3_CH1 编码器",
-    "PA7": "ENC_R_B · TIM3_CH2 编码器",
-    "PA8": "US_R_TRIG",
-    "PA9": "USART1_TX · 遥测",
-    "PA10": "USART1_RX · 遥测",
-    "PA11": "STBY · TB6612 使能（原 USB DM，只作输出）",
-    "PA12": "预留（原 USB DP，板上 1.5k 上拉，勿作输入）",
-    "PA13": "SWDIO",
-    "PA14": "SWCLK",
-    "PA15": "US_R_ECHO（需关 JTAG）",
-    "PB0": "VBAT_SENSE · ADC1_IN8（100k/10k 分压）",
-    "PB1": "BUZZER（蜂鸣器，定时器中断翻转）",
-    "PB2": "KEY（用户按键，10k 上拉 + 100nF 去抖）",
-    "PB3": "预留（需关 JTAG）",
-    "PB4": "预留（需关 JTAG）",
-    "PB5": "预留",
-    "PB6": "PWM_L · TIM4_CH1（20 kHz）",
-    "PB7": "PWM_R · TIM4_CH2（20 kHz）",
-    "PB8": "I2C1_SCL（重映射）· 灰度 5V 总线",
-    "PB9": "I2C1_SDA（重映射）· 灰度 5V 总线",
-    "PB10": "I2C2_SCL · OLED + MPU6050（3.3V 总线）",
-    "PB11": "I2C2_SDA · OLED + MPU6050（3.3V 总线）",
-    "PB12": "AIN1 · TB6612 左方向",
-    "PB13": "AIN2 · TB6612 左方向",
-    "PB14": "BIN1 · TB6612 右方向",
-    "PB15": "BIN2 · TB6612 右方向",
+    "PA0": "VBAT_SENSE · ADC1_IN0（100k/10k 分压 + 100nF）",
+    "PA1": "US_R_TRIG · 右超声波触发",
+    "PA2": "USART2_TX · BLE 模块 RXD",
+    "PA3": "USART2_RX · BLE 模块 TXD",
+    "PA4": "US_L_TRIG · 左超声波触发",
+    "PA5": "US_L_ECHO · 左超声波回波（分压）",
+    "PA6": "ENC_R_C1 · TIM3_CH1 编码器",
+    "PA7": "ENC_R_C2 · TIM3_CH2 编码器",
+    "PA8": "PWM_L · TIM1_CH1（20kHz）",
+    "PA9": "USART1_TX · 遥测（USB-TTL）",
+    "PA10": "USART1_RX · 遥测（USB-TTL）",
+    "PA11": "PWM_R · TIM1_CH4（20kHz，原 USB DM，只作输出）",
+    "PA12": "KEY · 用户按键（按下接 GND）",
+    "PA13": "SWDIO · 调试（锁死）",
+    "PA14": "SWCLK · 调试（锁死）",
+    "PA15": "预留 · 需关 JTAG",
+    "PB0": "AIN1 · TB6612 左方向",
+    "PB1": "AIN2 · TB6612 左方向",
+    "PB2": "保留勿接 · BOOT1（拉高会从 SRAM 启动）",
+    "PB3": "预留 · 需关 JTAG",
+    "PB4": "预留 · 需关 JTAG",
+    "PB5": "US_R_ECHO · 右超声波回波（分压；非 JTAG 脚，核心功能不依赖关 JTAG）",
+    "PB6": "ENC_L_C1 · TIM4_CH1 编码器",
+    "PB7": "ENC_L_C2 · TIM4_CH2 编码器",
+    "PB8": "I2C1_SCL（重映射）· 灰度总线，上拉 5V",
+    "PB9": "I2C1_SDA（重映射）· 灰度总线，上拉 5V",
+    "PB10": "I2C2_SCL · OLED + MPU6050，上拉 3.3V",
+    "PB11": "I2C2_SDA · OLED + MPU6050，上拉 3.3V",
+    "PB12": "BIN1 · TB6612 右方向",
+    "PB13": "BIN2 · TB6612 右方向",
+    "PB14": "STBY · TB6612 使能（10k 上拉 + 跳线）",
+    "PB15": "BUZZER · 蜂鸣器（1k → NPN）",
     "PC13": "状态 LED（核心板板载）"
+  },
+  "timers": {
+    "TIM1": "PWM ×2（PA8/PA11）",
+    "TIM2": "空闲",
+    "TIM3": "右编码器（PA6/PA7）",
+    "TIM4": "左编码器（PB6/PB7）",
+    "SysTick": "1ms 时基",
+    "DWT->CYCCNT": "超声波 µs 计时"
   },
   "nets": [
     {
-      "net": "12V",
+      "net": "12V_BUS",
       "fanout": [
         {
           "role": "src",
           "endpoint": "12V",
-          "note": "经 3A 保险丝"
+          "note": "470~1000µF 就近"
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
+          "block": "TB6612FNG 电机驱动模块",
+          "pin": "10",
+          "signal": "VM"
+        },
+        {
+          "role": "src",
+          "endpoint": "12V",
+          "note": "经保险丝+反接保护"
+        },
+        {
+          "role": "dst",
+          "block": "预留排针（2×4）",
           "pin": "8",
           "signal": "12V"
         }
       ]
     },
     {
-      "net": "3V3",
+      "net": "3V3_LOGIC",
       "fanout": [
         {
           "role": "src",
           "endpoint": "3V3",
-          "note": ""
+          "note": "核心板 LDO"
+        },
+        {
+          "role": "dst",
+          "block": "TB6612FNG 电机驱动模块",
+          "pin": "8",
+          "signal": "VCC"
+        },
+        {
+          "role": "src",
+          "endpoint": "3V3",
+          "note": "核心板 LDO"
         },
         {
           "role": "dst",
@@ -90,7 +128,7 @@
         {
           "role": "src",
           "endpoint": "3V3",
-          "note": ""
+          "note": "核心板 LDO"
         },
         {
           "role": "dst",
@@ -101,7 +139,18 @@
         {
           "role": "src",
           "endpoint": "3V3",
-          "note": "来自核心板"
+          "note": "核心板 LDO"
+        },
+        {
+          "role": "dst",
+          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
+          "pin": "2",
+          "signal": "VCC"
+        },
+        {
+          "role": "src",
+          "endpoint": "3V3",
+          "note": "核心板 LDO"
         },
         {
           "role": "dst",
@@ -112,28 +161,39 @@
         {
           "role": "src",
           "endpoint": "3V3",
-          "note": "来自核心板"
+          "note": "核心板 LDO"
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
-          "pin": "5",
+          "block": "预留排针（2×4）",
+          "pin": "4",
           "signal": "3V3"
         }
       ]
     },
     {
-      "net": "5V",
+      "net": "5V_BUS",
       "fanout": [
         {
           "role": "src",
           "endpoint": "5V",
-          "note": "模块自带 3.3V LDO 供 3V3"
+          "note": "实测编码器走 5V"
         },
         {
           "role": "dst",
-          "block": "TB6612FNG 电机驱动模块",
-          "pin": "8",
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
+          "pin": "5",
+          "signal": "VCC"
+        },
+        {
+          "role": "src",
+          "endpoint": "5V",
+          "note": "实测编码器走 5V"
+        },
+        {
+          "role": "dst",
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
+          "pin": "5",
           "signal": "VCC"
         },
         {
@@ -143,7 +203,7 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "2",
           "signal": "+5V"
         },
@@ -154,7 +214,7 @@
         },
         {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "1",
           "signal": "5V"
         },
@@ -165,7 +225,7 @@
         },
         {
           "role": "dst",
-          "block": "超声波 1（左，XH2.54-4P）",
+          "block": "左超声波 HC-SR04（XH2.54-4P）",
           "pin": "1",
           "signal": "VCC"
         },
@@ -176,18 +236,7 @@
         },
         {
           "role": "dst",
-          "block": "超声波 2（右，XH2.54-4P）",
-          "pin": "1",
-          "signal": "VCC"
-        },
-        {
-          "role": "src",
-          "endpoint": "5V",
-          "note": "裸模块为 3.3V"
-        },
-        {
-          "role": "dst",
-          "block": "HC-06 蓝牙（XH2.54-4P）",
+          "block": "右超声波 HC-SR04（XH2.54-4P）",
           "pin": "1",
           "signal": "VCC"
         },
@@ -209,8 +258,8 @@
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
-          "pin": "6",
+          "block": "预留排针（2×4）",
+          "pin": "5",
           "signal": "5V"
         }
       ]
@@ -220,7 +269,7 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB12",
+          "endpoint": "PB0",
           "note": ""
         },
         {
@@ -236,7 +285,7 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB13",
+          "endpoint": "PB1",
           "note": ""
         },
         {
@@ -252,7 +301,7 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB14",
+          "endpoint": "PB12",
           "note": ""
         },
         {
@@ -268,7 +317,7 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB15",
+          "endpoint": "PB13",
           "note": ""
         },
         {
@@ -280,7 +329,7 @@
       ]
     },
     {
-      "net": "BT_RX",
+      "net": "BLE_RXD",
       "fanout": [
         {
           "role": "src",
@@ -289,14 +338,14 @@
         },
         {
           "role": "dst",
-          "block": "HC-06 蓝牙（XH2.54-4P）",
-          "pin": "4",
-          "signal": "RX"
+          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
+          "pin": "5",
+          "signal": "RXD"
         }
       ]
     },
     {
-      "net": "BT_TX",
+      "net": "BLE_TXD",
       "fanout": [
         {
           "role": "src",
@@ -305,9 +354,9 @@
         },
         {
           "role": "dst",
-          "block": "HC-06 蓝牙（XH2.54-4P）",
-          "pin": "3",
-          "signal": "TX"
+          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
+          "pin": "4",
+          "signal": "TXD"
         }
       ]
     },
@@ -316,51 +365,51 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB1",
-          "note": "定时器中断翻转方波"
+          "endpoint": "PB15",
+          "note": "1k 基极电阻"
         },
         {
           "role": "dst",
           "block": "按键 / 蜂鸣器 / 指示灯",
           "pin": "—",
-          "signal": "有源蜂鸣器 + NPN 三极管 + 1k 基极电阻"
+          "signal": "NPN(S8050) → 有源蜂鸣器 → 5V，并联续流二极管"
         }
       ]
     },
     {
-      "net": "ENC_L_A",
+      "net": "ENC_L_C1",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA0",
-          "note": "TIM2_CH1"
+          "endpoint": "PB6",
+          "note": "TIM4_CH1"
         },
         {
           "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
-          "pin": "5",
-          "signal": "A"
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
+          "pin": "4",
+          "signal": "C1"
         }
       ]
     },
     {
-      "net": "ENC_L_B",
+      "net": "ENC_L_C2",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA1",
-          "note": "TIM2_CH2"
+          "endpoint": "PB7",
+          "note": "TIM4_CH2"
         },
         {
           "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
-          "pin": "6",
-          "signal": "B"
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
+          "pin": "3",
+          "signal": "C2"
         }
       ]
     },
     {
-      "net": "ENC_R_A",
+      "net": "ENC_R_C1",
       "fanout": [
         {
           "role": "src",
@@ -369,14 +418,14 @@
         },
         {
           "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
-          "pin": "5",
-          "signal": "A"
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
+          "pin": "4",
+          "signal": "C1"
         }
       ]
     },
     {
-      "net": "ENC_R_B",
+      "net": "ENC_R_C2",
       "fanout": [
         {
           "role": "src",
@@ -385,36 +434,9 @@
         },
         {
           "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
-          "pin": "6",
-          "signal": "B"
-        }
-      ]
-    },
-    {
-      "net": "ENC_VCC",
-      "fanout": [
-        {
-          "role": "src",
-          "endpoint": "3V3",
-          "note": "跳线可选 5V"
-        },
-        {
-          "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
           "pin": "3",
-          "signal": "编码器 VCC"
-        },
-        {
-          "role": "src",
-          "endpoint": "3V3",
-          "note": "跳线可选 5V"
-        },
-        {
-          "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
-          "pin": "3",
-          "signal": "编码器 VCC"
+          "signal": "C2"
         }
       ]
     },
@@ -439,40 +461,7 @@
         },
         {
           "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
-          "pin": "4",
-          "signal": "GND"
-        },
-        {
-          "role": "src",
-          "endpoint": "GND",
-          "note": ""
-        },
-        {
-          "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
-          "pin": "4",
-          "signal": "GND"
-        },
-        {
-          "role": "src",
-          "endpoint": "GND",
-          "note": "①电源负"
-        },
-        {
-          "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
-          "pin": "1",
-          "signal": "GND"
-        },
-        {
-          "role": "src",
-          "endpoint": "GND",
-          "note": "②接地"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
           "pin": "2",
           "signal": "GND"
         },
@@ -483,7 +472,40 @@
         },
         {
           "role": "dst",
-          "block": "超声波 1（左，XH2.54-4P）",
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
+          "pin": "2",
+          "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": "①电源负"
+        },
+        {
+          "role": "dst",
+          "block": "感为八路灰度（16P 排母，★主方案）",
+          "pin": "1",
+          "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": "②接地"
+        },
+        {
+          "role": "dst",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
+          "pin": "2",
+          "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": ""
+        },
+        {
+          "role": "dst",
+          "block": "左超声波 HC-SR04（XH2.54-4P）",
           "pin": "4",
           "signal": "GND"
         },
@@ -494,7 +516,7 @@
         },
         {
           "role": "dst",
-          "block": "超声波 2（右，XH2.54-4P）",
+          "block": "右超声波 HC-SR04（XH2.54-4P）",
           "pin": "4",
           "signal": "GND"
         },
@@ -527,8 +549,8 @@
         },
         {
           "role": "dst",
-          "block": "HC-06 蓝牙（XH2.54-4P）",
-          "pin": "2",
+          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
+          "pin": "3",
           "signal": "GND"
         },
         {
@@ -560,7 +582,18 @@
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
+          "block": "预留排针（2×4）",
+          "pin": "6",
+          "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": ""
+        },
+        {
+          "role": "dst",
+          "block": "预留排针（2×4）",
           "pin": "7",
           "signal": "GND"
         }
@@ -570,13 +603,8 @@
       "net": "GRAY_CLK",
       "fanout": [
         {
-          "role": "nc",
-          "endpoint": "CLK",
-          "note": "串行备份：留排针可跳线"
-        },
-        {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "13",
           "signal": "CLK"
         }
@@ -586,31 +614,10 @@
       "net": "GRAY_DAT",
       "fanout": [
         {
-          "role": "nc",
-          "endpoint": "DAT",
-          "note": "串行备份：留排针可跳线"
-        },
-        {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "14",
           "signal": "DAT"
-        }
-      ]
-    },
-    {
-      "net": "GRAY_ERR",
-      "fanout": [
-        {
-          "role": "nc",
-          "endpoint": "Err",
-          "note": "错误输出（可选接 PA11 观察）"
-        },
-        {
-          "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
-          "pin": "4",
-          "signal": "Err"
         }
       ]
     },
@@ -618,24 +625,14 @@
       "net": "GRAY_KEY",
       "fanout": [
         {
-          "role": "src",
-          "endpoint": "KEY",
-          "note": "按键（悬空）"
-        },
-        {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "3",
           "signal": "KEY"
         },
         {
-          "role": "src",
-          "endpoint": "KEY",
-          "note": "按键（悬空）"
-        },
-        {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "3",
           "signal": "KEY"
         }
@@ -645,13 +642,8 @@
       "net": "GRAY_RX",
       "fanout": [
         {
-          "role": "nc",
-          "endpoint": "RX",
-          "note": "串口 TX/RX：留排针可跳线"
-        },
-        {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "14",
           "signal": "RX"
         }
@@ -661,13 +653,8 @@
       "net": "GRAY_TX",
       "fanout": [
         {
-          "role": "nc",
-          "endpoint": "TX",
-          "note": "串口 TX/RX：留排针可跳线"
-        },
-        {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "13",
           "signal": "TX"
         }
@@ -737,7 +724,7 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "15",
           "signal": "SCL"
         },
@@ -748,7 +735,7 @@
         },
         {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "15",
           "signal": "SCL"
         }
@@ -764,7 +751,7 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P，★主方案）",
+          "block": "感为八路灰度（16P 排母，★主方案）",
           "pin": "16",
           "signal": "SDA"
         },
@@ -775,7 +762,7 @@
         },
         {
           "role": "dst",
-          "block": "亚博八路灰度（16P，备用）",
+          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
           "pin": "16",
           "signal": "SDA"
         }
@@ -786,8 +773,8 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB2",
-          "note": "10k 上拉 + 100nF"
+          "endpoint": "PA12",
+          "note": "板上已有 1.5k 上拉"
         },
         {
           "role": "dst",
@@ -814,66 +801,66 @@
       ]
     },
     {
-      "net": "MOT_L+",
+      "net": "MOTOR_L_M1",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "左电机",
+          "endpoint": "TB6612 AO1",
           "note": "大电流"
         },
         {
           "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
           "pin": "1",
-          "signal": "M+"
+          "signal": "M1"
         }
       ]
     },
     {
-      "net": "MOT_L-",
+      "net": "MOTOR_L_M2",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "左电机",
+          "endpoint": "TB6612 AO2",
           "note": "大电流"
         },
         {
           "role": "dst",
-          "block": "左电机 JST-XH 6P 座（现成插头）",
-          "pin": "2",
-          "signal": "M−"
+          "block": "左电机 JST-XH 6P 座（电机自带线）",
+          "pin": "6",
+          "signal": "M2"
         }
       ]
     },
     {
-      "net": "MOT_R+",
+      "net": "MOTOR_R_M1",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "右电机",
+          "endpoint": "TB6612 BO1",
           "note": "大电流"
         },
         {
           "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
           "pin": "1",
-          "signal": "M+"
+          "signal": "M1"
         }
       ]
     },
     {
-      "net": "MOT_R-",
+      "net": "MOTOR_R_M2",
       "fanout": [
         {
           "role": "src",
-          "endpoint": "右电机",
+          "endpoint": "TB6612 BO2",
           "note": "大电流"
         },
         {
           "role": "dst",
-          "block": "右电机 JST-XH 6P 座（现成插头）",
-          "pin": "2",
-          "signal": "M−"
+          "block": "右电机 JST-XH 6P 座（电机自带线）",
+          "pin": "6",
+          "signal": "M2"
         }
       ]
     },
@@ -898,8 +885,8 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB6",
-          "note": "TIM4_CH1"
+          "endpoint": "PA8",
+          "note": "TIM1_CH1"
         },
         {
           "role": "dst",
@@ -914,8 +901,8 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB7",
-          "note": "TIM4_CH2"
+          "endpoint": "PA11",
+          "note": "TIM1_CH4"
         },
         {
           "role": "dst",
@@ -930,12 +917,12 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB3",
+          "endpoint": "PA15",
           "note": "需关 JTAG"
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
+          "block": "预留排针（2×4）",
           "pin": "1",
           "signal": "SPARE1"
         }
@@ -946,12 +933,12 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB4",
+          "endpoint": "PB3",
           "note": "需关 JTAG"
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
+          "block": "预留排针（2×4）",
           "pin": "2",
           "signal": "SPARE2"
         }
@@ -962,30 +949,14 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB5",
-          "note": "空闲"
+          "endpoint": "PB4",
+          "note": "需关 JTAG"
         },
         {
           "role": "dst",
-          "block": "预留排针区（2×4）",
+          "block": "预留排针（2×4）",
           "pin": "3",
           "signal": "SPARE3"
-        }
-      ]
-    },
-    {
-      "net": "SPARE4",
-      "fanout": [
-        {
-          "role": "src",
-          "endpoint": "PA12",
-          "note": "原 USB DP，1.5k 上拉，勿作输入"
-        },
-        {
-          "role": "dst",
-          "block": "预留排针区（2×4）",
-          "pin": "4",
-          "signal": "SPARE4"
         }
       ]
     },
@@ -994,8 +965,8 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA11",
-          "note": "硬件 10k 上拉 + 跳线可选常使能"
+          "endpoint": "PB14",
+          "note": "10k 上拉 + 跳线"
         },
         {
           "role": "dst",
@@ -1079,7 +1050,7 @@
         },
         {
           "role": "dst",
-          "block": "超声波 1（左，XH2.54-4P）",
+          "block": "左超声波 HC-SR04（XH2.54-4P）",
           "pin": "3",
           "signal": "Echo"
         }
@@ -1095,7 +1066,7 @@
         },
         {
           "role": "dst",
-          "block": "超声波 1（左，XH2.54-4P）",
+          "block": "左超声波 HC-SR04（XH2.54-4P）",
           "pin": "2",
           "signal": "Trig"
         }
@@ -1106,12 +1077,12 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA15",
-          "note": "关 JTAG"
+          "endpoint": "PB5",
+          "note": "2k/3.3k 分压"
         },
         {
           "role": "dst",
-          "block": "超声波 2（右，XH2.54-4P）",
+          "block": "右超声波 HC-SR04（XH2.54-4P）",
           "pin": "3",
           "signal": "Echo"
         }
@@ -1122,12 +1093,12 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA8",
+          "endpoint": "PA1",
           "note": ""
         },
         {
           "role": "dst",
-          "block": "超声波 2（右，XH2.54-4P）",
+          "block": "右超声波 HC-SR04（XH2.54-4P）",
           "pin": "2",
           "signal": "Trig"
         }
@@ -1143,25 +1114,9 @@
         },
         {
           "role": "dst",
-          "block": "12V 电压检测（分压）",
+          "block": "电池电压采样（分压）",
           "pin": "—",
-          "signal": "分压中点 → PB0 (ADC1_IN8)"
-        }
-      ]
-    },
-    {
-      "net": "VM",
-      "fanout": [
-        {
-          "role": "src",
-          "endpoint": "12V",
-          "note": "大电流焊盘 + 470µF"
-        },
-        {
-          "role": "dst",
-          "block": "TB6612FNG 电机驱动模块",
-          "pin": "10",
-          "signal": "VM"
+          "signal": "分压中点 → PA0 (ADC1_IN0)"
         }
       ]
     }

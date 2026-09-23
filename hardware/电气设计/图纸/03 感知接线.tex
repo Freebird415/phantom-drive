@@ -1,0 +1,184 @@
+\documentclass{article}
+\usepackage[paperwidth=60cm,paperheight=120cm,margin=0pt]{geometry}
+\usepackage{fontspec}\setmainfont{Latin Modern Roman}
+\usepackage{xeCJK}\setCJKmainfont{Microsoft YaHei}
+\usepackage{amsmath, amssymb, siunitx}
+\usepackage[american]{circuitikz}
+\ctikzset{bipoles/length=1.2cm}
+% 不用 standalone：它自家的裁边在 xelatex 下不生效，长图会被 letter 页面截掉尾部。
+% 改用 preview 把页面尺寸严格设成内容尺寸（自动裁边）。
+\usepackage[active,tightpage]{preview}
+\PreviewEnvironment{circuitikz}
+\setlength\PreviewBorder{8pt}
+\pagestyle{empty}
+\begin{document}
+
+\begin{circuitikz}
+\small
+\node[anchor=east, font=\bfseries\small] at (4.55,0.00) {MCU\ /\ 电源};
+\node[anchor=west, font=\bfseries\small] at (4.95,0.00) {网络名};
+\node[anchor=west, font=\bfseries\small] at (12.45,0.00) {连接器针脚};
+\node[anchor=west, font=\bfseries\small] at (12.30,-0.60) {感为八路灰度（16P 排母，★主方案）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-0.98) {I2C 模式可读数字量+模拟量；5V 供电 33mA；板载 5V/10k 上拉跳帽【不插】，由 PCB 侧 10k 上拉到 5V};
+\node[anchor=east, font=\small] at (4.55,-1.84) {GND\ \textperiodcentered\ ①电源负};
+\draw (4.85,-1.84) -- (12.30,-1.84);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-1.79) {GND};
+\node[anchor=west, font=\small] at (12.48,-1.84) {1\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-2.58) {5V\ \textperiodcentered\ ②电源正 33mA};
+\draw (4.85,-2.58) -- (12.30,-2.58);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-2.53) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-2.58) {2\,--\,+5V};
+\node[anchor=east, font=\small] at (4.55,-3.32) {—\ \textperiodcentered\ 按键：悬空};
+\draw (4.85,-3.32) -- (12.30,-3.32);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-3.27) {GRAY\_KEY};
+\node[anchor=west, font=\small] at (12.48,-3.32) {3\,--\,KEY};
+\node[anchor=east, font=\small] at (4.55,-4.06) {—\ \textperiodcentered\ 错误输出：悬空（可选接排针观察）};
+\draw (4.85,-4.06) -- (12.30,-4.06);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.01) {NC};
+\node[anchor=west, font=\small] at (12.48,-4.06) {4\,--\,Err};
+\node[anchor=east, font=\small] at (4.55,-4.80) {—\ \textperiodcentered\ 并行数据：引排针、不接 MCU};
+\draw (4.85,-4.80) -- (12.30,-4.80);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-4.75) {NC};
+\node[anchor=west, font=\small] at (12.48,-4.80) {5-12\,--\,1 ~ 8};
+\node[anchor=east, font=\small] at (4.55,-5.54) {—\ \textperiodcentered\ 串行备份：引排针、不接 MCU};
+\draw (4.85,-5.54) -- (12.30,-5.54);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-5.49) {GRAY\_CLK};
+\node[anchor=west, font=\small] at (12.48,-5.54) {13\,--\,CLK};
+\node[anchor=east, font=\small] at (4.55,-6.28) {—\ \textperiodcentered\ 串行备份：引排针、不接 MCU};
+\draw (4.85,-6.28) -- (12.30,-6.28);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-6.23) {GRAY\_DAT};
+\node[anchor=west, font=\small] at (12.48,-6.28) {14\,--\,DAT};
+\node[anchor=east, font=\small] at (4.55,-7.02) {PB8\ \textperiodcentered\ I2C1\_SCL 重映射};
+\draw (4.85,-7.02) -- (12.30,-7.02);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-6.97) {I2C\_GRAY\_SCL};
+\node[anchor=west, font=\small] at (12.48,-7.02) {15\,--\,SCL};
+\node[anchor=east, font=\small] at (4.55,-7.76) {PB9\ \textperiodcentered\ I2C1\_SDA 重映射};
+\draw (4.85,-7.76) -- (12.30,-7.76);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-7.71) {I2C\_GRAY\_SDA};
+\node[anchor=west, font=\small] at (12.48,-7.76) {16\,--\,SDA};
+\draw[rounded corners=2pt] (12.30,-1.42) rectangle (18.40,-8.06);
+\node[anchor=west, font=\bfseries\small] at (12.30,-8.66) {亚博八路灰度 YB-MUX04（16P 排母，备用）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-9.04) {针 1/2 与感为相反（5V 在 1 脚）→ 必须独立座；同样支持 I2C，共用 I2C1 的 SCL/SDA};
+\node[anchor=east, font=\small] at (4.55,-9.90) {5V\ \textperiodcentered\ ①电源};
+\draw (4.85,-9.90) -- (12.30,-9.90);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-9.85) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-9.90) {1\,--\,5V};
+\node[anchor=east, font=\small] at (4.55,-10.64) {GND\ \textperiodcentered\ ②接地};
+\draw (4.85,-10.64) -- (12.30,-10.64);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-10.59) {GND};
+\node[anchor=west, font=\small] at (12.48,-10.64) {2\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-11.38) {—\ \textperiodcentered\ 按键：悬空};
+\draw (4.85,-11.38) -- (12.30,-11.38);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-11.33) {GRAY\_KEY};
+\node[anchor=west, font=\small] at (12.48,-11.38) {3\,--\,KEY};
+\node[anchor=east, font=\small] at (4.55,-12.12) {—\ \textperiodcentered\ 复位：悬空};
+\draw (4.85,-12.12) -- (12.30,-12.12);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-12.07) {NC};
+\node[anchor=west, font=\small] at (12.48,-12.12) {4\,--\,RESET};
+\node[anchor=east, font=\small] at (4.55,-12.86) {—\ \textperiodcentered\ 并行 IO：引排针、不接 MCU};
+\draw (4.85,-12.86) -- (12.30,-12.86);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-12.81) {NC};
+\node[anchor=west, font=\small] at (12.48,-12.86) {5-12\,--\,X1 ~ X8};
+\node[anchor=east, font=\small] at (4.55,-13.60) {—\ \textperiodcentered\ 串口：引排针、不接 MCU};
+\draw (4.85,-13.60) -- (12.30,-13.60);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-13.55) {GRAY\_TX};
+\node[anchor=west, font=\small] at (12.48,-13.60) {13\,--\,TX};
+\node[anchor=east, font=\small] at (4.55,-14.34) {—\ \textperiodcentered\ 串口：引排针、不接 MCU};
+\draw (4.85,-14.34) -- (12.30,-14.34);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-14.29) {GRAY\_RX};
+\node[anchor=west, font=\small] at (12.48,-14.34) {14\,--\,RX};
+\node[anchor=east, font=\small] at (4.55,-15.08) {PB8\ \textperiodcentered\ I2C1\_SCL 重映射};
+\draw (4.85,-15.08) -- (12.30,-15.08);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-15.03) {I2C\_GRAY\_SCL};
+\node[anchor=west, font=\small] at (12.48,-15.08) {15\,--\,SCL};
+\node[anchor=east, font=\small] at (4.55,-15.82) {PB9\ \textperiodcentered\ I2C1\_SDA 重映射};
+\draw (4.85,-15.82) -- (12.30,-15.82);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-15.77) {I2C\_GRAY\_SDA};
+\node[anchor=west, font=\small] at (12.48,-15.82) {16\,--\,SDA};
+\draw[rounded corners=2pt] (12.30,-9.48) rectangle (18.40,-16.12);
+\node[anchor=west, font=\bfseries\small] at (12.30,-16.72) {左超声波 HC-SR04（XH2.54-4P）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-17.10) {两个 Trig 必须独立、软件分时触发；Echo 5V→3.11V 分压};
+\node[anchor=east, font=\small] at (4.55,-17.96) {5V};
+\draw (4.85,-17.96) -- (12.30,-17.96);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-17.91) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-17.96) {1\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-18.70) {PA4};
+\draw (4.85,-18.70) -- (12.30,-18.70);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-18.65) {US\_L\_TRIG};
+\node[anchor=west, font=\small] at (12.48,-18.70) {2\,--\,Trig};
+\node[anchor=east, font=\small] at (4.55,-19.44) {PA5\ \textperiodcentered\ 2k/3.3k 分压};
+\draw (4.85,-19.44) -- (12.30,-19.44);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-19.39) {US\_L\_ECHO};
+\node[anchor=west, font=\small] at (12.48,-19.44) {3\,--\,Echo};
+\node[anchor=east, font=\small] at (4.55,-20.18) {GND};
+\draw (4.85,-20.18) -- (12.30,-20.18);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-20.13) {GND};
+\node[anchor=west, font=\small] at (12.48,-20.18) {4\,--\,GND};
+\draw[rounded corners=2pt] (12.30,-17.54) rectangle (18.40,-20.48);
+\node[anchor=west, font=\bfseries\small] at (12.30,-21.08) {右超声波 HC-SR04（XH2.54-4P）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-21.46) {Echo 用 PB5（非 JTAG 脚）—— 核心功能不依赖关 JTAG};
+\node[anchor=east, font=\small] at (4.55,-22.32) {5V};
+\draw (4.85,-22.32) -- (12.30,-22.32);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-22.27) {5V\_BUS};
+\node[anchor=west, font=\small] at (12.48,-22.32) {1\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-23.06) {PA1};
+\draw (4.85,-23.06) -- (12.30,-23.06);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-23.01) {US\_R\_TRIG};
+\node[anchor=west, font=\small] at (12.48,-23.06) {2\,--\,Trig};
+\node[anchor=east, font=\small] at (4.55,-23.80) {PB5\ \textperiodcentered\ 2k/3.3k 分压};
+\draw (4.85,-23.80) -- (12.30,-23.80);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-23.75) {US\_R\_ECHO};
+\node[anchor=west, font=\small] at (12.48,-23.80) {3\,--\,Echo};
+\node[anchor=east, font=\small] at (4.55,-24.54) {GND};
+\draw (4.85,-24.54) -- (12.30,-24.54);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-24.49) {GND};
+\node[anchor=west, font=\small] at (12.48,-24.54) {4\,--\,GND};
+\draw[rounded corners=2pt] (12.30,-21.90) rectangle (18.40,-24.84);
+\node[anchor=west, font=\bfseries\small] at (12.30,-25.44) {OLED 显示屏（XH2.54-4P）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-25.82) {走 I2C2（3.3V 上拉）；与感为的 5V 总线完全隔离};
+\node[anchor=east, font=\small] at (4.55,-26.68) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-26.68) -- (12.30,-26.68);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-26.63) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-26.68) {1\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-27.42) {GND};
+\draw (4.85,-27.42) -- (12.30,-27.42);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-27.37) {GND};
+\node[anchor=west, font=\small] at (12.48,-27.42) {2\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-28.16) {PB10\ \textperiodcentered\ I2C2\_SCL};
+\draw (4.85,-28.16) -- (12.30,-28.16);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-28.11) {I2C\_AUX\_SCL};
+\node[anchor=west, font=\small] at (12.48,-28.16) {3\,--\,SCL};
+\node[anchor=east, font=\small] at (4.55,-28.90) {PB11\ \textperiodcentered\ I2C2\_SDA};
+\draw (4.85,-28.90) -- (12.30,-28.90);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-28.85) {I2C\_AUX\_SDA};
+\node[anchor=west, font=\small] at (12.48,-28.90) {4\,--\,SDA};
+\draw[rounded corners=2pt] (12.30,-26.26) rectangle (18.40,-29.20);
+\node[anchor=west, font=\bfseries\small] at (12.30,-29.80) {MPU6050 六轴（XH2.54-4P）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-30.18) {备用姿态；AD0 接地 → 7bit 地址 0x68（与 OLED 同总线，地址不冲突）};
+\node[anchor=east, font=\small] at (4.55,-31.04) {3V3\ \textperiodcentered\ 核心板 LDO};
+\draw (4.85,-31.04) -- (12.30,-31.04);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-30.99) {3V3\_LOGIC};
+\node[anchor=west, font=\small] at (12.48,-31.04) {1\,--\,VCC};
+\node[anchor=east, font=\small] at (4.55,-31.78) {GND};
+\draw (4.85,-31.78) -- (12.30,-31.78);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-31.73) {GND};
+\node[anchor=west, font=\small] at (12.48,-31.78) {2\,--\,GND};
+\node[anchor=east, font=\small] at (4.55,-32.52) {PB10\ \textperiodcentered\ I2C2\_SCL};
+\draw (4.85,-32.52) -- (12.30,-32.52);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-32.47) {I2C\_AUX\_SCL};
+\node[anchor=west, font=\small] at (12.48,-32.52) {3\,--\,SCL};
+\node[anchor=east, font=\small] at (4.55,-33.26) {PB11\ \textperiodcentered\ I2C2\_SDA};
+\draw (4.85,-33.26) -- (12.30,-33.26);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-33.21) {I2C\_AUX\_SDA};
+\node[anchor=west, font=\small] at (12.48,-33.26) {4\,--\,SDA};
+\draw[rounded corners=2pt] (12.30,-30.62) rectangle (18.40,-33.56);
+\node[anchor=west, font=\bfseries\small] at (12.30,-34.16) {电池电压采样（分压）};
+\node[anchor=west, font=\scriptsize\itshape] at (12.30,-34.54) {100k / 10k + 100nF；满电 12.6V → 1.15V，只做低压告警};
+\node[anchor=east, font=\small] at (4.55,-35.40) {12V\ \textperiodcentered\ 经 100k};
+\draw (4.85,-35.40) -- (12.30,-35.40);
+\node[anchor=south, font=\scriptsize\ttfamily] at (8.57,-35.35) {VBAT\_SENSE};
+\node[anchor=west, font=\small] at (12.48,-35.40) {—\,--\,分压中点 → PA0 (ADC1\_IN0)};
+\draw[rounded corners=2pt] (12.30,-34.98) rectangle (18.40,-35.70);
+\node[anchor=west, font=\scriptsize\itshape] at (0,-36.60) {网络名 = 嘉立创 EDA 里的网络标号：两边同名即同一根线。电源（12V\_BUS / 5V\_BUS / 3V3\_LOGIC / GND）同样用网络标号表示，不画共用母线。逐针定义与电气约束见 电气连接规范.md；引脚契约见 docs/引脚分配表.md。};
+\end{circuitikz}
+\end{document}
