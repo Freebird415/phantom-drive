@@ -13,6 +13,8 @@
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
 #include "drv/drv_oled.h"
+#include "drv/drv_motor.h"
+#include "drv/drv_encoder.h"
 #include "app/app_telemetry.h"
 
 #include <stdio.h>
@@ -26,6 +28,8 @@ int main(void)
     Us_Init();
     Gr_Init();
     Ol_Init();
+    Mo_Init();
+    En_Init();
     Bsp_UartInit();
     Tlm_Init();
 

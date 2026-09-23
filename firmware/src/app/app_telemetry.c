@@ -7,6 +7,8 @@
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
 #include "drv/drv_oled.h"
+#include "drv/drv_motor.h"
+#include "drv/drv_encoder.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -85,6 +87,22 @@ static void handle_command(char *line)
         printf("# AUTO=%u\r\n", (unsigned)s_us_auto);
         return;
     }
+
+    /* ---- 编码器 ---- */
+    if (strcmp(line, "ENCRESET") == 0) { En_Reset(); En_PrintDebug(); return; }
+    if (strcmp(line, "ENC") == 0) { En_PrintDebug(); return; }
+
+    /* ---- 电机 (TB6612) ---- */
+    if (strncmp(line, "MOT", 3) == 0) {              /* MOT <左 %> <右 %> ；不带参数=报当前状态 */
+        int l = 0, r = 0;
+        if (line[3] == ' ' && sscanf(line + 4, "%d %d", &l, &r) == 2) {
+            Mo_Set(l, r);
+        }
+        Mo_PrintDebug();
+        return;
+    }
+    if (strcmp(line, "STOP") == 0) { Mo_Stop(); Mo_PrintDebug(); return; }
+    if (strcmp(line, "BRAKE") == 0) { Mo_Brake(); Mo_PrintDebug(); return; }
 
     /* ---- 灰度 (I2C1) ---- */
     if (strcmp(line, "GR") == 0) { Gr_PrintDebug(); return; }
