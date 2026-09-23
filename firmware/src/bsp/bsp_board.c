@@ -120,3 +120,27 @@ void Bsp_LedToggle(void)
 {
     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 }
+
+/* ==================== I2C 引脚（HAL 只允许一个 MspInit，所以两条总线都放这里） ==================== */
+void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    if (hi2c->Instance == I2C1) {                 /* 灰度：PB8=SCL / PB9=SDA（重映射），上拉 5V */
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+        __HAL_RCC_I2C1_CLK_ENABLE();
+        gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+        gpio.Mode = GPIO_MODE_AF_OD;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(GPIOB, &gpio);
+    } else if (hi2c->Instance == I2C2) {          /* OLED/MPU6050：PB10=SCL / PB11=SDA，上拉 3.3V */
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+        __HAL_RCC_I2C2_CLK_ENABLE();
+        gpio.Pin = GPIO_PIN_10 | GPIO_PIN_11;
+        gpio.Mode = GPIO_MODE_AF_OD;
+        gpio.Pull = GPIO_NOPULL;
+        gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(GPIOB, &gpio);
+    }
+}

@@ -14,23 +14,6 @@
 
 static I2C_HandleTypeDef s_i2c1;
 
-/* HAL 会调用；**不能加 static**（头文件里是非静态声明） */
-void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c)
-{
-    GPIO_InitTypeDef gpio = {0};
-    if (hi2c->Instance != I2C1) { return; }
-
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_I2C1_CLK_ENABLE();
-
-    /* PB8 = I2C1_SCL（重映射）、PB9 = I2C1_SDA：复用开漏 */
-    gpio.Pin   = GPIO_PIN_8 | GPIO_PIN_9;
-    gpio.Mode  = GPIO_MODE_AF_OD;
-    gpio.Pull  = GPIO_NOPULL;           /* 上拉由感为板载 10k 到 5V 提供（跳帽插上） */
-    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOB, &gpio);
-}
-
 void Gr_Init(void)
 {
     /* I2C1 重映射到 PB8/PB9 —— 把默认的 PB6/PB7 让给 TIM4（将来接左编码器） */

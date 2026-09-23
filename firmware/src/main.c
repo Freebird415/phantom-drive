@@ -12,6 +12,7 @@
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
+#include "drv/drv_oled.h"
 #include "app/app_telemetry.h"
 
 #include <stdio.h>
@@ -24,6 +25,7 @@ int main(void)
     Bsp_LedInit();
     Us_Init();
     Gr_Init();
+    Ol_Init();
     Bsp_UartInit();
     Tlm_Init();
 

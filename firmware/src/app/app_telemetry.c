@@ -6,6 +6,7 @@
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
+#include "drv/drv_oled.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -43,7 +44,7 @@ void Tlm_SendU(uint32_t ms, int32_t l_mm, int32_t r_mm)
 /* ==================== 收命令 ====================
    重要：中断里**只收行**，命令执行放到主循环（Tlm_Poll）。
    原因：命令处理里的 printf 会和主循环的 printf 抢同一个 UART，
-   在中断里跑会互相打断、输出被静默丢掉；而且 US 命令要阻塞几十毫秒。 */
+   在中断里跑会互相打断、输出被静默丢掉；而且有些命令要阻塞几十毫秒。 */
 static char    s_rxline[64];
 static uint8_t s_rxlen = 0;
 static uint8_t s_rxbyte;
@@ -57,30 +58,19 @@ uint8_t Tlm_UsAuto(void) { return s_us_auto; }
 
 static void handle_command(char *line)
 {
-    if (strcmp(line, "PING") == 0) {
-        Tlm_SendEvent(90, "PONG");
-        return;
-    }
-    if (strcmp(line, "GET") == 0) {
-        Tlm_SendParams();
-        return;
-    }
-    if (strcmp(line, "GRSCAN") == 0) {          /* 扫总线：接线/上拉/地址排错用 */
-        Gr_Scan();
-        return;
-    }
-    if (strcmp(line, "GR") == 0) {              /* 灰度自检：ping + 数字量 + 8 路模拟量 */
-        Gr_PrintDebug();
-        return;
-    }
-    if (line[0] == 'U' && line[1] == 'S') {        /* US / "US <id> <n>" —— 对着串口调接线用 */
+    /* ---- 连通性 / 参数 ---- */
+    if (strcmp(line, "PING") == 0) { Tlm_SendEvent(90, "PONG"); return; }
+    if (strcmp(line, "GET") == 0)  { Tlm_SendParams(); return; }
+
+    /* ---- 超声波 ---- */
+    if (line[0] == 'U' && line[1] == 'S') {
         int id = -1, n = 1;
-        if (line[2] == ' ') { sscanf(line + 3, "%d %d", &id, &n); }
+        if (line[2] == ' ') { (void)sscanf(line + 3, "%d %d", &id, &n); }
         if (id < -1 || id > 1) { id = -1; }
         if (n < 1) { n = 1; }
         if (n > 30) { n = 30; }
         printf("# US id=%d n=%d auto=%u\r\n", id, n, (unsigned)s_us_auto);
-        HAL_Delay(80);                             /* 先错过主循环刚下发的那一发 */
+        HAL_Delay(80);
         for (int k = 0; k < n; k++) {
             if (id != 1) { Us_Read(US_L); Us_PrintDebug(US_L); }
             if (id != 0) { HAL_Delay(70); Us_Read(US_R); Us_PrintDebug(US_R); }
@@ -89,12 +79,27 @@ static void handle_command(char *line)
         Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
         return;
     }
-    if (strncmp(line, "AUTO ", 5) == 0) {         /* AUTO 0/1/2/3：关/双测/只左/只右 */
+    if (strncmp(line, "AUTO ", 5) == 0) {
         char c = line[5];
         s_us_auto = (c == '0') ? 0u : (c == '2') ? 2u : (c == '3') ? 3u : 1u;
         printf("# AUTO=%u\r\n", (unsigned)s_us_auto);
         return;
     }
+
+    /* ---- 灰度 (I2C1) ---- */
+    if (strcmp(line, "GR") == 0) { Gr_PrintDebug(); return; }
+    if (strcmp(line, "GRSCAN") == 0) { Gr_Scan(); return; }
+
+    /* ---- OLED (I2C2) ---- */
+    if (strcmp(line, "OLSCAN") == 0) {
+        uint8_t a7 = Ol_Present();
+        if (a7) { printf("OLSCAN> 应答 7bit=0x%02X\r\n", (unsigned)a7); }
+        else    { printf("OLSCAN> 无应答（查 VCC=3.3V / SCL->PB10 / SDA->PB11 / 共地）\r\n"); }
+        return;
+    }
+    if (strcmp(line, "OLED") == 0) { Ol_PrintDebug(); return; }
+
+    /* ---- 在线调参 ---- */
     if (strncmp(line, "SET ", 4) == 0) {
         char  name[16] = {0};
         float val = 0.0f;
@@ -103,10 +108,11 @@ static void handle_command(char *line)
             else if (strcmp(name, "ki") == 0)         { s_p.ki = val; }
             else if (strcmp(name, "kd") == 0)         { s_p.kd = val; }
             else if (strcmp(name, "base_speed") == 0) { s_p.base_speed = (int)val; }
-            Tlm_SendParams();                      /* 改完回一帧：日志里能看到“何时改成了什么” */
+            Tlm_SendParams();
             return;
         }
     }
+
     Tlm_SendEvent(99, "UNKNOWN_CMD");
 }
 
@@ -117,7 +123,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         if (c == '\n' || c == '\r') {
             if (s_rxlen > 0) {
                 s_rxline[s_rxlen] = '\0';
-                if (!s_cmd_pending) {                    /* 上一条还没处理就先丢，不覆盖 */
+                if (!s_cmd_pending) {
                     for (uint8_t i = 0; i <= s_rxlen; i++) { s_cmd[i] = s_rxline[i]; }
                     s_cmd_pending = 1;
                 }
@@ -126,7 +132,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         } else if (s_rxlen < sizeof(s_rxline) - 1) {
             s_rxline[s_rxlen++] = c;
         } else {
-            s_rxlen = 0;                             /* 太长，丢掉 */
+            s_rxlen = 0;
         }
         HAL_UART_Receive_IT(Bsp_Uart(), &s_rxbyte, 1);
     }
