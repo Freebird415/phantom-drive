@@ -9,6 +9,8 @@
  *      [16..]   帧数据，5 字节/帧，紧排
  * ========================================================================== */
 #include "app/app_log.h"
+#include "drv/drv_encoder.h"      /* 每帧记左右轮编码器增量 ⇒ 事后重建轨迹 */
+#include "drv/drv_mpu6050.h"      /* 陀螺仪偏航率 ⇒ 交叉验证轨迹 */
 #include "stm32f1xx_hal.h"
 
 #include <stdio.h>
@@ -22,15 +24,17 @@
 typedef struct {
     uint8_t bits;      /* 8 路灰度：bit0=第1路 … bit7=第8路；1 = 黑 */
     int8_t  err10;     /* err × 10（−8.0~+8.0 ⇒ −80~+80）*/
-    int8_t  pwm_l;     /* −100~100 */
+    int8_t  pwm_l;     /* −100~100（命令值）*/
     int8_t  pwm_r;
     uint8_t state;
-    uint8_t pad;       /* ⚠️ 必须凑成偶数：STM32F1 的 Flash 只能按【半字】写，
-                          奇数长度会静默丢掉最后 1 个字节 ⇒ 校验和永远对不上。
-                          （2026-09-30 实踩：347 帧×5B=1735B 奇数 ⇒ 数据坏）*/
+    int8_t  dl;        /* ⭐ 本帧左轮编码器【真实】增量（已按 ENC_SIGN 翻正，前进为正）*/
+    int8_t  dr;        /* ⭐ 同上，右轮 */
+    uint8_t gz8;       /* ⭐ 陀螺仪 Z 轴角速度（偏航率），单位 2°/s/LSB（±254°/s）
+                         ⇒ 用来【交叉验证】轮式里程计积出来的车头朝向 */
 } LogFrame;
-_Static_assert(sizeof(LogFrame) == 6, "LogFrame 必须是 6 字节（Flash 半字写入要求偶数长度）");
+_Static_assert(sizeof(LogFrame) == 8, "LogFrame 必须是 8 字节（Flash 半字写入要求偶数）");
 
+/* 上一帧的编码器计数（算增量用）*/
 static LogFrame s_buf[LOG_MAX_FRAMES];
 static uint16_t s_n;
 static uint8_t  s_rec;
@@ -43,6 +47,19 @@ static int8_t sat_i8(int v)
     return (int8_t)v;
 }
 
+static int16_t s_prev_l, s_prev_r;    /* 上一帧编码器计数 */
+static int16_t s_gz;                  /* 缓存的陀螺仪 Z 轴原始值（低频率刷新，节省 I2C 开销）*/
+static uint8_t s_gz_tick;
+
+/* 陀螺仪：每 4 拍（约 25Hz）读一次，其余帧用缓存 ——
+   100Hz 都读 I2C 会吃掉太多主循环时间 */
+static void log_poll_gyro(void)
+{
+    if ((s_gz_tick++ & 3u) != 0u) { return; }
+    int16_t raw[7];
+    if (Mpu_Read(raw)) { s_gz = raw[6]; }      /* raw[6] = gz（±250°/s 量程 ⇒ 131 LSB/(°/s)）*/
+}
+
 static uint32_t log_sum(const uint8_t *p, uint32_t n)
 {
     uint32_t h = 2166136261u;               /* FNV-1a */
@@ -51,7 +68,7 @@ static uint32_t log_sum(const uint8_t *p, uint32_t n)
 }
 
 /* ------------------------------ RAM 操作 ------------------------------ */
-void Log_Start(void)      { s_rec = 1; }
+void Log_Start(void)      { s_rec = 1; s_prev_l = En_Count(ENC_L); s_prev_r = En_Count(ENC_R); }
 
 /* 停车：停止记录 + **自动持久化到 Flash**（掉电不丢）*/
 void Log_Stop(void)
@@ -79,6 +96,22 @@ void Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state)
     f->pwm_l = sat_i8(pwm_l);
     f->pwm_r = sat_i8(pwm_r);
     f->state = (uint8_t)state;
+
+    /* ⭐ 左右轮真实增量（已按 ENC_SIGN 翻正）⇒ 用来重建轨迹 */
+    {
+        int16_t cl = En_Count(ENC_L), cr = En_Count(ENC_R);
+        f->dl = sat_i8((int)cl - (int)s_prev_l);
+        f->dr = sat_i8((int)cr - (int)s_prev_r);
+        s_prev_l = cl; s_prev_r = cr;
+    }
+    /* ⭐ 陀螺仪偏航率：131 LSB/(°/s) ⇒ 换算成 2°/s per LSB，±254°/s */
+    log_poll_gyro();
+    {
+        int g = s_gz / 131 / 2;
+        if (g > 127) { g = 127; }
+        if (g < -127) { g = -127; }
+        f->gz8 = (uint8_t)(int8_t)g;
+    }
 }
 
 /* ------------------------------ Flash ------------------------------ */
@@ -127,7 +160,7 @@ void Log_SaveFlash(void)
 {
     if (s_n == 0u) { return; }
     uint8_t hdr[LOG_HDR_BYTES];
-    uint32_t nbytes = (uint32_t)s_n * sizeof(LogFrame);   /* 6 的倍数 ⇒ 一定偶数 ✓ */
+    uint32_t nbytes = (uint32_t)s_n * sizeof(LogFrame);   /* 帧长 8 字节 ⇒ 必为偶数 ✓ */
     uint32_t magic = LOG_FLASH_MAGIC, cnt = s_n, sum = log_sum((const uint8_t *)s_buf, nbytes);
     memset(hdr, 0, sizeof hdr);
     memcpy(hdr + 0, &magic, 4);
@@ -170,12 +203,25 @@ void Log_Reset(void)
     __enable_irq();
 }
 
+void Log_GetDash(LogDash *d)
+{
+    d->n = s_n;
+    d->gz = (int)s_gz / 131;                    /* °/s */
+    if (s_n == 0u) { d->bits = 0; d->err10 = 0; d->pwm_l = 0; d->pwm_r = 0;
+                     d->state = 0; d->dl = 0; d->dr = 0; return; }
+    const LogFrame *f = &s_buf[s_n - 1u];
+    d->bits  = f->bits;  d->err10 = f->err10;
+    d->pwm_l = f->pwm_l; d->pwm_r = f->pwm_r; d->state = f->state;
+    d->dl = f->dl; d->dr = f->dr;
+    if (d->gz == 0) { d->gz = (int)(int8_t)f->gz8 * 2; }   /* 兜底：用帧里的 */
+}
+
 void Log_Status(void)
 {
     printf("# SNAP rec=%u full=%u n=%u/%u (~%u.%us @100Hz)  RAM=%uB  Flash=%uB @0x%08lX\r\n",
            (unsigned)s_rec, (unsigned)s_full, (unsigned)s_n, (unsigned)LOG_MAX_FRAMES,
            (unsigned)(s_n / 100u), (unsigned)(s_n % 100u),
-           (unsigned)(LOG_MAX_FRAMES * 5u), (unsigned)(LOG_FLASH_PAGES * 1024u),
+           (unsigned)(LOG_MAX_FRAMES * sizeof(LogFrame)), (unsigned)(LOG_FLASH_PAGES * 1024u),
            (unsigned long)LOG_FLASH_ADDR);
 }
 
@@ -199,15 +245,16 @@ void Log_FlashInfo(void)
 
 void Log_Dump(void)
 {
-    printf("# DUMP n=%u  (格式同 $T：ms,s0..s7,err,pwm_l,pwm_r,state)\r\n", (unsigned)s_n);
+    printf("# DUMP n=%u  (格式同 $T：ms,s0..s7,err,pwm_l,pwm_r,state,dL,dR,gz)\r\n", (unsigned)s_n);
     for (uint16_t i = 0; i < s_n; i++) {
         const LogFrame *f = &s_buf[i];
         printf("$T,%u", (unsigned)((uint32_t)i * 10u));
         for (int b = 0; b < 8; b++) {
             printf(",%d", (int)((f->bits >> b) & 1u));
         }
-        printf(",%.1f,%d,%d,%d\r\n",
-               (double)f->err10 / 10.0, (int)f->pwm_l, (int)f->pwm_r, (int)f->state);
+        printf(",%.1f,%d,%d,%d,%d,%d,%d\r\n",
+               (double)f->err10 / 10.0, (int)f->pwm_l, (int)f->pwm_r, (int)f->state,
+               (int)f->dl, (int)f->dr, (int)(int8_t)f->gz8);
     }
     printf("# DUMP END n=%u\r\n", (unsigned)s_n);
 }

@@ -90,6 +90,7 @@ int main(void)
                         printf("# BTN(长按1s): 停车 + 停止记录 n=%u\r\n", (unsigned)Log_Count());
                     } else {
                         /* ⚠️ 故意**不** Log_Reset()（同上：防误碰清掉上一趟数据）*/
+                        Trace_FinReset();          /* 复位终点精停状态，准备新一趟 */
                         Log_Start(); Trace_SetDrive(1u);
                         printf("# BTN(长按1s): 开始记录 + 发车（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
@@ -121,6 +122,9 @@ int main(void)
             Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
             last_us = HAL_GetTick();
         }
+
+        /* ---- 车载 OLED 仪表盘（内部分页刷新，每 2 拍刷 1 页，不卡控制）---- */
+        Trace_Dash();
 
         /* ---- $T 遥测 + 循迹算法：100 Hz ----
                仲裁：避障接管时传 0 → 循迹只算不发，电机让给避障（否则 100Hz 会把它冲掉）*/

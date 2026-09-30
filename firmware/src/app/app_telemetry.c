@@ -18,8 +18,10 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 10.00f, 0.00f, 0.05f, 15 };
-/* ↑ 2026-09-30：默认 kp 1.2→10、base_speed 30→15。
+static Params s_p = { 14.00f, 0.00f, 0.30f, 35 };
+/* ↑ 2026-10-01：kp=14、kd=0.3（加 D 项提前预判急弯）、base_speed=35
+   （15 太低：实测电机卡在死区，只跑 24mm/s ⇒ 差速没劲）。
+   2026-09-30：默认 kp 1.2→10、base_speed 30→15。
    改默认值的理由：跑车时插不了串口，断电后 SET 的参数会丢
    ⇒ 必须把“跑车那套参数”做进固件默认值里。A01/A02 以后可按需改。 */
 
@@ -98,6 +100,22 @@ static void handle_command(char *line)
     if (strcmp(line, "SNAP") == 0 || strcmp(line, "SNAP?") == 0) { Log_Status(); return; }
     if (strcmp(line, "DUMP") == 0)     { Log_Dump(); return; }
     if (strcmp(line, "SNAPFLASH") == 0){ Log_FlashInfo(); return; }
+
+    /* ---- 终点精停（T 头）----
+       ⚠️ 用 sscanf 而不是 atof/atoi：项目里已经链接了 sscanf，
+          而 atof/atoi 会额外拉进来 ~7KB ⇒ 会把固件顶进快照区（体积红线 48KB）*/
+    if (strncmp(line, "DISTCAL ", 8) == 0) {
+        float m = 0.0f;
+        if (sscanf(line + 8, "%f", &m) == 1) { Trace_DistCal(m); }
+        return;
+    }
+    if (strncmp(line, "STOPDIST ", 9) == 0) {
+        int d = 0;
+        if (sscanf(line + 9, "%d", &d) == 1) { Trace_SetStopDist(d); }
+        return;
+    }
+    if (strcmp(line, "FINSTAT") == 0)       { Trace_FinStatus(); return; }
+    if (strcmp(line, "FINRESET") == 0)      { Trace_FinReset(); return; }
 
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {

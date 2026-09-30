@@ -35,4 +35,14 @@ void    Trace_Step(uint8_t allow_drive);
 void    Trace_SetDrive(uint8_t on);     /* 命令 `TRACE 0|1` 用 */
 uint8_t Trace_GetDrive(void);
 
+/* ---- 终点精停（T 头 / 终止线）----
+   规则：车头必须过线，且车尾投影不得过线（20 分）
+   原理：正常巡线只有 1~2 路看到线；到终止线（横向 T 头）时 **8 路同时全黑**
+   ⚠️ 前提：赛道是「白底窄黑线」。若测试面是一大片黑（宽胶带/黑纸），会误触发 */
+void    Trace_DistCal(float meters);    /* 标定：ENCRESET → 推车走 meters 米 → 调它 */
+void    Trace_SetStopDist(int mm);      /* 设置「检到线后再前进多少 mm」（默认 60）*/
+void    Trace_FinStatus(void);          /* FINSTAT：打印精停状态 / 标定值 / 阈值 */
+void    Trace_FinReset(void);           /* FINRESET：复位精停状态，方便再跑一趟 */
+void    Trace_Dash(void);               /* 车载 OLED 仪表盘（main 主循环末尾调）*/
+
 #endif /* APP_TRACE_H */

@@ -34,6 +34,12 @@ void    Ol_TextTest(void);      /* ★ 中英文混排测试页 + 报告缺失�
 /* ---- 帧缓冲（1024 字节 = 8 页 × 128 列）；字符先画进缓冲再一次性刷屏 ---- */
 void    Ol_FbClear(void);
 void    Ol_FbFlush(void);
+/* 2× 放大的 ASCII：6×8 字模按 2×2 展开 ⇒ 12×16，**占 2 页**（页 page 与 page+1）
+   车载仪表盘用：一行只放 10 个字，但足够大、跑车时一眼看得见 ✓ */
+int     Ol_TextBig(int x, int page, const char *ascii);
+
+void    Ol_FbFlushPage(int page);   /* 只刷一页(128B) ⇒ 分页刷新，每次 ~3ms，
+                                       不卡控制循环（车载仪表盘用）✓ */
 int     Ol_Text(int x, int page, const char *utf8);   /* 返回缺失字符个数（-1 = 整串没画） */
 
 #endif /* DRV_OLED_H */
