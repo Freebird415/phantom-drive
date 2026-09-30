@@ -72,8 +72,16 @@ void Mpu_PrintDebug(void)
         printf("MPU> **读不到数据**（设备没应答；查接线与 AD0 接地）\r\n");
         return;
     }
-    printf("MPU> acc(g) x=%+.2f y=%+.2f z=%+.2f | gyro(dps) x=%+.1f y=%+.1f z=%+.1f | temp=%.1fC\r\n",
-           (double)(r[0] / ACC_LSB_PER_G), (double)(r[1] / ACC_LSB_PER_G), (double)(r[2] / ACC_LSB_PER_G),
-           (double)(r[4] / GYRO_LSB_PER_DPS), (double)(r[5] / GYRO_LSB_PER_DPS), (double)(r[6] / GYRO_LSB_PER_DPS),
-           (double)(r[3] / 340.0f + 36.53f));
+    {
+        char ax[16], ay[16], az[16], gx[16], gy[16], gz[16], tp[16];
+        Bsp_FmtFix(ax, sizeof ax, r[0] / ACC_LSB_PER_G, 2, 1);
+        Bsp_FmtFix(ay, sizeof ay, r[1] / ACC_LSB_PER_G, 2, 1);
+        Bsp_FmtFix(az, sizeof az, r[2] / ACC_LSB_PER_G, 2, 1);
+        Bsp_FmtFix(gx, sizeof gx, r[4] / GYRO_LSB_PER_DPS, 1, 1);
+        Bsp_FmtFix(gy, sizeof gy, r[5] / GYRO_LSB_PER_DPS, 1, 1);
+        Bsp_FmtFix(gz, sizeof gz, r[6] / GYRO_LSB_PER_DPS, 1, 1);
+        Bsp_FmtFix(tp, sizeof tp, r[3] / 340.0f + 36.53f, 1, 0);
+        printf("MPU> acc(g) x=%s y=%s z=%s | gyro(dps) x=%s y=%s z=%s | temp=%sC\r\n",
+               ax, ay, az, gx, gy, gz, tp);
+    }
 }

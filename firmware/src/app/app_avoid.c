@@ -17,6 +17,7 @@
 #include "app/app_telemetry.h"
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_motor.h"
+#include "bsp/bsp_board.h"      /* Bsp_FmtFix：不用浮点 printf（省 ~6KB）*/
 
 #include <stdio.h>
 
@@ -45,8 +46,12 @@ void Avoid_Init(void)
     s_drive    = 0u;                            /* ⚠️ 默认不发车 */
     s_mode     = 0u;
     s_until_ms = 0u;
-    printf("# AVOID 驱动=%s 触发距离=%.0fcm\r\n",
-           s_drive ? "开" : "关(只判断不发车)", (double)AV_NEAR_CM);
+    {
+        char cm[16];
+        Bsp_FmtFix(cm, sizeof cm, AV_NEAR_CM, 0, 0);
+        printf("# AVOID 驱动=%s 触发距离=%scm\r\n",
+               s_drive ? "开" : "关(只判断不发车)", cm);
+    }
 }
 
 void Avoid_Step(void)

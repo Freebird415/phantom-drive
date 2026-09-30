@@ -23,6 +23,7 @@
 #include "drv/drv_oled.h"      /* 车载仪表盘 */
 #include "drv/drv_hmi.h"       /* 精停蜂鸣两声 */
 #include "drv/drv_encoder.h"    /* 终点精停靠编码器计距 */
+#include "bsp/bsp_board.h"      /* Bsp_FmtFix：不用浮点 printf（省 ~6KB）*/
 
 #include <stdio.h>
 
@@ -36,6 +37,7 @@
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
+static uint8_t s_dash  = 1u;      /* 车载仪表盘开关（命令 DASH 0|1）*/
 static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常巡线，4 = 精停 */
 
 /* ==================== 终点精停（T 头 / 终止线）====================
@@ -81,8 +83,13 @@ void Trace_DistCal(float meters)
         return;
     }
     s_mm_per_cnt = (meters * 1000.0f) / (float)avg;
-    printf("# DISTCAL: 走了 %.3f m，计数 L=%d R=%d ⇒ mm/计数 = %.4f\r\n",
-           (double)meters, (int)l, (int)r, (double)s_mm_per_cnt);
+    {
+        char m3[16], mp[16];
+        Bsp_FmtFix(m3, sizeof m3, meters, 3, 0);
+        Bsp_FmtFix(mp, sizeof mp, s_mm_per_cnt, 4, 0);
+        printf("# DISTCAL: 走了 %s m，计数 L=%d R=%d ⇒ mm/计数 = %s\r\n",
+               m3, (int)l, (int)r, mp);
+    }
 }
 
 void Trace_SetStopDist(int mm)
@@ -102,9 +109,11 @@ void Trace_FinReset(void)
 void Trace_FinStatus(void)
 {
     const char *nm[3] = { "0=巡线", "1=走最后一段", "2=已刹车停" };
-    printf("# FIN %s | 全黑连续=%u/%u | 最后一段已走 %ld/%d mm | mm每计数=%.4f%s\r\n",
+    char mp[16];
+    Bsp_FmtFix(mp, sizeof mp, s_mm_per_cnt, 4, 0);
+    printf("# FIN %s | 全黑连续=%u/%u | 最后一段已走 %ld/%d mm | mm每计数=%s%s\r\n",
            (s_fin < 3u) ? nm[s_fin] : "?", (unsigned)s_fin_need, (unsigned)TR_FIN_NEED,
-           (long)s_fin_mm, s_fin_dist, (double)s_mm_per_cnt,
+           (long)s_fin_mm, s_fin_dist, mp,
            (s_mm_per_cnt > 0.0f) ? "" : " (未标定→按时间估算，不准)");
 }
 
@@ -120,6 +129,7 @@ static uint8_t tr_pack(const int s[8])
 
 void    Trace_SetDrive(uint8_t on) { s_drive = on ? 1u : 0u; }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
+void    Trace_DashEnable(uint8_t on) { s_dash = on ? 1u : 0u; }
 
 void Trace_Init(void)
 {
@@ -144,23 +154,26 @@ void Trace_Dash(void)
     LogDash d;
     char l[24];
 
-    if (s_drive) { return; }                  /* 跑车时不刷，保护控制循环 */
+    if (s_drive || !s_dash) { return; }       /* 跑车时不刷（护控制循环）；DASH 0 时也不刷 */
     if ((int32_t)(HAL_GetTick() - t_next) < 0) { return; }
     t_next = HAL_GetTick() + 500u;            /* 2Hz */
 
     Log_GetDash(&d);
-    float e = (double)d.err10 / 10.0;
+    float e = (float)d.err10 * 0.1f;
+    char kp[16], ee[16], tt[16];
+    Bsp_FmtFix(kp, sizeof kp, Tlm_Params()->kp, 2, 0);
+    Bsp_FmtFix(ee, sizeof ee, e, 1, 1);          /* 带正负号，等价 %+.1f */
+    Bsp_FmtFix(tt, sizeof tt, (float)d.n * 0.01f, 1, 0);   /* n/100 秒 */
 
     Ol_FbClear();                             /* 整屏清空 + 重画 + 一次刷完（简单=不出错）*/
     const char *mode = (s_state == 4u) ? "STOP" :
                        (s_fin   != 0u) ? "FIN " :
                        (e < -0.8f)     ? "LEFT" :
                        (e >  0.8f)     ? "RGHT" : "GO  ";
-    snprintf(l, sizeof l, "%-4s k%g v%d", mode,
-             (double)Tlm_Params()->kp, Tlm_Params()->base_speed);
+    snprintf(l, sizeof l, "%-4s k%s v%d", mode, kp, Tlm_Params()->base_speed);
     Ol_Text(0, 0, l);
 
-    snprintf(l, sizeof l, "e%+.1f L%3d R%3d", (double)e, d.pwm_l, d.pwm_r);
+    snprintf(l, sizeof l, "e%s L%3d R%3d", ee, d.pwm_l, d.pwm_r);
     Ol_Text(0, 1, l);
 
     snprintf(l, sizeof l, "gray %d", (int)d.bits);
@@ -172,7 +185,7 @@ void Trace_Dash(void)
     snprintf(l, sizeof l, "gy%+d F%ld/%d", d.gz, (long)s_fin_mm, s_fin_dist);
     Ol_Text(0, 4, l);
 
-    snprintf(l, sizeof l, "N%u %.1fs", (unsigned)d.n, (double)d.n / 100.0);
+    snprintf(l, sizeof l, "N%u %ss", (unsigned)d.n, tt);
     Ol_Text(0, 5, l);
 
     Ol_FbFlush();

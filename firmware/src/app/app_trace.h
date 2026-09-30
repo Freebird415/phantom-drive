@@ -45,4 +45,9 @@ void    Trace_FinStatus(void);          /* FINSTAT：打印精停状态 / 标定
 void    Trace_FinReset(void);           /* FINRESET：复位精停状态，方便再跑一趟 */
 void    Trace_Dash(void);               /* 车载 OLED 仪表盘（main 主循环末尾调）*/
 
+/* 仪表盘开关（命令 `DASH 0|1`）。
+   ⚠️ 仪表盘每 500ms 清屏重画，会把 `OLED` / `OLEDTXT` 的测试页盖掉；
+   所以发测试页前先 `DASH 0`（命令处理里已自动关），看完发 `DASH 1` 恢复。*/
+void    Trace_DashEnable(uint8_t on);
+
 #endif /* APP_TRACE_H */

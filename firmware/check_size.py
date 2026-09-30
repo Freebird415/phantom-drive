@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """编译后体积检查：固件不得压进【板载快照保留区】
 
-板载快照占 Flash 最后 16KB（0x0800C000 = 49152 字节）=> 固件必须 < 49152。
+板载快照占 Flash 最后 10KB（0x0800D800 = 55296 字节）=> 固件必须 < 55296。
 超了会互相覆盖（固件跑飞 / 快照被毁），而且【编译不会报警】—— 所以这里拦一道。
 背景见 firmware/src/app/app_log.h
 
@@ -9,7 +9,7 @@
 """
 Import("env")  # noqa: F821  (PlatformIO 注入)
 
-LIMIT = 0x0800C000 - 0x08000000          # 49152 字节
+LIMIT = 0x0800D800 - 0x08000000          # 55296 字节 = 54KB（快照保留区起点：最后 10KB 归快照）
 
 
 def check_size(source, target, env):  # noqa: ARG001
@@ -25,8 +25,8 @@ def check_size(source, target, env):  # noqa: ARG001
             "      1) 精简代码（别用 atof/atoi 这类会拉进大块库的函数）\n"
             "      2) 或调小 LOG_MAX_FRAMES / 减少保留页数（firmware/src/app/app_log.h）\n"
             % (size, LIMIT, size - LIMIT))
-    print("\n[OK] size check: firmware.bin = %d bytes, %d bytes left before 0x0800C000 (%.1f%% margin)\n"
-          % (size, LIMIT - size, (LIMIT - size) * 100.0 / LIMIT))
+    print("\n[OK] size check: firmware.bin = %d bytes, %d bytes left before snapshot area @0x%08X (%.1f%% margin)\n"
+          % (size, LIMIT - size, 0x08000000 + LIMIT, (LIMIT - size) * 100.0 / LIMIT))
 
 
 # 挂到【链接产物】上，而不是 buildprog 这个目标名 —— 挂 buildprog 时 `pio run` 根本不会触发它

@@ -1,7 +1,7 @@
 /* =============================================================================
  *  app_log.c —— 板载快照：RAM 记录 + 内部 Flash 持久化（详见 app_log.h）
  *
- *  Flash 布局（基址 0x0800C000，占最后 16KB = 16 页）：
+ *  Flash 布局（基址 0x0800D800，占最后 10KB = 10 页）：
  *      [0..3]   magic  0x50414E53（"SNAP"）
  *      [4..7]   帧数
  *      [8..11]  帧数据校验和（FNV-1a）
@@ -16,8 +16,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define LOG_FLASH_ADDR   0x0800C000UL   /* ⚠️ 见 app_log.h：固件必须 < 48KB */
-#define LOG_FLASH_PAGES  16u
+#define LOG_FLASH_ADDR   0x0800D800UL   /* ⚠️ 见 app_log.h：固件必须 < 54KB（最后 10KB 归快照）*/
+#define LOG_FLASH_PAGES  10u            /* 10 × 1KB = 10KB（2026-10-01 由 16KB 调小，给固件腾 6KB）*/
 #define LOG_FLASH_MAGIC  0x50414E53UL   /* "SNAP" */
 #define LOG_HDR_BYTES    16u
 
@@ -33,6 +33,12 @@ typedef struct {
                          ⇒ 用来【交叉验证】轮式里程计积出来的车头朝向 */
 } LogFrame;
 _Static_assert(sizeof(LogFrame) == 8, "LogFrame 必须是 8 字节（Flash 半字写入要求偶数）");
+
+/* Flash 保留区最多能放几帧（16B 头 + 帧）；RAM 环形缓冲不得超过它，
+   否则 Log_SaveFlash 会写出保留区 —— 编译器在这里直接拦下 */
+#define LOG_FLASH_MAX_FRAMES  ((LOG_FLASH_PAGES * 1024u - LOG_HDR_BYTES) / sizeof(LogFrame))
+_Static_assert(LOG_MAX_FRAMES <= LOG_FLASH_MAX_FRAMES,
+               "LOG_MAX_FRAMES 超过 Flash 保留区容量（改小帧数或调大 LOG_FLASH_PAGES）");
 
 /* 上一帧的编码器计数（算增量用）*/
 static LogFrame s_buf[LOG_MAX_FRAMES];
@@ -160,15 +166,19 @@ void Log_SaveFlash(void)
 {
     if (s_n == 0u) { return; }
     uint8_t hdr[LOG_HDR_BYTES];
-    uint32_t nbytes = (uint32_t)s_n * sizeof(LogFrame);   /* 帧长 8 字节 ⇒ 必为偶数 ✓ */
-    uint32_t magic = LOG_FLASH_MAGIC, cnt = s_n, sum = log_sum((const uint8_t *)s_buf, nbytes);
+    /* 只存【最新的】若干帧：万一 RAM 帧数超过保留区容量，丢最旧的而不是越界写 */
+    uint16_t n = s_n;
+    if (n > (uint16_t)LOG_FLASH_MAX_FRAMES) { n = (uint16_t)LOG_FLASH_MAX_FRAMES; }
+    const LogFrame *first = &s_buf[s_n - n];
+    uint32_t nbytes = (uint32_t)n * sizeof(LogFrame);     /* 帧长 8 字节 ⇒ 必为偶数 ✓ */
+    uint32_t magic = LOG_FLASH_MAGIC, cnt = n, sum = log_sum((const uint8_t *)first, nbytes);
     memset(hdr, 0, sizeof hdr);
     memcpy(hdr + 0, &magic, 4);
     memcpy(hdr + 4, &cnt,   4);
     memcpy(hdr + 8, &sum,   4);
 
-    if (log_flash_write(hdr, (const uint8_t *)s_buf, nbytes)) {
-        printf("# SNAP 已存入内部 Flash（%u 帧）—— 掉电不丢 ✓\r\n", (unsigned)s_n);
+    if (log_flash_write(hdr, (const uint8_t *)first, nbytes)) {
+        printf("# SNAP 已存入内部 Flash（%u 帧）—— 掉电不丢 ✓\r\n", (unsigned)n);
     } else {
         printf("# SNAP ✗ 存 Flash 失败（数据仍在 RAM，别断电）\r\n");
     }
@@ -179,7 +189,7 @@ void Log_LoadFlash(void)
     const uint32_t *w = (const uint32_t *)LOG_FLASH_ADDR;
     if (w[0] != LOG_FLASH_MAGIC) { return; }                   /* 没有有效快照 */
     uint32_t cnt = w[1], sum = w[2];
-    if (cnt == 0u || cnt > LOG_MAX_FRAMES) { return; }
+    if (cnt == 0u || cnt > (uint32_t)LOG_FLASH_MAX_FRAMES) { return; }
     uint32_t nbytes = cnt * sizeof(LogFrame);
     const uint8_t *src = (const uint8_t *)(LOG_FLASH_ADDR + LOG_HDR_BYTES);
     if (log_sum(src, nbytes) != sum) { return; }               /* 校验失败，忽略 */
@@ -252,8 +262,9 @@ void Log_Dump(void)
         for (int b = 0; b < 8; b++) {
             printf(",%d", (int)((f->bits >> b) & 1u));
         }
-        printf(",%.1f,%d,%d,%d,%d,%d,%d\r\n",
-               (double)f->err10 / 10.0, (int)f->pwm_l, (int)f->pwm_r, (int)f->state,
+        printf(",%d.%d,%d,%d,%d,%d,%d,%d\r\n",
+               (int)(f->err10 / 10), (int)(f->err10 % 10 < 0 ? -(f->err10 % 10) : f->err10 % 10),
+               (int)f->pwm_l, (int)f->pwm_r, (int)f->state,
                (int)f->dl, (int)f->dr, (int)(int8_t)f->gz8);
     }
     printf("# DUMP END n=%u\r\n", (unsigned)s_n);

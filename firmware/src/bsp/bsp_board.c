@@ -3,6 +3,7 @@
  * ========================================================================== */
 #include "bsp_board.h"
 #include <stdint.h>
+#include <stdio.h>
 
 /* ==================== 时钟 ==================== */
 void Bsp_ClockInit(void)
@@ -185,4 +186,33 @@ void Bsp_Uart2SetBaud(uint32_t baud)
 void USART2_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&s_huart2);
+}
+
+/* ---- 定点格式化（实现见 bsp_board.h 的说明）----
+   全程整数运算：把 v×10^dec 四舍五入成整数，再自己拼 ".dd" 尾巴。
+   好处：不链接 newlib 的浮点 printf（_dtoa_r + _printf_float + 双精度库 ≈ 6KB）。*/
+void Bsp_FmtFix(char *dst, int n, float v, int dec, int plus)
+{
+    static const int32_t SC[5] = { 1, 10, 100, 1000, 10000 };
+    int32_t scale, q, a, ip, fp;
+    const char *sign;
+
+    if (dec < 0) { dec = 0; }
+    if (dec > 4) { dec = 4; }
+    scale = SC[dec];
+
+    {   /* float → 整数（四舍五入；只需单精度乘加，不拉双精度库）*/
+        float x = v * (float)scale;
+        q = (int32_t)(x >= 0.0f ? x + 0.5f : x - 0.5f);
+    }
+    a = (q < 0) ? -q : q;
+    sign = (q < 0) ? "-" : (plus ? "+" : "");
+
+    if (dec == 0) {
+        snprintf(dst, (size_t)n, "%s%ld", sign, (long)a);
+    } else {
+        ip = a / scale;
+        fp = a % scale;
+        snprintf(dst, (size_t)n, "%s%ld.%0*ld", sign, (long)ip, dec, (long)fp);
+    }
 }

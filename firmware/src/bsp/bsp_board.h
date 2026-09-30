@@ -25,6 +25,18 @@ void Bsp_Uart2Init(void);
 UART_HandleTypeDef *Bsp_Uart2(void);
 void Bsp_Uart2SetBaud(uint32_t baud);   /* 运行时改 BLE 通道波特率（扫波特率用） */
 
+/* ---- 定点格式化（**不是硬件**，但必须放在最底层才能给 drv 与 app 共用）----
+ * 为什么不直接用 printf("%f")：newlib-nano 的浮点 printf 会拉进 _dtoa_r + _printf_float
+ * + 整套双精度软浮点库，实测占 **~6KB Flash**（本项目 Flash 很紧）。
+ * 本函数用整数运算自己拼字符串，输出与 printf("%.*f") **格式一致**，不拉库。
+ *   dst  : 输出缓冲（建议 ≥16 字节）
+ *   n    : 缓冲长度
+ *   v    : 要打印的值
+ *   dec  : 小数位数（0~4）
+ *   plus : 1 = 正数也带 '+'（等价 %+.2f）
+ * 例：Bsp_FmtFix(b,n,1.01f,2,0) → "1.01"；Bsp_FmtFix(b,n,-4.3f,1,1) → "-4.3" */
+void Bsp_FmtFix(char *dst, int n, float v, int dec, int plus);
+
 /* ---- 指示灯：核心板 PC13（低电平点亮） ---- */
 void Bsp_LedInit(void);
 void Bsp_LedToggle(void);

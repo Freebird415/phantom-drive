@@ -30,9 +30,11 @@ Params *Tlm_Params(void) { return &s_p; }
 /* ==================== 发帧 ==================== */
 void Tlm_SendParams(void)
 {
-    printf("$P,%u,%.2f,%.2f,%.2f,%d\r\n",
-           (unsigned)HAL_GetTick(),
-           (double)s_p.kp, (double)s_p.ki, (double)s_p.kd, s_p.base_speed);
+    char a[16], b[16], c[16];
+    Bsp_FmtFix(a, sizeof a, s_p.kp, 2, 0);
+    Bsp_FmtFix(b, sizeof b, s_p.ki, 2, 0);
+    Bsp_FmtFix(c, sizeof c, s_p.kd, 2, 0);
+    printf("$P,%u,%s,%s,%s,%d\r\n", (unsigned)HAL_GetTick(), a, b, c, s_p.base_speed);
 }
 
 void Tlm_SendEvent(uint8_t code, const char *note)
@@ -42,10 +44,12 @@ void Tlm_SendEvent(uint8_t code, const char *note)
 
 void Tlm_SendT(uint32_t ms, const int s[8], float err, int pwm_l, int pwm_r, int state)
 {
-    printf("$T,%u,%d,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%d\r\n",
+    char e[16];
+    Bsp_FmtFix(e, sizeof e, err, 1, 0);
+    printf("$T,%u,%d,%d,%d,%d,%d,%d,%d,%d,%s,%d,%d,%d\r\n",
            (unsigned)ms,
            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-           (double)err, pwm_l, pwm_r, state);
+           e, pwm_l, pwm_r, state);
 }
 
 void Tlm_SendU(uint32_t ms, int32_t l_mm, int32_t r_mm)
@@ -72,6 +76,49 @@ static volatile uint8_t s_cmd_pending = 0;
 static uint8_t s_us_auto = 1;      /* 主循环自动测超声波；AUTO 0 可关（调试用） */
 
 uint8_t Tlm_UsAuto(void) { return s_us_auto; }
+
+/* ---- 轻量浮点解析（**不要**用 sscanf("%f")）--------------------------------
+   ⚠️ newlib-nano 的 %f 【解析】需要单独链接 `-Wl,-u,_scanf_float`；
+      实测把固件从 47.3KB 顶到 53.9KB（超当时的 48KB 红线）⇒ 所以自己解析（几十字节，不拉库）。
+      同理**打印**也一律用 Bsp_FmtFix（%f 会拉 ~9KB）。
+      同样原因也不能用 atof（拉 ~7KB）。
+   支持：前导空格、正负号、整数、小数；缺省 0。返回 1 = 至少解析出一个数字。 */
+static int parse_float(const char *s, float *out)
+{
+    int neg = 0, got = 0;
+    float v = 0.0f, frac = 0.1f;
+    while (*s == ' ' || *s == '\t') { s++; }
+    if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+    while (*s >= '0' && *s <= '9') { v = v * 10.0f + (float)(*s - '0'); got = 1; s++; }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9') {
+            v += (float)(*s - '0') * frac; frac *= 0.1f; got = 1; s++;
+        }
+    }
+    if (!got) { return 0; }
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* ---- 轻量整数解析（同样是为了不拉 sscanf 库）--------------------
+   返回：解析到的数字个数（0 = 一个都没解析到）。
+   分隔符不限定是空格：遇到的第一个非数字字符就当下一段的开始。 */
+static int parse_int(const char *s, int *out)
+{
+    int got = 0;
+    while (*s != 0) {
+        int neg = 0, v = 0, d = 0;
+        while (*s == ' ' || *s == '\t' || *s == ',') { s++; }
+        if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); d = 1; s++; }
+        if (d) { if (out) { *out = neg ? -v : v; } got++; }
+        if (*s != 0 && !( (*s >= '0' && *s <= '9') || *s == ' ' || *s == '\t' || *s == ','
+                          || *s == '+' || *s == '-' )) { s++; }
+        if (out) { out++; }
+    }
+    return got;
+}
 
 static void handle_command(char *line)
 {
@@ -102,16 +149,16 @@ static void handle_command(char *line)
     if (strcmp(line, "SNAPFLASH") == 0){ Log_FlashInfo(); return; }
 
     /* ---- 终点精停（T 头）----
-       ⚠️ 用 sscanf 而不是 atof/atoi：项目里已经链接了 sscanf，
-          而 atof/atoi 会额外拉进来 ~7KB ⇒ 会把固件顶进快照区（体积红线 48KB）*/
+       ⚠️ 参数解析用 parse_float（不用 sscanf "%f"，也不 atof）—— 见文件上方注释 */
     if (strncmp(line, "DISTCAL ", 8) == 0) {
         float m = 0.0f;
-        if (sscanf(line + 8, "%f", &m) == 1) { Trace_DistCal(m); }
+        if (parse_float(line + 8, &m)) { Trace_DistCal(m); }
+        else { printf("# 用法：DISTCAL <米>   例：ENCRESET → 推车走 1m → DISTCAL 1.0\r\n"); }
         return;
     }
     if (strncmp(line, "STOPDIST ", 9) == 0) {
         int d = 0;
-        if (sscanf(line + 9, "%d", &d) == 1) { Trace_SetStopDist(d); }
+        if (parse_int(line + 9, &d) == 1) { Trace_SetStopDist(d); }
         return;
     }
     if (strcmp(line, "FINSTAT") == 0)       { Trace_FinStatus(); return; }
@@ -120,7 +167,7 @@ static void handle_command(char *line)
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {
         int id = -1, n = 1;
-        if (line[2] == ' ') { (void)sscanf(line + 3, "%d %d", &id, &n); }
+        if (line[2] == ' ') { (void)parse_int(line + 3, &id); }
         if (id < -1 || id > 1) { id = -1; }
         if (n < 1) { n = 1; }
         if (n > 30) { n = 30; }
@@ -147,7 +194,7 @@ static void handle_command(char *line)
     /* ---- BLE 波特率扫描：BTBAUD <n> 改速率；BTAT 发 AT 看回什么 ---- */
     if (strncmp(line, "BTBAUD ", 7) == 0) {
         int b = 0;
-        if (sscanf(line + 7, "%d", &b) == 1 && b >= 1200 && b <= 921600) {
+        if (parse_int(line + 7, &b) == 1 && b >= 1200 && b <= 921600) {
             Bsp_Uart2SetBaud((uint32_t)b);
             printf("# BLE baud -> %d\r\n", b);
             HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
@@ -212,7 +259,7 @@ static void handle_command(char *line)
     if (strcmp(line, "KEY") == 0)  { Hmi_PrintDebug(); return; }
     if (strncmp(line, "BEEP", 4) == 0) {
         int ms = 200;
-        if (line[4] == ' ') { (void)sscanf(line + 5, "%d", &ms); }
+        if (line[4] == ' ') { (void)parse_int(line + 5, &ms); }
         if (ms < 1) { ms = 1; } if (ms > 3000) { ms = 3000; }
         printf("HMI> 蜂鸣 %d ms\r\n", ms);
         Hmi_Beep((uint16_t)ms);
@@ -236,9 +283,9 @@ static void handle_command(char *line)
 
     /* ---- 电机 (TB6612) ---- */
     if (strncmp(line, "MOT", 3) == 0) {              /* MOT <左 %> <右 %> ；不带参数=报当前状态 */
-        int l = 0, r = 0;
-        if (line[3] == ' ' && sscanf(line + 4, "%d %d", &l, &r) == 2) {
-            Mo_Set(l, r);
+        int v[2] = {0, 0};
+        if (line[3] == ' ' && parse_int(line + 4, v) == 2) {
+            Mo_Set(v[0], v[1]);
         }
         Mo_PrintDebug();
         return;
@@ -255,14 +302,33 @@ static void handle_command(char *line)
         Ol_Present();
         return;
     }
-    if (strcmp(line, "OLED") == 0) { Ol_PrintDebug(); return; }
-    if (strcmp(line, "OLEDTXT") == 0) { Ol_TextTest(); return; }
+    if (strcmp(line, "OLED") == 0) {
+        Trace_DashEnable(0u);      /* 先停仪表盘，否则测试图案 0.5s 就被盖掉 */
+        Ol_PrintDebug();
+        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
+        return;
+    }
+    if (strcmp(line, "OLEDTXT") == 0) {
+        Trace_DashEnable(0u);
+        Ol_TextTest();
+        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
+        return;
+    }
+    if (strncmp(line, "DASH ", 5) == 0) {
+        Trace_DashEnable(line[5] == '1');
+        printf("# DASH=%c\r\n", line[5] == '1' ? '1' : '0');
+        return;
+    }
 
     /* ---- 在线调参 ---- */
     if (strncmp(line, "SET ", 4) == 0) {
-        char  name[16] = {0};
+        char name[16] = {0};
         float val = 0.0f;
-        if (sscanf(line + 4, "%15s %f", name, &val) == 2) {
+        const char *p = line + 4;
+        int i = 0;
+        while (p[i] != 0 && p[i] != ' ' && i < (int)sizeof(name) - 1) { name[i] = p[i]; i++; }
+        name[i] = 0;
+        if (i > 0 && parse_float(p + i, &val)) {
             if      (strcmp(name, "kp") == 0)         { s_p.kp = val; }
             else if (strcmp(name, "ki") == 0)         { s_p.ki = val; }
             else if (strcmp(name, "kd") == 0)         { s_p.kd = val; }

@@ -7,16 +7,15 @@
  *  两层存储：
  *    ① **RAM**（`LOG_MAX_FRAMES` 帧 × 8B，100Hz ⇒ 十几秒）
  *       跑车过程中只写这里 —— **零阻塞**，不影响控制节奏 ✓
- *    ② **内部 Flash**（最后 16KB，地址 0x0800C000）
+ *    ② **内部 Flash**（最后 10KB，地址 0x0800D800，10 页）
  *       停车时（`Log_Stop()`）**自动把 RAM 内容写进去** ⇒ **掉电不丢** ✓
  *       上电时（`Log_LoadFlash()`）自动恢复 ⇒ `DUMP` / `SNAP?` 照常看到 ✓
  *
- *  ⚠️ **固件体积红线**：Flash 最后 16KB（0x0800C000 起）被快照占用
- *     ⇒ **固件必须 < 48KB**（64KB − 16KB）。**实测必看 `firmware.bin` 大小，
- *     别只看 PlatformIO 的百分比**；`firmware/check_size.py` 会在编译后
+ *  ⚠️ **固件体积红线**：Flash 最后 10KB（0x0800D800 起）被快照占用
+ *     ⇒ **固件必须 < 54KB**（64KB − 10KB）；`firmware/check_size.py` 会在编译后
  *     自动比对，超了直接报错（这类覆盖问题编译器本身不会提醒）。
  *
- *  ⚠️ Flash 擦写会**停住 CPU 约 0.5 秒**（16 页）—— 所以只在"停车后"写，
+ *  ⚠️ Flash 擦写会**停住 CPU 约 0.3 秒**（10 页）—— 所以只在"停车后"写，
  *     跑车过程中绝不写 Flash。
  *
  *  帧内容（8 字节）：8 路灰度(1) + err×10(1) + pwm_l(1) + pwm_r(1) + state(1)
@@ -34,7 +33,9 @@
 
 #include <stdint.h>
 
-#define LOG_MAX_FRAMES  1600u   /* 1600 × 8B = 12.8KB；100Hz ⇒ 约 16 秒 */
+#define LOG_MAX_FRAMES  1200u   /* 1200 × 8B = 9.6KB ram；100Hz ⇒ 约 12 秒。
+                                   上限由 Flash 保留区决定（见 app_log.c 的 _Static_assert）：
+                                   10KB 区 − 16B 头 = 10224B ⇒ 最多 1278 帧，取 1200 留余量 */
 
 void     Log_Reset(void);                        /* 清 RAM + 使 Flash 快照失效 */
 void     Log_Start(void);                        /* 开始记录（只写 RAM）*/
