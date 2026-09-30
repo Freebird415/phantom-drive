@@ -14,6 +14,7 @@
 | `telemetry.py` | 协议解析 + 实验档案（被上面两个脚本共用）|
 | `snapshot.py` | **读板载快照**（跑车插不了串口）：发 `DUMP` → 存 CSV → 调 `plot.py` 出图 |
 | `track.py` | **航位推算重建实际轨迹**（用快照里的左右轮真实增量 `dL/dR` ⇒ 画出走过的形状）|
+| `自检.py` | **元件自检**：自动测 I2C 器件/快照 + 人配合测按键/蜂鸣器/编码器/电机，结果存入 `logs/` |
 | `生成字库.py` | 按字表生成 OLED 的子集字库（改字表 → 重跑 → 重新编译）|
 
 ## 用法（在仓库根目录执行）
@@ -23,6 +24,13 @@ python tools/run.py --note "过弯抖" --seconds 30          # 完整流程（�
 python tools/run.py --note "..." --seconds 20 --no-flash # 只采集
 python tools/run.py --ports                              # 查看串口
 python tools/plot.py logs/<某次实验目录>                  # 单独出图
+```
+
+```bash
+# 动过接线/换板/保险丝之后跑一遍（人在车边配合；测电机前会要求确认轮子已架空）
+python tools/自检.py
+python tools/自检.py --port COM9          # 指定串口
+python tools/自检.py --skip-motor         # 只测不动车的部分
 ```
 
 **跑车（插不了串口）用板载快照**：
