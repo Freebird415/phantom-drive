@@ -50,6 +50,18 @@ void     Log_LoadFlash(void);                    /* 上电时从 Flash 恢复（
    bits8：bit0=第1路 … bit7=第8路；1 = 黑 */
 void     Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state);
 
+/* ---- BLE 【实时】日志回传（<工具 tools/btlog.py）----
+   为什么要它：跑车时插不了串口；BLE 把线砍掉了 ⇒ 数据边跑边传。
+   帧格式：就是快照的 8 字节帧（与 DUMP/CSV 完全一致）
+   速率：主循环每 2 拍发一帧（100Hz ⇒ 50Hz、400 B/s）；
+       9600bps 的串口上限 ~960 B/s ⇒ 占 ~42%，余量充足。
+   ⚠️ 发送走 Bsp_Uart2Tx 队列（非阻塞），不会拖慢控制周期。*/
+void     Log_SetBle(uint8_t on);        /* 命令 BTL 0|1 */
+uint8_t  Log_Ble(void);
+uint16_t Log_BleDrop(void);             /* 队列满丢弃字节数 */
+void     Log_BleTick(void);             /* main 主循环调（每拍一次）*/
+const uint8_t *Log_LiveFrame(void);     /* 最新一帧的 8 字节（不论是否在记录）*/
+
 /* 最近一帧（给 OLED 仪表盘看）*/
 typedef struct {
     uint8_t bits; int err10, pwm_l, pwm_r, state;

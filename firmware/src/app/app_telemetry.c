@@ -144,6 +144,14 @@ static void handle_command(char *line)
     if (strcmp(line, "SNAP 1") == 0)   { Log_Reset(); Log_Start(); Log_Status(); return; }
     if (strcmp(line, "SNAP 0") == 0)   { Log_Stop(); Log_Status(); return; }
     if (strcmp(line, "SNAPRESET") == 0){ Log_Reset(); Log_Status(); return; }
+    /* BLE 实时日志回传（跑车时插不了串口，用无线把 8B 帧发回电脑）*/
+    if (strncmp(line, "BTL ", 4) == 0) {
+        Log_SetBle(line[4] == '1');
+        printf("# BTL=%u  (%s)  4B同步头+6x8B帧=52B/次, 每180ms一次, 实测送达~7.7帧/s  drop=%u\r\n",
+               (unsigned)Log_Ble(), Log_Ble() ? "开：数据从 BLE 推给电脑" : "关",
+               (unsigned)Log_BleDrop());
+        return;
+    }
     if (strcmp(line, "SNAP") == 0 || strcmp(line, "SNAP?") == 0) { Log_Status(); return; }
     if (strcmp(line, "DUMP") == 0)     { Log_Dump(); return; }
     if (strcmp(line, "SNAPFLASH") == 0){ Log_FlashInfo(); return; }
@@ -209,6 +217,7 @@ static void handle_command(char *line)
         static const uint8_t form[2][4] = { { 'A', 'T', 13, 10 }, { 'A', 'T', 0, 0 } };
         static const uint8_t flen[2]    = { 4u, 2u };
         char out[40];
+        Bsp_Uart2TxAbort();                      /* 阻塞式发送前清空日志队列，避免抢 UART */
         HAL_UART_AbortReceive_IT(Bsp_Uart2());
         for (int f = 0; f < 2; f++) {
             uint8_t c; int n = 0;
@@ -231,6 +240,7 @@ static void handle_command(char *line)
        例：BTSEND AT+VERSION   /   BTSEND AT+BAUD  */
     if (strncmp(line, "BTSEND ", 7) == 0) {
         char out[40]; int n = 0; uint8_t c;
+        Bsp_Uart2TxAbort();                      /* 阻塞式发送前清空日志队列，避免抢 UART */
         HAL_UART_AbortReceive_IT(Bsp_Uart2());
         HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)(line + 7),
                           (uint16_t)strlen(line + 7), 200);
@@ -261,8 +271,14 @@ static void handle_command(char *line)
         int ms = 200;
         if (line[4] == ' ') { (void)parse_int(line + 5, &ms); }
         if (ms < 1) { ms = 1; } if (ms > 3000) { ms = 3000; }
-        printf("HMI> 蜂鸣 %d ms\r\n", ms);
+        printf("HMI> 蜂鸣 %d ms%s\r\n", ms, Hmi_Mute() ? "（静音中，不会响）" : "");
         Hmi_Beep((uint16_t)ms);
+        return;
+    }
+    /* 静音开关：旁边有人休息/台面反复调试时用（只拦 Hmi_Beep，不影响 BeepOn/Off）*/
+    if (strncmp(line, "MUTE ", 5) == 0) {
+        Hmi_SetMute(line[5] == '1');
+        printf("# MUTE=%u  %s\r\n", (unsigned)Hmi_Mute(), Hmi_Mute() ? "(蜂鸣器已静音)" : "(恢复)");
         return;
     }
 
@@ -345,7 +361,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2) {          /* BLE：原样回声 + 打到调试口 */
         char c = (char)s_blebyte;
-        HAL_UART_Transmit(Bsp_Uart2(), &s_blebyte, 1, 50);
+        Bsp_Uart2Tx(&s_blebyte, 1);           /* 非阻塞回声（别拖主循环）*/
         if (c == '\n' || c == '\r') {
             if (s_blerlen > 0) { s_bleline[s_blerlen] = 0; printf("# BLE< %s\r\n", s_bleline); s_blerlen = 0; }
         } else if (s_blerlen < sizeof(s_bleline) - 1) {

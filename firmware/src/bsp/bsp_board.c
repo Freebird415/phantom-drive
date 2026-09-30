@@ -183,6 +183,61 @@ void Bsp_Uart2SetBaud(uint32_t baud)
     (void)HAL_UART_Init(&s_huart2);
 }
 
+/* ==================== USART2 非阻塞发送（环形队列）==================== */
+#define U2TXQ 256u                       /* 256B：8B 帧 @50Hz ⇒ 可缓冲 ~0.6s */
+static uint8_t           s_u2q[U2TXQ];
+static volatile uint16_t s_u2h, s_u2t;
+static uint8_t           s_u2cur;        /* 正在发送的那一字节（必须稳定地址）*/
+static volatile uint8_t  s_u2busy;       /* 1 = 有一字节正在路上 */
+static volatile uint16_t s_u2drop;       /* 队列满丢弃的字节数 */
+
+static void u2_kick(void)
+{
+    /* ⚠️ 关键：正在发就直接返回，让 TxCplt 接着推。
+       否则会向一个 BUSY 的 UART 重发而把已出队的字节丢掉
+       （实测丢的是同步头里的一个字节 ⇒ PC 端永远找不到完整同步头）*/
+    if (s_u2busy) { return; }
+    if (s_u2h == s_u2t) { return; }                     /* 队列空 */
+
+    s_u2cur = s_u2q[s_u2h];
+    s_u2h = (uint16_t)((s_u2h + 1u) % U2TXQ);
+    s_u2busy = 1u;
+    if (HAL_UART_Transmit_IT(&s_huart2, &s_u2cur, 1) != HAL_OK) {
+        s_u2h = (uint16_t)((s_u2h + U2TXQ - 1u) % U2TXQ);   /* 没发起来：字节退回队列 */
+        s_u2busy = 0u;
+    }
+}
+
+void Bsp_Uart2Tx(const uint8_t *d, uint16_t n)
+{
+    __disable_irq();                                    /* 与 TxCplt 互斥（仅几周期）*/
+    for (uint16_t i = 0; i < n; i++) {
+        uint16_t nt = (uint16_t)((s_u2t + 1u) % U2TXQ);
+        if (nt == s_u2h) { s_u2drop = (uint16_t)(s_u2drop + (n - i)); break; }
+        s_u2q[s_u2t] = d[i];
+        s_u2t = nt;
+    }
+    __enable_irq();
+    u2_kick();
+}
+
+void Bsp_Uart2TxAbort(void)
+{
+    __disable_irq();
+    s_u2h = s_u2t = 0u;
+    s_u2busy = 0u;
+    __enable_irq();
+    (void)HAL_UART_AbortTransmit(&s_huart2);
+}
+
+uint16_t Bsp_Uart2TxDrops(void) { return s_u2drop; }
+
+/* 每发完一字节继续推队列 */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) { s_u2busy = 0u; u2_kick(); }
+}
+
 void USART2_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&s_huart2);

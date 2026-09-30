@@ -39,6 +39,8 @@ int main(void)
     Hmi_Init();
     Mpu_Init();
     Bsp_UartInit();
+    Bsp_Uart2Init();         /* ⚠️ BLE 串口（PA2/PA3）—— 漏了这句的话，BT/BTAT/BTSEND
+                                会对着【未初始化】的串口发数据，HAL 直接返回错误（静默失败）*/
     Tlm_Init();
 
     /* 算法初始化放最后：它们要串口打印自检信息 */
@@ -91,8 +93,10 @@ int main(void)
                     } else {
                         /* ⚠️ 故意**不** Log_Reset()（同上：防误碰清掉上一趟数据）*/
                         Trace_FinReset();          /* 复位终点精停状态，准备新一趟 */
+                        Log_SetBle(1u);            /* ⭐ 顺便开无线回传：跑车时插不了串口，
+                                                      长按按钮就把数据推到电脑 ✓ */
                         Log_Start(); Trace_SetDrive(1u);
-                        printf("# BTN(长按1s): 开始记录 + 发车（从 n=%u 接着记）\r\n",
+                        printf("# BTN(长按1s): 开始记录 + 发车 + BLE回传（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
                     }
                 }
@@ -131,6 +135,7 @@ int main(void)
         if ((int32_t)(HAL_GetTick() - next_t) >= 0) {
             next_t += 10;
             Trace_Step(Avoid_Mode() ? 0u : 1u);          /* A01：读灰度→算误差→控电机→发 $T */
+            Log_BleTick();                              /* BLE 实时日志回传（BTL 1 才发）*/
         }
     }
 }

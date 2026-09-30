@@ -25,6 +25,14 @@ void Bsp_Uart2Init(void);
 UART_HandleTypeDef *Bsp_Uart2(void);
 void Bsp_Uart2SetBaud(uint32_t baud);   /* 运行时改 BLE 通道波特率（扫波特率用） */
 
+/* ---- USART2 【非阻塞】发送：环形队列 + 中断发送（BLE 日志流用）----
+   为什么要它：9600bps 下 8 字节要 ~8.3ms，而控制周期只有 10ms ——
+   阻塞发送会把控制循环吃掉 ⇒ 一律走这个队列。
+   ⚠️ 队列满时【丢弃并计数】（Bsp_Uart2TxDrops），绝不阻塞。 */
+void     Bsp_Uart2Tx(const uint8_t *d, uint16_t n);
+void     Bsp_Uart2TxAbort(void);        /* 清队列 + 停中断发送（AT 类阻塞命令前调）*/
+uint16_t Bsp_Uart2TxDrops(void);        /* 累计丢弃字节数（诊断用）*/
+
 /* ---- 定点格式化（**不是硬件**，但必须放在最底层才能给 drv 与 app 共用）----
  * 为什么不直接用 printf("%f")：newlib-nano 的浮点 printf 会拉进 _dtoa_r + _printf_float
  * + 整套双精度软浮点库，实测占 **~6KB Flash**（本项目 Flash 很紧）。

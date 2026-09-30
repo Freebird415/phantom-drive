@@ -14,6 +14,7 @@
 | `telemetry.py` | 协议解析 + 实验档案（被上面两个脚本共用）|
 | `snapshot.py` | **读板载快照**（跑车插不了串口）：发 `DUMP` → 存 CSV → 调 `plot.py` 出图 |
 | `track.py` | **航位推算重建实际轨迹**（用快照里的左右轮真实增量 `dL/dR` ⇒ 画出走过的形状）|
+| `btlog.py` | **BLE 无线日志**（跑车时不用插串口）：自动识别模块 → 订阅 FFE1 → 解 8B 帧 → CSV/图 |
 | `自检.py` | **元件自检**：自动测 I2C 器件/快照 + 人配合测按键/蜂鸣器/编码器/电机，结果存入 `logs/` |
 | `生成字库.py` | 按字表生成 OLED 的子集字库（改字表 → 重跑 → 重新编译）|
 
@@ -32,6 +33,16 @@ python tools/自检.py
 python tools/自检.py --port COM9          # 指定串口
 python tools/自检.py --skip-motor         # 只测不动车的部分
 ```
+
+**跑车（无线，主链路）**：
+
+```bash
+python tools/btlog.py --note "A4 直线 kp14" --seconds 30   # 车通电即自动回传（BTL 默认开）
+python tools/btlog.py --scan                              # 看附近有哪些 BLE 设备
+python tools/btlog.py --raw --seconds 60                   # 顺手存原始字节，排查用
+```
+> ⚠️ 实测天花板 **~60~70 B/s ⇒ 直播 ~7.7 帧/s**（这类克隆模块 ~1 通知/s × ~60B 缓冲）。
+> 要看 100Hz 全精度数据仍用板载快照（下面这条）。
 
 **跑车（插不了串口）用板载快照**：
 

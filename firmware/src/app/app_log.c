@@ -9,6 +9,7 @@
  *      [16..]   帧数据，5 字节/帧，紧排
  * ========================================================================== */
 #include "app/app_log.h"
+#include "bsp/bsp_board.h"    /* Bsp_Uart2Tx：BLE 实时回传（非阻塞）*/
 #include "drv/drv_encoder.h"      /* 每帧记左右轮编码器增量 ⇒ 事后重建轨迹 */
 #include "drv/drv_mpu6050.h"      /* 陀螺仪偏航率 ⇒ 交叉验证轨迹 */
 #include "stm32f1xx_hal.h"
@@ -42,6 +43,7 @@ _Static_assert(LOG_MAX_FRAMES <= LOG_FLASH_MAX_FRAMES,
 
 /* 上一帧的编码器计数（算增量用）*/
 static LogFrame s_buf[LOG_MAX_FRAMES];
+static LogFrame s_live;                  /* 最新一帧（BLE 实时回传用）*/
 static uint16_t s_n;
 static uint8_t  s_rec;
 static uint8_t  s_full;
@@ -86,17 +88,9 @@ void Log_Stop(void)
 uint8_t Log_IsRecording(void) { return s_rec; }
 uint16_t Log_Count(void)  { return s_n; }
 
-void Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state)
+/* 组一帧（不论录不录都要组：录进 RAM、也用于 BLE 实时回传）*/
+static void log_pack(LogFrame *f, uint8_t bits8, float err, int pwm_l, int pwm_r, int state)
 {
-    if (!s_rec) { return; }
-    if (s_n >= LOG_MAX_FRAMES) {
-        /* ⚠️ 写满即停，绝不覆盖 —— 保证已经记下的不会丢 */
-        s_rec = 0; s_full = 1;
-        printf("# SNAP FULL: 已记满 %u 帧，停止记录（数据保留，停车时会存入 Flash）\r\n",
-               (unsigned)LOG_MAX_FRAMES);
-        return;
-    }
-    LogFrame *f = &s_buf[s_n++];
     f->bits  = bits8;
     f->err10 = sat_i8((int)(err * 10.0f + (err >= 0.0f ? 0.5f : -0.5f)));
     f->pwm_l = sat_i8(pwm_l);
@@ -118,6 +112,68 @@ void Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state)
         if (g < -127) { g = -127; }
         f->gz8 = (uint8_t)(int8_t)g;
     }
+}
+
+void Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state)
+{
+    LogFrame f;
+
+    log_pack(&f, bits8, err, pwm_l, pwm_r, state);
+    s_live = f;                             /* BLE 实时回传用的最新一帧 */
+
+    if (!s_rec) { return; }
+    if (s_n >= LOG_MAX_FRAMES) {
+        /* ⚠️ 写满即停，绝不覆盖 —— 保证已经记下的不会丢 */
+        s_rec = 0; s_full = 1;
+        printf("# SNAP FULL: 已记满 %u 帧，停止记录（数据保留，停车时会存入 Flash）\r\n",
+               (unsigned)LOG_MAX_FRAMES);
+        return;
+    }
+    s_buf[s_n++] = f;
+}
+
+/* ==================== BLE 实时日志回传 ==================== */
+/* ⚠️ BLE 日志回传**上电默认开**：跑车时插不了串口，不能指望用命令去开它
+   （长按 PA12 按钮发车时也会再确认一次）。不想要就发 `BTL 0`。*/
+static uint8_t s_ble_on = 1u;
+static uint8_t s_preamble = 1u; /* 兼容旧字段（现在同步头每帧都发）*/
+
+void    Log_SetBle(uint8_t on) { s_ble_on = on ? 1u : 0u; s_preamble = s_ble_on; }
+uint8_t Log_Ble(void) { return s_ble_on; }
+uint16_t Log_BleDrop(void) { return Bsp_Uart2TxDrops(); }
+const uint8_t *Log_LiveFrame(void) { return (const uint8_t *)&s_live; }
+
+void Log_BleTick(void)
+{
+    static uint8_t div;
+    static uint8_t burst[6u * 8u];        /* 攒 6 帧 = 48B */
+    static uint8_t nf;
+
+    if (!s_ble_on) { return; }
+    if ((div = (uint8_t)(div + 1u)) < 3u) { return; }    /* 100Hz → 33.3Hz 采样 */
+    div = 0u;
+
+    for (uint8_t i = 0; i < sizeof(LogFrame); i++) {
+        burst[nf * 8u + i] = ((const uint8_t *)&s_live)[i];
+    }
+    if (++nf < 6u) { return; }
+    nf = 0;
+
+    /* ⚠️ 下面的数字全部是 **2026-10-01 实测**（两块模块：JDY-69A-BLE 与 HC-06，结论一致）：
+       ① 模块【每 ~1 秒】才把缓冲吐成一条 BLE 通知；
+       ② 一次写入【超过 ~60 字节】会被整个丢弃（写 60B → 收到 62B ✓；写 120/200/300B → 收到 0 ✗）；
+       ③ 连接参数不是瓶颈：已用 WinRT ThroughputOptimized 把间隔 30→15ms、latency 10→0，
+          吞吐【一点没变】⇒ 卡的是模块固件自己的刷写节流。
+       ⇒ 字节率天花板 ≈ 60~70 B/s。因此：**帧越瘦，采样率越高**：
+          8B/帧 → ~8 Hz（当前）｜4B/帧 → ~16 Hz｜2B/帧 → ~30 Hz
+       本配置（4B 同步头 + 6×8B = 52B，每 180ms 一次）实测送达 7.7 帧/s，已经贴着天花板 ✓
+       要看 100Hz 全精度数据用板载快照（DUMP / tools/snapshot.py）；
+       BLE 这一路是"实时看趋势"。*/
+    {
+        static const uint8_t pre[4] = { 0xAA, 0x55, 0xAA, 0x55 };
+        Bsp_Uart2Tx(pre, sizeof pre);
+    }
+    Bsp_Uart2Tx(burst, sizeof burst);
 }
 
 /* ------------------------------ Flash ------------------------------ */
