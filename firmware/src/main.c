@@ -21,6 +21,7 @@
 #include "app/app_telemetry.h"
 #include "app/app_trace.h"          /* A01 循迹（熊雅琦）*/
 #include "app/app_avoid.h"          /* A02 避障（毕烨恺）*/
+#include "app/app_log.h"            /* 板载 RAM 快照 */
 
 #include <stdio.h>
 
@@ -43,6 +44,10 @@ int main(void)
     /* 算法初始化放最后：它们要串口打印自检信息 */
     Trace_Init();            /* A01：探测灰度是否在线 */
     Avoid_Init();            /* A02 */
+    Log_LoadFlash();         /* ⚠️ 先尝试从 Flash 恢复上次跑车的数据（掉电保留）。
+                                 **不要**在这里调 Log_Reset() —— 那会把 Flash 快照抹掉。 */
+    printf("# 跑车提示：**长按 PA12 按钮 1 秒** = 发车 + 开始记录；再长按 1 秒 = 停车 + 停止记录；"
+           "跑完插回串口发 DUMP\r\n");
 
     Tlm_SendParams();                                    /* 上电先报一次参数快照 */
     Tlm_SendEvent(97, "BOOT");
@@ -60,6 +65,38 @@ int main(void)
         if ((int32_t)(HAL_GetTick() - next_led) >= 0) {
             next_led += 500;
             Bsp_LedToggle();
+        }
+
+        /* ---- PA12 按钮：长按 ≥1 秒才动作 ----
+           ⚠️ 两道安全设计（2026-09-30 成车实测教训：曾出现“一上电车就跑”）：
+             ① 上电后先等 2 秒（等电源/电平稳定）
+             ② **必须先“看到按钮松开(高)”才武装** ——
+                否则若上电瞬间 PA12 就是低的（按钮卡住/线缆干扰），
+                1 秒后会自动发车 ✗（这很容易撞人撞东西）*/
+        {
+            static uint8_t  s_prev = 1u, s_fired = 0u, s_armed = 0u;
+            static uint32_t s_t0 = 0u, s_boot = 0u;
+            uint8_t key = Hmi_Key();
+            if (s_boot == 0u) { s_boot = HAL_GetTick(); if (s_boot == 0u) { s_boot = 1u; } }
+            if ((HAL_GetTick() - s_boot) >= 2000u) {          /* ① 上电 2s 后才启用 */
+                if (key == 1u) { s_armed = 1u; }               /* ② 见过松开才武装 */
+                if (key == 0u && s_prev == 1u) { s_t0 = HAL_GetTick(); s_fired = 0u; }
+                if (key == 1u) { s_fired = 0u; }
+                if (s_armed && key == 0u && !s_fired &&
+                    (HAL_GetTick() - s_t0) >= 1000u) {
+                    s_fired = 1u;
+                    if (Trace_GetDrive()) {
+                        Trace_SetDrive(0u); Log_Stop();
+                        printf("# BTN(长按1s): 停车 + 停止记录 n=%u\r\n", (unsigned)Log_Count());
+                    } else {
+                        /* ⚠️ 故意**不** Log_Reset()（同上：防误碰清掉上一趟数据）*/
+                        Log_Start(); Trace_SetDrive(1u);
+                        printf("# BTN(长按1s): 开始记录 + 发车（从 n=%u 接着记）\r\n",
+                               (unsigned)Log_Count());
+                    }
+                }
+            }
+            s_prev = key;
         }
 
         /* ---- 超声波：每颗间隔 ≥100ms，左右轮流（两颗不能同时触发）

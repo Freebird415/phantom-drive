@@ -27,7 +27,17 @@
 
 void    Gr_Init(void);
 uint8_t Gr_Ping(void);              /* 1 = 收到 0x66，设备在线 */
-uint8_t Gr_ReadDigital(void);       /* 1 字节：bit0=第1路 … bit7=第8路（手册：LED 亮=1） */
+/* 读数字量：返回 1 = 成功（8 位写进 *out）；返回 0 = 读失败（I2C 没通）。
+ *
+ * ⚠️ 极性（2026-09-30 成车实测确认，与手册 §2.4 一致）：
+ *      bit = 1 → 该路看到「白」
+ *      bit = 0 → 该路看到「黑」
+ *    即 **黑 = 0、白 = 1** —— 与模块原始输出一致，驱动**不做取反**。
+ *    （旧的「黑 = 1」记录是错的，已废弃）
+ *
+ * ⚠️ 不要再用「返回值 == 0xFF」判断失败：8 路全白时值恰好就是 0xFF，而那是最常见的状态。
+ *    现在失败靠返回值 0 表达，和读数彻底分开。 */
+uint8_t Gr_ReadDigital(uint8_t *out);
 uint8_t Gr_ReadAnalog(uint8_t out[8]);  /* 8 路模拟量 0~255 */
 void    Gr_Scan(void);              /* 扫 I2C 总线：哪些地址有应答（排查接线/上拉/地址最有效） */
 void    Gr_PrintDebug(void);        /* 打一行人可读：ping + 数字量 + 8 路模拟量 */

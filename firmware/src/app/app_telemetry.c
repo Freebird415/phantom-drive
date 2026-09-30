@@ -13,11 +13,15 @@
 #include "drv/drv_mpu6050.h"
 #include "app_trace.h"          /* 算法开关命令 TRACE 用 */
 #include "app_avoid.h"          /* 算法开关命令 AVOID 用 */
+#include "app_log.h"            /* 板载快照命令 SNAP / DUMP 用 */
 
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 1.20f, 0.00f, 0.05f, 30 };
+static Params s_p = { 10.00f, 0.00f, 0.05f, 15 };
+/* ↑ 2026-09-30：默认 kp 1.2→10、base_speed 30→15。
+   改默认值的理由：跑车时插不了串口，断电后 SET 的参数会丢
+   ⇒ 必须把“跑车那套参数”做进固件默认值里。A01/A02 以后可按需改。 */
 
 Params *Tlm_Params(void) { return &s_p; }
 
@@ -86,6 +90,15 @@ static void handle_command(char *line)
         return;
     }
 
+    /* ---- 板载 RAM 快照（跑车时插不了串口，跑完用 DUMP 读）----
+       ⚠️ RAM 断电就丢：必须先 “SNAP 0”（或按 PA12 按钮）再关总开关 */
+    if (strcmp(line, "SNAP 1") == 0)   { Log_Reset(); Log_Start(); Log_Status(); return; }
+    if (strcmp(line, "SNAP 0") == 0)   { Log_Stop(); Log_Status(); return; }
+    if (strcmp(line, "SNAPRESET") == 0){ Log_Reset(); Log_Status(); return; }
+    if (strcmp(line, "SNAP") == 0 || strcmp(line, "SNAP?") == 0) { Log_Status(); return; }
+    if (strcmp(line, "DUMP") == 0)     { Log_Dump(); return; }
+    if (strcmp(line, "SNAPFLASH") == 0){ Log_FlashInfo(); return; }
+
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {
         int id = -1, n = 1;
@@ -124,14 +137,47 @@ static void handle_command(char *line)
         return;
     }
     if (strcmp(line, "BTAT") == 0) {
-        uint8_t tx[4] = { 'A','T', 13, 10 }, c;
-        char out[48]; int n = 0;
+        /* HC-08 手册原文：AT 指令「不用回车换行」；但部分兼容品接受 CRLF
+           -> 两种形式各试一次，谁有回包就用谁（回来的字节原样打印，CR 用 | 标出） */
+        /* 实测（2026-09-30，HC-06 丝印的 BLE 克隆）：**必须 CRLF 结尾**，
+           无结尾或只给 \r 都不回包 -> CRLF 放第一优先 */
+        static const uint8_t form[2][4] = { { 'A', 'T', 13, 10 }, { 'A', 'T', 0, 0 } };
+        static const uint8_t flen[2]    = { 4u, 2u };
+        char out[40];
         HAL_UART_AbortReceive_IT(Bsp_Uart2());
-        HAL_UART_Transmit(Bsp_Uart2(), tx, 4, 100);
-        while (n < 40) { if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 120) != HAL_OK) { break; }
-                         if (c >= 32 && c < 127) { out[n++] = (char)c; } }
+        for (int f = 0; f < 2; f++) {
+            uint8_t c; int n = 0;
+            HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)form[f], flen[f], 100);
+            while (n < 30) {
+                if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 120) != HAL_OK) { break; }
+                if (c >= 32 && c < 127) { out[n++] = (char)c; }
+                else if (c == 13) { out[n++] = '|'; }
+            }
+            out[n] = 0;
+            printf("# BTAT form=%u len=%u n=%d <%s>\r\n",
+                   (unsigned)f, (unsigned)flen[f], n, out);
+            if (n > 0) { break; }
+        }
+        HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        return;
+    }
+
+    /* ---- 向 BLE 口发一条任意文本（自动补 CRLF —— 实测该模块必须 CRLF）----
+       例：BTSEND AT+VERSION   /   BTSEND AT+BAUD  */
+    if (strncmp(line, "BTSEND ", 7) == 0) {
+        char out[40]; int n = 0; uint8_t c;
+        HAL_UART_AbortReceive_IT(Bsp_Uart2());
+        HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)(line + 7),
+                          (uint16_t)strlen(line + 7), 200);
+        { uint8_t eol[2] = { 13, 10 };
+          HAL_UART_Transmit(Bsp_Uart2(), eol, 2, 100); }
+        while (n < 38) {
+            if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 200) != HAL_OK) { break; }
+            if (c >= 32 && c < 127) { out[n++] = (char)c; }
+            else if (c == 13) { out[n++] = '|'; }
+        }
         out[n] = 0;
-        printf("# BTAT n=%d <%s>\r\n", n, out);
+        printf("# BTSEND <%s> -> n=%d <%s>\r\n", line + 7, n, out);
         HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
         return;
     }
@@ -152,6 +198,17 @@ static void handle_command(char *line)
         if (ms < 1) { ms = 1; } if (ms > 3000) { ms = 3000; }
         printf("HMI> 蜂鸣 %d ms\r\n", ms);
         Hmi_Beep((uint16_t)ms);
+        return;
+    }
+
+    /* ---- 编码器引脚原始电平（诊断：转轮子时看 C1/C2 到底有没有跳变）----
+       C1/C2 是开漏输出，静态时可能是高或低；关键是“转的时候会不会变” */
+    if (strcmp(line, "ENCPIN") == 0) {
+        printf("# ENCPIN L:PB6=%d PB7=%d | R:PA6=%d PA7=%d\r\n",
+               (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6),
+               (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7),
+               (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6),
+               (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_7));
         return;
     }
 

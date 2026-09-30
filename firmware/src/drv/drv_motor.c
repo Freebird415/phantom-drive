@@ -83,7 +83,9 @@ static void mo_one(int v, uint32_t ch, uint16_t p1, uint16_t p2)
 
 void Mo_Set(int l, int r)
 {
-    s_l = clamp(l); s_r = clamp(r);
+    /* 方向符号统一在这里乘（决策 E-22：符号唯一出处） */
+    s_l = clamp(l * MOT_SIGN_L);
+    s_r = clamp(r * MOT_SIGN_R);
     mo_one(s_l, TIM_CHANNEL_1, GPIO_PIN_0, GPIO_PIN_1);       /* 左：AIN1/AIN2 */
     mo_one(s_r, TIM_CHANNEL_4, GPIO_PIN_12, GPIO_PIN_13);     /* 右：BIN1/BIN2 */
 }

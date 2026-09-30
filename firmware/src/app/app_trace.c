@@ -19,6 +19,7 @@
 #include "app/app_telemetry.h"
 #include "drv/drv_grayscale.h"
 #include "drv/drv_motor.h"
+#include "app/app_log.h"       /* 板载 RAM 快照（跑车时插不了串口，靠它事后读）*/
 
 #include <stdio.h>
 
@@ -28,6 +29,16 @@
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
 static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常巡线 */
+
+/* 把 s[0..7] 打包成一个字节（bit0=第1路，1=黑）—— 供板载快照使用 */
+static uint8_t tr_pack(const int s[8])
+{
+    uint8_t b = 0;
+    for (int i = 0; i < 8; i++) {
+        if (s[i]) { b |= (uint8_t)(1u << i); }
+    }
+    return b;
+}
 
 void    Trace_SetDrive(uint8_t on) { s_drive = on ? 1u : 0u; }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
@@ -53,17 +64,28 @@ void Trace_Step(uint8_t allow_drive)
     float    err;
 
     if (s_online) {
-        /* ---- 读灰度：1 字节，bit0 = 第 1 路 … bit7 = 第 8 路，黑 = 1 ---- */
-        uint8_t d = Gr_ReadDigital();
+        /* ---- 读灰度（bit0 = 第 1 路 … bit7 = 第 8 路）----
+           ⚠️ 模块的原始极性是 1 = 白、0 = 黑（2026-09-30 成车实测确认）；
+              $T 帧的约定是 1 = 黑 —— 在这里统一，算法只认 s[] 这个约定。 */
+        uint8_t d = 0;
+        if (!Gr_ReadDigital(&d)) {           /* I2C 读失败：绝不能拿旧数据瞎跑 */
+            for (int i = 0; i < 8; i++) { s[i] = 0; }
+            if (s_drive && allow_drive) { Mo_Stop(); }
+            Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
+            Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
+            s_state = 0;
+            return;
+        }
         int sum = 0, cnt = 0;
         for (int i = 0; i < 8; i++) {
-            s[i] = (int)((d >> i) & 1u);
-            if (s[i]) { sum += i; cnt++; }
+            s[i] = ((d >> i) & 1u) ? 0 : 1;  /* 1 = 黑 */
+            if (s[i]) { sum += i; cnt++; }   /* 只统计「看到黑」的那几路 */
         }
 
         if (cnt == 0) {
             /* 全白 = 丢线。最安全的处理是先停；想"循着上次方向找线"就改这里。 */
             if (s_drive && allow_drive) { Mo_Stop(); }
+            Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
             Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
             s_state = 0;
             return;
@@ -97,5 +119,6 @@ void Trace_Step(uint8_t allow_drive)
     }
 
     /* $T 里的 pwm 是"算法打算给的值"；驱动关掉时电机实际不动 */
+    Log_Note(tr_pack(s), err, l, r, s_state);     /* 板载快照（跑完用 DUMP 读）*/
     Tlm_SendT(ms, s, err, l, r, s_state);
 }

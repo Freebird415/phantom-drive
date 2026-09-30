@@ -50,11 +50,15 @@ uint8_t Gr_Ping(void)
     return (r == 0x66) ? 1u : 0u;
 }
 
-uint8_t Gr_ReadDigital(void)
+/* 返回 1 = 成功（写进 *out）；0 = 读失败。
+   旧版用「返回 0xFF」表示失败，但实测 8 路全白时读数本身就是 0xFF（常见状态）→ 会误判，故改掉。 */
+uint8_t Gr_ReadDigital(uint8_t *out)
 {
     uint8_t cmd = 0xDD, d = 0;
-    if (!gr_cmd_read(cmd, &d, 1)) { return 0xFF; }   /* 0xFF = 读失败（8 路全黑也是 0xFF，用 ping 区分） */
-    return d;
+    if (!out) { return 0; }
+    if (!gr_cmd_read(cmd, &d, 1)) { return 0; }
+    *out = d;
+    return 1;
 }
 
 uint8_t Gr_ReadAnalog(uint8_t out[8])
@@ -75,10 +79,11 @@ void Gr_PrintDebug(void)
         return;
     }
 
-    uint8_t d = Gr_ReadDigital();
+    uint8_t d = 0;
+    if (!Gr_ReadDigital(&d)) { printf("| dir=读失败\r\n"); return; }
     printf("| dir=0b");
     for (int i = 7; i >= 0; i--) { printf("%d", (d >> i) & 1); }
-    printf(" (bit0=第1路, 1=黑)");
+    printf(" (从第8路到第1路; 1=白 0=黑 —— 2026-09-30 实测确认)");
 
     uint8_t a[8] = {0};
     if (Gr_ReadAnalog(a)) {
