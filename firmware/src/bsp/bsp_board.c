@@ -166,7 +166,7 @@ UART_HandleTypeDef *Bsp_Uart2(void) { return &s_huart2; }
 void Bsp_Uart2Init(void)
 {
     s_huart2.Instance          = USART2;
-    s_huart2.Init.BaudRate     = 115200;
+    s_huart2.Init.BaudRate     = 9600;    /* ⚠️ HC-06 / AT-09 类 BLE 模块默认 9600（不是 115200）*/
     s_huart2.Init.WordLength   = UART_WORDLENGTH_8B;
     s_huart2.Init.StopBits     = UART_STOPBITS_1;
     s_huart2.Init.Parity       = UART_PARITY_NONE;
@@ -174,6 +174,12 @@ void Bsp_Uart2Init(void)
     s_huart2.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
     s_huart2.Init.OverSampling = UART_OVERSAMPLING_16;
     if (HAL_UART_Init(&s_huart2) != HAL_OK) { while (1) { } }
+}
+
+void Bsp_Uart2SetBaud(uint32_t baud)
+{
+    s_huart2.Init.BaudRate = baud;
+    (void)HAL_UART_Init(&s_huart2);
 }
 
 void USART2_IRQHandler(void)

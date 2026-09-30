@@ -23,6 +23,7 @@ UART_HandleTypeDef *Bsp_Uart(void);
 /* ---- 串口2：USART2 115200 8N1（PA2 = TX，PA3 = RX）→ BLE 蓝牙调试通道 ---- */
 void Bsp_Uart2Init(void);
 UART_HandleTypeDef *Bsp_Uart2(void);
+void Bsp_Uart2SetBaud(uint32_t baud);   /* 运行时改 BLE 通道波特率（扫波特率用） */
 
 /* ---- 指示灯：核心板 PC13（低电平点亮） ---- */
 void Bsp_LedInit(void);

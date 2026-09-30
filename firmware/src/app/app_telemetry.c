@@ -98,6 +98,29 @@ static void handle_command(char *line)
     /* ---- MPU6050（诊断用） ---- */
     if (strcmp(line, "MPU") == 0) { Mpu_PrintDebug(); return; }
 
+    /* ---- BLE 波特率扫描：BTBAUD <n> 改速率；BTAT 发 AT 看回什么 ---- */
+    if (strncmp(line, "BTBAUD ", 7) == 0) {
+        int b = 0;
+        if (sscanf(line + 7, "%d", &b) == 1 && b >= 1200 && b <= 921600) {
+            Bsp_Uart2SetBaud((uint32_t)b);
+            printf("# BLE baud -> %d\r\n", b);
+            HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        }
+        return;
+    }
+    if (strcmp(line, "BTAT") == 0) {
+        uint8_t tx[4] = { 'A','T', 13, 10 }, c;
+        char out[48]; int n = 0;
+        HAL_UART_AbortReceive_IT(Bsp_Uart2());
+        HAL_UART_Transmit(Bsp_Uart2(), tx, 4, 100);
+        while (n < 40) { if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 120) != HAL_OK) { break; }
+                         if (c >= 32 && c < 127) { out[n++] = (char)c; } }
+        out[n] = 0;
+        printf("# BTAT n=%d <%s>\r\n", n, out);
+        HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        return;
+    }
+
     /* ---- BLE：主动发一句给手机 ---- */
     if (strncmp(line, "BT ", 3) == 0) {
         printf("# BLE> %s\r\n", line + 3);
