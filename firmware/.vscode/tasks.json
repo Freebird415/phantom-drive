@@ -1,0 +1,107 @@
+{
+    // =========================================================================
+    //  工创小车 · 一键任务（在 VS Code 里按 Ctrl+Shift+P → "Tasks: Run Task" 选）
+    //
+    //  这个文件夹是 PlatformIO 工程（firmware/），所以在"firmware 目录"打开 VS Code
+    //  才能用 PlatformIO 的按钮和调试。tasks 里的路径用了 ../ 指回仓库根。
+    // =========================================================================
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "① 编译（不烧录）",
+            "type": "shell",
+            "command": "pio",
+            "args": ["run"],
+            "problemMatcher": ["$gcc"],
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "② 编译 + 烧录",
+            "type": "shell",
+            "command": "pio",
+            "args": ["run", "-t", "upload"],
+            "problemMatcher": ["$gcc"],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "③ ★一键实验（烧录 + 采集 + 出图）",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "../tools/run.py",
+                "--note", "${input:实验描述}",
+                "--seconds", "${input:采集秒数}"
+            ],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "④ 只采集，不烧录（车已在跑）",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "../tools/run.py", "--no-flash",
+                "--note", "${input:实验描述}",
+                "--seconds", "${input:采集秒数}"
+            ],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "⑤ 看串口原始输出（Ctrl+C 退出）",
+            "type": "shell",
+            "command": "python",
+            "args": ["../tools/run.py", "--raw", "--seconds", "3600"],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "⑥ 打开最新实验日志文件夹",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile", "-Command",
+                "$d = Get-ChildItem '../logs' -Directory | Sort-Object Name -Descending | Select-Object -First 1; if ($d) { explorer $d.FullName } else { Write-Host '还没有实验日志' }"
+            ],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared" }
+        },
+        {
+            "label": "⑦ 查看有哪些串口",
+            "type": "shell",
+            "command": "python",
+            "args": ["../tools/run.py", "--ports"],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "⑧ 拉取最新代码（git pull）",
+            "type": "shell",
+            "command": "git",
+            "args": ["pull"],
+            "options": { "cwd": "${workspaceFolder}/.." },
+            "problemMatcher": [],
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "实验描述",
+            "type": "promptString",
+            "description": "这轮做了什么 / 现象是什么（会变成日志文件夹名）",
+            "default": "未命名"
+        },
+        {
+            "id": "采集秒数",
+            "type": "promptString",
+            "description": "采集多少秒",
+            "default": "30"
+        }
+    ]
+}

@@ -1,0 +1,34 @@
+{
+    // =========================================================================
+    //  工创小车 · VS Code 公共配置（团队共享，可以提交）
+    //  打开方式：用 VS Code 打开 firmware 文件夹（PlatformIO 工程在这里）
+    // =========================================================================
+    "files.encoding": "utf8",
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.rulers": [100],
+    "editor.renderWhitespace": "boundary",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+
+    // 头文件按 C 语言高亮（这个工程全是 C）
+    "files.associations": {
+        "*.h": "c"
+    },
+
+    // C 语言标准
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.intelliSenseMode": "gcc-arm",
+
+    // 终端默认在工程目录（烧录、串口命令都在这跑）
+    "terminal.integrated.cwd": "${workspaceFolder}",
+
+    // PlatformIO 串口监视器的波特率（和我们遥测一致）
+    "platformio-ide.monitorBaud": 115200,
+
+    // 隐藏编译产物，文件树干净些
+    "files.exclude": {
+        "**/.pio": true,
+        "**/__pycache__": true
+    }
+}

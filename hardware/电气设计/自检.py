@@ -131,7 +131,9 @@ def main():
     doc_pins = set(re.findall(r"^\| (P[A-C]\d+) \|", spec, re.M))
     chk(doc_pins == set(PINMAP), f"docs/引脚分配表.md 的引脚集合 == PINMAP（差 {doc_pins ^ set(PINMAP)}）")
     chk("v3.0" in spec, "引脚分配表已标 v3.0")
-    chk("9/28" in spec or "9-28" in spec or "9 月 28" in spec, "引脚分配表的冻结时间与计划一致（9/28）")
+    # 计划 9/28 冻结；实际可能提前完成（当前：2026-09-23 王政淋确认提前冻结）
+    chk(("冻结" in spec) and any(d in spec for d in ("09-23", "9/23", "9-28", "9/28")),
+        "引脚分配表已标注冻结状态与日期（计划 9/28，实际 09-23 提前冻结）")
 
     # 图纸文件
     for stem in ["01 电源与保护", "02 驱动接线", "03 感知接线", "04 调试与扩展"]:

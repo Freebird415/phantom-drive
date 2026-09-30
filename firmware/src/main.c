@@ -6,8 +6,9 @@
  *    drv/  器件驱动（一个器件一个文件，各自带 bring-up 自检命令）
  *    app/  应用层（遥测帧、参数、命令解析）
  *
- *  当前 bring-up 进度：超声波 ×2 已接真机；灰度 / 电机 / 编码器待接。
- *  $T 里的 s0..s7 / err / pwm 仍是模拟数据，接上灰度后替换标注那一段。
+ *  $T 帧由 app/app_trace.c 生产（A01 循迹）；避障在 app/app_avoid.c（A02）。
+ *  $T 里的 s0..s7 / err / pwm 现在是**真实数据**（灰度在线时）；灰度不在线时
+ *  app_trace.c 会自动退化成模拟三角波，保证 P01 链路自检仍可用。
  * ========================================================================== */
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
@@ -18,6 +19,8 @@
 #include "drv/drv_hmi.h"
 #include "drv/drv_mpu6050.h"
 #include "app/app_telemetry.h"
+#include "app/app_trace.h"          /* A01 循迹（熊雅琦）*/
+#include "app/app_avoid.h"          /* A02 避障（毕烨恺）*/
 
 #include <stdio.h>
 
@@ -37,13 +40,16 @@ int main(void)
     Bsp_UartInit();
     Tlm_Init();
 
+    /* 算法初始化放最后：它们要串口打印自检信息 */
+    Trace_Init();            /* A01：探测灰度是否在线 */
+    Avoid_Init();            /* A02 */
+
     Tlm_SendParams();                                    /* 上电先报一次参数快照 */
     Tlm_SendEvent(97, "BOOT");
 
     uint32_t next_t  = HAL_GetTick();   /* $T：100 Hz */
     uint32_t last_us = HAL_GetTick() - 100;  /* 超声波：上一发结束时刻（从完成时刻计时，避免追赶补发） */
     uint32_t next_led = HAL_GetTick();  /* 心跳灯：2 Hz */
-    uint32_t frames  = 0;
     uint8_t  us_idx  = 0;               /* 0 = 下次测左，1 = 下次测右 */
 
     while (1) {
@@ -74,39 +80,16 @@ int main(void)
                 Us_Read((UsId)us_idx);
                 us_idx ^= 1u;
             }
+            Avoid_Step();       /* A02：拿到新读数立刻决策（可能接管电机）*/
             Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
             last_us = HAL_GetTick();
         }
 
-        /* ---- $T 遥测：100 Hz ---- */
+        /* ---- $T 遥测 + 循迹算法：100 Hz ----
+               仲裁：避障接管时传 0 → 循迹只算不发，电机让给避障（否则 100Hz 会把它冲掉）*/
         if ((int32_t)(HAL_GetTick() - next_t) >= 0) {
             next_t += 10;
-            uint32_t ms = HAL_GetTick();
-
-            /* ======== 模拟数据：接上灰度后替换这一段 ======== */
-            int32_t k       = (int32_t)((ms / 10u) % 200u);
-            int32_t err_x10 = (k < 100) ? (k - 50) : (150 - k);
-
-            int s[8];
-            int center = 3 + (int)(err_x10 / 25);
-            if (center < 0) { center = 0; }
-            if (center > 7) { center = 7; }
-            for (int i = 0; i < 8; i++) {
-                s[i] = (i == center || i == center + 1) ? 1 : 0;
-            }
-
-            float   err   = (float)err_x10 / 10.0f;
-            int32_t err_i = err_x10 / 5;
-            int     pwm_l = Tlm_Params()->base_speed + (int)err_i;
-            int     pwm_r = Tlm_Params()->base_speed - (int)err_i;
-            /* ================================================== */
-
-            Tlm_SendT(ms, s, err, pwm_l, pwm_r, 1);
-
-            frames++;
-            if (frames % 500u == 0u) {                    /* 每 5 秒一个演示事件 */
-                Tlm_SendEvent(98, "DEMO_EVENT");
-            }
+            Trace_Step(Avoid_Mode() ? 0u : 1u);          /* A01：读灰度→算误差→控电机→发 $T */
         }
     }
 }

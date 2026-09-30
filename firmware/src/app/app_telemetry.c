@@ -11,6 +11,8 @@
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
 #include "drv/drv_mpu6050.h"
+#include "app_trace.h"          /* 算法开关命令 TRACE 用 */
+#include "app_avoid.h"          /* 算法开关命令 AVOID 用 */
 
 #include <stdio.h>
 #include <string.h>
@@ -70,6 +72,19 @@ static void handle_command(char *line)
     /* ---- 连通性 / 参数 ---- */
     if (strcmp(line, "PING") == 0) { Tlm_SendEvent(90, "PONG"); return; }
     if (strcmp(line, "GET") == 0)  { Tlm_SendParams(); return; }
+
+    /* ---- 算法发车开关（A01/A02）----
+       ⚠️ 两个都默认关（只算不发）。开之前先把车架起来、轮子悬空！ */
+    if (strncmp(line, "TRACE ", 6) == 0) {
+        Trace_SetDrive(line[6] == '1');
+        printf("# TRACE drive=%u\r\n", (unsigned)Trace_GetDrive());
+        return;
+    }
+    if (strncmp(line, "AVOID ", 6) == 0) {
+        Avoid_SetDrive(line[6] == '1');
+        printf("# AVOID drive=%u\r\n", (unsigned)Avoid_GetDrive());
+        return;
+    }
 
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {
