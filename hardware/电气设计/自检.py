@@ -15,6 +15,12 @@ import re
 import sys
 from pathlib import Path
 
+# Windows 控制台默认 GBK，直接 print 不可编码的符号（如 "↔"）会抛
+# UnicodeEncodeError 而中断整个自检 —— 统一把不可编码字符降级成 "?"，
+# 只为可读，不影响任何判定与退出码。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "图纸"
 ROOT = HERE.parents[1]
