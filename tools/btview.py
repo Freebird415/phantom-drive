@@ -822,6 +822,7 @@ class App(tk.Tk):
         self.n_recv = 0                       # 收到的帧数 = CSV 第几行（显示的"序号"就是它）
         self.session_dir: Path | None = None
         self.exports: list[tuple] = []        # 已导出的片段
+        self.shared_for: str = ""             # 已经生成过共享摘要的日志路径（防空重复 ✓）
         self.recorded: Path | None = None     # **本轮录制**的目录（未保存就提醒用）
         self.nag_ok = False                   # 用户已说过“保留不动”
         self.gyro_hist = collections.deque(maxlen=400)
@@ -1145,6 +1146,14 @@ class App(tk.Tk):
                 return None
             md = shared_log.build_md(log_dir, name, who, "", note_extra, "", rows)
             out = shared_log.SHARED / ("%s%s.md" % (shared_log.PREFIX, name))
+            # ⚠️ 2026-10-01 实踩：同名会**直接覆盖** —— 两次跑车备注都叫 “BLE实时” 时，
+            #    后一趟把前一趟的摘要（连带手动写的“结论”）盖掉了 ✗ ⇒ 同名自动加序号 ✓
+            if out.exists():
+                for i in range(2, 100):
+                    cand = shared_log.SHARED / ("%s%s-%d.md" % (shared_log.PREFIX, name, i))
+                    if not cand.exists():
+                        out = cand
+                        break
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(md, encoding="utf-8")
             self._append("[共享] 已自动生成 %s（%.1f KB）—— 补上「结论」后即可提交"
@@ -1153,6 +1162,7 @@ class App(tk.Tk):
         except Exception as e:
             self._append("[!] 自动生成共享版失败（不影响记录）：%s" % e)
             return None
+        self.shared_for = str(log_dir)
 
     def _chain(self, out: Path) -> list:
         """记录“这份片段是从哪一路截出来的”，便于日后追溯多层嵌套。"""
@@ -1284,6 +1294,16 @@ class App(tk.Tk):
         return True
 
     def on_close(self):
+        # ⭐ 默认开共享：若这趟还没生成过摘要，关窗前补一份（否则“导出忘了点”就没有留档 ✗）
+        try:
+            if (self.session_dir and self.n_recv
+                    and str(self.session_dir) != self.shared_for):
+                self.auto_share(self.session_dir,
+                                "%s_%s" % (datetime.now().strftime("%Y-%m-%d"),
+                                            self.note.get().strip() or "日志"),
+                                note_extra="自动生成（关窗时）")
+        except Exception:
+            pass
         if self.worker and self.worker.is_alive():
             self.worker.stop_flag.set()
             time.sleep(0.4)
