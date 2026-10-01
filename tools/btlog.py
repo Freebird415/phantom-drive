@@ -218,6 +218,29 @@ async def run(args):
                 await asyncio.sleep(1.0)
                 await client.connect()
         print("已连接（MTU=%d）→ 订阅 FFE1 完成" % mtu)
+        # [!] 这类克隆模块【每次连接的速率不一样】（实测同一模块 1.5~7.7 帧/s 都有），
+        #     所以先试测几秒，太稀就重连换一个"好会话”。
+        got["n"] = 0
+        probe = min(6.0, args.seconds)
+        await asyncio.sleep(probe)
+        fps = got["n"] / probe
+        tries = 0
+        while fps < args.min_fps and tries < 3 and getattr(client, "is_connected", True):
+            tries += 1
+            print("  本会话太稀（%.1f 帧/s < %.1f）→ 重连换会话（第 %d 次）" % (fps, args.min_fps, tries))
+            try:
+                await client.stop_notify(NOTIFY)
+            except Exception:
+                pass
+            await client.disconnect()
+            await asyncio.sleep(1.5)
+            await client.connect()
+            await client.start_notify(NOTIFY, on_notify)
+            got["n"] = 0
+            await asyncio.sleep(probe)
+            fps = got["n"] / probe
+        print("  本会话实测 %.1f 帧/s" % fps)
+        got["n"] = 0            # 试测阶段的数据不算进正式记录
         print(">>> 车上只要通电就会回传（BTL 默认开）；要停就发 `BTL 0`")
         t0 = datetime.now()
         while (datetime.now() - t0).total_seconds() < args.seconds:
@@ -253,6 +276,8 @@ def main() -> int:
     ap.add_argument("--raw", action="store_true", help="同时保存原始字节流")
     ap.add_argument("--opt", action="store_true",
                     help="尝试优化连接参数（实测对本模块无收益，且容易让 Windows BLE 栈不稳；默认关）")
+    ap.add_argument("--min-fps", type=float, default=3.0,
+                    help="连上后先试测，低于这个帧率就重连续会话（默认 3.0）")
     args = ap.parse_args()
     if args.scan:
         asyncio.run(scan())
