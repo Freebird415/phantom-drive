@@ -276,7 +276,10 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
                         "%d" % pl, "%d" % pr, stt, "%d" % dl, "%d" % dr,
                         "%.2f" % mm_l, "%.2f" % mm_r, "%.1f" % speed,
                         "%.1f" % yaw_enc, "%.1f" % gz_dps, turn, src_, moving])
-            st["dist_mm"] += (mm_l + mm_r) / 2.0
+            # ⚠️ ×3：BLE 每 3 个采样才发 1 帧，而每帧的 dl/dr 只是【10ms】的增量
+            #    ⇒ 直接按帧累加会少 3 倍（2026-10-01 实踩：整段“全程”算出 1865mm，
+            #      乘 3 才对得上真实里程）
+            st["dist_mm"] += (mm_l + mm_r) / 2.0 * 3.0
             st["yaw_enc"] += yaw_enc * DT_S
             st["yaw_gyro"] += gz_dps * DT_S
             st["vsum"] += speed
@@ -1047,6 +1050,7 @@ class App(tk.Tk):
             "| 指标 | 值 |",
             "|---|---|",
             "| 帧数 / 其中“在动或给电” | %d / %d |" % (st.get("frames", 0), st.get("moving", 0)),
+            "| 名义时长 | %.1f s（每帧 30ms）|" % st.get("dur_s", 0),
             "| 里程（差速推算，名义值） | %.0f mm |" % st.get("dist_mm", 0.0),
             "| 平均速度 / 最大 | %.1f / %.1f mm/s |" % (st.get("vmean", 0.0), st.get("vmax", 0.0)),
             "| 左转 / 右转 / 直行帧数 | %d / %d / %d |" % (st.get("left", 0), st.get("right", 0), st.get("straight", 0)),
@@ -1066,6 +1070,7 @@ class App(tk.Tk):
             "| derived.csv 列 | 含义 |",
             "|---|---|",
             "| idx / t_s | 帧号 / 名义时间（秒，从片段开头算）|",
+            "| （每行 = 一个 BLE 帧 = **10ms** 的增量；要按行累加请 ×3）|",
             "| gray | 八路灰度，1=黑（压线），按第1~8路顺序 |",
             "| err | 循迹偏差（−8~+8，正=线偏右）|",
             "| pwm_l / pwm_r | 左右轮 PWM 命令（−100~100）|",
