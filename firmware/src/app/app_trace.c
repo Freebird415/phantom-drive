@@ -37,7 +37,12 @@
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
-static uint8_t s_dash  = 1u;      /* 车载仪表盘开关（命令 DASH 0|1）*/
+/* 车载仪表盘开关（命令 `DASH 0|1`）。
+   ⚠️ 2026-10-01 起【默认关】：OLED 是"锦上添花"的显示件，不该影响主体控制 ——
+   它一旦没插好/不亮，I2C2 写帧缓冲会【超时】（每帧最多几百毫秒），
+   足以把 10ms 控制循环拖慢 ⇒ D 项算出虚假的巨大变化率 ⇒ 车左右猛打舵 ✗
+   ⇒ 要用仪表盘时显式发 `DASH 1`（那时才产生 I2C 流量）。*/
+static uint8_t s_dash  = 0u;
 static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常巡线，4 = 精停 */
 
 /* ==================== 终点精停（T 头 / 终止线）====================
@@ -59,6 +64,13 @@ static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常�
         15% 占空比扣除死区后估计只有 100~200mm/s ⇒ 取 130 保守中值。
    ⚠️ 这个估算误差可能达 2 倍 —— 好在安全窗口很宽（15~215mm），能容忍 ✓ */
 #define TR_FIN_MMPS_EST 130
+
+/* ⭐ 走最后一段的【超时兜底】（2026-10-01 实车踩到）：
+   精停原本只能靠"走够 D mm"退出；一旦车轮不动（堵转/打滑/离地/抵住，
+   低速档尤其容易），`s_fin_mm` 永远是 0 ⇒ **它永远不刹车、一直"直行"** ✗
+   （实车现象：跑到终点附近没停，人把车拿起来才停）
+   ⇒ 加 3 秒硬超时：就算一米没走够，也照样刹车停住 ✓ */
+#define TR_FIN_TIMEOUT_MS 3000u
 
 static uint8_t  s_fin;            /* 0=巡线 1=走最后一段 2=已停 */
 static uint8_t  s_fin_need;       /* 全黑连续帧计数 */
@@ -266,12 +278,13 @@ void Trace_Step(uint8_t allow_drive)
                     /* 未标定：退化成按时间估（TR_FIN_MMPS_EST，不准，但安全窗口很宽）*/
                     s_fin_mm = (int32_t)((HAL_GetTick() - s_fin_t0) * TR_FIN_MMPS_EST / 1000u);
                 }
-                if (s_fin_mm >= s_fin_dist) {
-                    s_fin = 2u;                              /* 到位 ⇒ 刹车停 */
+                uint8_t timeout = (uint8_t)((ms - s_fin_t0) >= TR_FIN_TIMEOUT_MS);
+                if (s_fin_mm >= s_fin_dist || timeout) {
+                    s_fin = 2u;                              /* 到位（或超时）⇒ 刹车停 */
                     if (s_drive && allow_drive) { Mo_Brake(); }
                     Trace_SetDrive(0u);                      /* 关发车开关，防继续跑 */
                     Log_Stop();                              /* 停止记录 + 自动存 Flash ✓ */
-                    Tlm_SendEvent(81, "FINISH STOP");
+                    Tlm_SendEvent(timeout ? 82 : 81, timeout ? "FINISH TIMEOUT" : "FINISH STOP");
                     Hmi_Beep(120); HAL_Delay(90); Hmi_Beep(120);   /* 两声=到终点，好辨认 ✓ */
                 } else if (s_drive && allow_drive) {
                     Mo_Set(spd, spd);                        /* 直行走完最后一段 */
@@ -280,8 +293,14 @@ void Trace_Step(uint8_t allow_drive)
                 if (s_drive && allow_drive) { Mo_Brake(); }  /* 状态 2：保持刹车 */
             }
             s_state = 4;                                     /* $T 的 state=4 ⇒ 精停 ✓ */
-            Log_Note(tr_pack(s), 0.0f, spd, spd, 4);
-            Tlm_SendT(ms, s, 0.0f, spd, spd, 4);
+            /* ⭐ 上报【实际】占空比：状态 2 是刹车 ⇒ 报 0，别再报"打算给的 spd"
+               （以前两种状态都报 spd，会让事后分析误以为"命令了却没走"）*/
+            {
+                int rl = (s_fin == 1u) ? spd : 0;
+                int rr = (s_fin == 1u) ? spd : 0;
+                Log_Note(tr_pack(s), 0.0f, rl, rr, 4);
+                Tlm_SendT(ms, s, 0.0f, rl, rr, 4);
+            }
             return;
         }
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
