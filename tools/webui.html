@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>工创小车 · 蓝牙实时日志</title>
+<style>
+  :root{
+    /* ⭐⭐ 一行解决“滚动条是白的”（2026-10-01 实测）：
+       Win11 的 Chrome 默认用【悬浮滚动条】✗，它不归 ::-webkit-scrollbar 管，
+       而是跟随【系统主题】——所以深色网页上会出现浅色滚动条 ✗。
+       color-scheme:dark 告诉浏览器“本页是深色” ⇒ 原生滚动条/输入框/下拉框全部转深 ✓
+       （下面的 ::-webkit-scrollbar 规则保留：老式非悬浮模式下也生效 ✓）*/
+    color-scheme:dark;
+    --bg:#0b0f14; --bg2:#0d1216; --panel:#141b22; --panel2:#1b2530;
+    --edge:#243040; --edge2:#2f3f52; --fg:#d6e0ea; --fg2:#8fa3b8; --fg3:#5f7386;
+    --blue:#4dabf7; --orange:#ff9f43; --red:#ff6b6b; --green:#63e6be; --violet:#b197fc;
+    --mono:"Consolas","JetBrains Mono","Cascadia Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  /* ⭐ 深色滚动条（2026-10-01 用户反馈浏览器默认滚动条是白的 ✗）*/
+  *::-webkit-scrollbar{width:11px;height:11px}
+  *::-webkit-scrollbar-track{background:#0b1014}
+  *::-webkit-scrollbar-thumb{background:#243040;border-radius:6px;border:2px solid #0b1014}
+  *::-webkit-scrollbar-thumb:hover{background:#31465c}
+  *::-webkit-scrollbar-corner{background:#0b1014}
+  html{scrollbar-color:#243040 #0b1014;scrollbar-width:thin}   /* Firefox */
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg); color:var(--fg); font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;
+    display:grid; grid-template-rows:auto 1fr auto; height:100vh; overflow:hidden;
+  }
+
+  /* ---------------- 顶栏 ---------------- */
+  header{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:10px 14px; background:var(--bg2); border-bottom:1px solid var(--edge);
+  }
+  .brand{display:flex; align-items:center; gap:9px; font-weight:600; font-size:15px; letter-spacing:.3px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#3a4a5a;transition:.2s}
+  .dot.live{background:var(--green); box-shadow:0 0 9px var(--green)}
+  .dot.err{background:var(--red); box-shadow:0 0 9px var(--red)}
+  .dot.conn{background:var(--orange); box-shadow:0 0 9px var(--orange)}
+  header label{color:var(--fg2); font-size:12px}
+  input,select,button{
+    background:var(--panel); color:var(--fg); border:1px solid var(--edge);
+    border-radius:7px; padding:6px 10px; font:inherit; outline:none;
+  }
+  input:focus,select:focus{border-color:var(--edge2)}
+  button{cursor:pointer; transition:.15s}
+  button:hover:not(:disabled){background:var(--panel2); border-color:var(--edge2)}
+  button:disabled{opacity:.42; cursor:not-allowed}
+  button.primary{background:#17384f; border-color:#245b7d; color:#d7ecff}
+  button.primary:hover:not(:disabled){background:#1d4560}
+  button.danger{background:#3a1f22; border-color:#5e3036; color:#ffd7d7}
+  button.ghost{background:transparent}
+  .spacer{flex:1}
+
+  /* ---------------- 主体 ---------------- */
+  main{display:grid; grid-template-columns:360px 1fr; gap:10px; padding:10px; min-height:0}
+  /* 窄屏：改成上下堆叠，而且【main 自己可滚】——不然下面的表格永远够不着 ✗ */
+  main.narrow{grid-template-columns:1fr; overflow-y:auto}
+  main.narrow .tblwrap{min-height:340px}
+  .col{display:flex; flex-direction:column; gap:10px; min-height:auto}
+  /* ⚠️ 别写成 min-height:0（本来的写法）—— 那会让【地图卡片被压扁、卡片叠上去】✗
+     实测：窄屏时地图卡（内容 641px）被压到 299px，下面的卡片行直接盖在图上 ✗
+     ⇒ 只有真正需要“按剩余空间伸缩”的那个（表格 .tblwrap）才设 min-height:0 ✓ */
+  main.narrow .col > .card{flex:0 0 auto}
+  .card{
+    background:var(--panel); border:1px solid var(--edge); border-radius:10px;
+    padding:9px 11px; min-width:0;
+  }
+  .card h3{
+    margin:0 0 7px; font-size:11px; font-weight:600; letter-spacing:.6px;
+    color:var(--fg3); text-transform:uppercase; display:flex; justify-content:space-between;
+  }
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px}
+  .big{font:600 20px/1.2 var(--mono); letter-spacing:.5px}
+  .sub{font-size:11px; color:var(--fg3); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+
+  /* 灰度 8 灯 */
+  .gray{display:flex; gap:5px; margin-top:5px}
+  .gray i{
+    width:17px;height:17px;border-radius:4px;background:#202b36;border:1px solid var(--edge);
+    transition:.12s;
+  }
+  .gray i.on{background:var(--green); border-color:var(--green); box-shadow:0 0 7px rgba(99,230,190,.55)}
+
+  /* 陀螺仪趋势 */
+  #trend{width:100%;height:44px;display:block}
+
+  /* ---------------- 超声波俯视图 ---------------- */
+  #map{width:100%;max-width:420px;height:auto;display:block;margin:0 auto}
+  .usrow{display:flex; gap:8px; margin-top:8px}
+  .usrow div{
+    flex:1; background:var(--bg2); border:1px solid var(--edge); border-radius:8px;
+    padding:6px 8px; font:600 15px/1.2 var(--mono); text-align:center;
+  }
+  .usrow small{display:block; font:400 10px/1.4 "Segoe UI",sans-serif; color:var(--fg3); margin-top:2px}
+  .usrow .near{border-color:#7a5320; background:#241a0d; color:var(--orange)}
+  .usrow .bad{border-color:#5e3036; background:#241114; color:var(--red)}
+  .hint{margin-top:8px; font-size:11.5px; color:var(--fg2); line-height:1.6}
+
+  /* 事件流（填满左列下半段） */
+  .evlist{overflow:auto; font:12px/1.7 var(--mono); max-height:100%}
+  .evlist .row{display:flex; gap:8px; padding:2px 0; border-bottom:1px solid #131c25}
+  .evlist .t{color:var(--fg3); min-width:52px}
+  .evlist .c{color:var(--orange); min-width:30px}
+  .evlist .n{color:var(--fg2); flex:1; word-break:break-word}
+  .evlist .empty{color:var(--fg3); padding:8px 0}
+
+  /* ---------------- 数据表 ---------------- */
+  .tblwrap{flex:1; min-height:0; display:flex; flex-direction:column}
+  .tbl{overflow:auto; flex:1; border:1px solid var(--edge); border-radius:8px; background:var(--bg2)}
+  table{border-collapse:separate; border-spacing:0; width:100%; font:12px/1.45 var(--mono)}
+  thead th{
+    position:sticky; top:0; z-index:2; background:#182230; color:var(--fg2);
+    font-weight:600; text-align:left; padding:6px 9px; border-bottom:1px solid var(--edge);
+    white-space:nowrap;
+  }
+  tbody td{padding:4px 9px; border-bottom:1px solid #131c25; white-space:nowrap}
+  tbody tr.mark{background:#12301f}
+  tbody tr:hover{background:#17222d}
+  .muted{color:var(--fg3)}
+  .st1{color:var(--green)} .st0{color:var(--fg3)} .st4{color:var(--violet)}
+  .st5,.st6{color:var(--orange)}
+
+  /* ---------------- 底栏 ---------------- */
+  footer{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:8px 14px; background:var(--bg2); border-top:1px solid var(--edge); font-size:12px;
+    color:var(--fg2);
+  }
+  footer .k{color:var(--fg3)}
+  kbd{
+    background:var(--panel2); border:1px solid var(--edge2); border-bottom-width:2px;
+    border-radius:5px; padding:1px 6px; font:11px var(--mono); color:var(--fg);
+  }
+  .tagmark{background:#12301f; border:1px solid #2b6b45; border-radius:6px; padding:2px 7px; color:var(--green)}
+  /* （已删掉右下角浮层通知：2026-10-01 用户要求不用弹窗 ⇒ 全部写进左下角事件框 ✓）*/
+  /* 顶部告警条（没数据 / 进了精停 / 出错 —— 不让用户对着“卡住”猜测 ✗）*/
+  #alert{
+    display:none; align-items:center; gap:10px; padding:9px 14px; font-size:13px;
+    border-bottom:1px solid var(--edge);
+  }
+  #alert.on{display:flex}
+  #alert.info{background:#10202b; color:#cfe6ff; border-bottom-color:#245b7d}
+  #alert.warn{background:#241a0d; color:#ffd8a8; border-bottom-color:#7a5320}
+  #alert.err{background:#241114; color:#ffd0d0; border-bottom-color:#5e3036}
+  #alert b{color:#fff}
+  dialog{
+    background:var(--panel); color:var(--fg); border:1px solid var(--edge2); border-radius:12px;
+    padding:16px 18px; min-width:330px;
+  }
+  dialog::backdrop{background:rgba(0,0,0,.55)}
+  dialog h3{margin:0 0 10px; font-size:15px}
+  dialog .row{display:flex; gap:8px; align-items:center; margin:8px 0}
+  dialog label{width:74px; color:var(--fg2)}
+  dialog input{flex:1}
+  dialog .acts{display:flex; gap:8px; justify-content:flex-end; margin-top:14px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span id="dot" class="dot"></span>工创小车 · 蓝牙实时日志</div>
+  <label for="dev">设备</label>
+  <select id="dev"><option>JDY-69A-BLE</option><option>HC-06</option></select>
+  <label for="note">备注</label>
+  <input id="note" value="BLE实时" size="14">
+  <button id="btn-start" class="primary">开始接收</button>
+  <button id="btn-stop" disabled>停止接收</button>
+  <div class="spacer"></div>
+  <button id="btn-export" class="ghost" disabled>导出片段…</button>
+  <button id="btn-discard" class="danger ghost" disabled>删除该日志</button>
+</header>
+<div id="alert"></div>
+
+<main id="main">
+  <!-- 左：超声波 -->
+  <div class="col">
+    <div class="card">
+      <h3><span>超声波俯视图</span><span id="us-meta" class="muted"></span></h3>
+      <svg id="map" viewBox="0 0 360 330" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="usrow">
+        <div id="us-l">—<small>左探头</small></div>
+        <div id="us-r">—<small>右探头</small></div>
+      </div>
+      <div class="hint" id="us-hint">等 $U 帧…（点「开始接收」）</div>
+    </div>
+    <div class="card" style="flex:1;min-height:120px;display:flex;flex-direction:column">
+      <h3><span>事件 / 操作记录</span><span class="muted" id="ev-n">0 条</span></h3>
+      <div class="evlist" id="evlist"><div class="empty">固件事件（$E：终点线/避障/掉线…）与界面操作（开始/停止/打点/导出）都记在这里 ✓</div></div>
+    </div>
+  </div>
+
+  <!-- 右：卡片 + 数据 -->
+  <div class="col">
+    <div class="cards">
+      <div class="card">
+        <h3>车速 · 名义尺度</h3>
+        <div class="big" id="v-spd">0.0<span style="font-size:11px;color:var(--fg3)"> mm/s</span></div>
+        <div class="sub" id="s-spd">静止</div>
+      </div>
+      <div class="card">
+        <h3>转向</h3>
+        <div class="big" id="v-turn">—</div>
+        <div class="sub" id="s-turn">依据：—</div>
+      </div>
+      <div class="card">
+        <h3>角速度 / 累计</h3>
+        <div class="big" id="v-yaw">+0.0<span style="font-size:11px;color:var(--fg3)"> °/s</span></div>
+        <div class="sub" id="s-yaw">陀螺 0°  编码 0°</div>
+      </div>
+      <div class="card">
+        <h3>灰度 · 压线检测</h3>
+        <div class="gray" id="gray"></div>
+        <div class="sub" id="s-gray">err = —</div>
+      </div>
+      <div class="card" style="grid-column:span 2">
+        <h3>陀螺仪趋势 · 最近 4 秒 <span class="muted">正=左转(蓝) / 负=右转(橙)</span></h3>
+        <canvas id="trend"></canvas>
+      </div>
+    </div>
+
+    <div class="card tblwrap" style="flex:1">
+      <h3>
+        <span>实时帧</span>
+        <span>
+          <label style="margin-right:10px"><input type="checkbox" id="follow" checked> 跟随最新</label>
+          <label style="margin-right:10px"><input type="checkbox" id="only-move"> 只看动帧</label>
+          <span class="muted" id="n-recv">0 帧</span>
+        </span>
+      </h3>
+      <div class="tbl" id="tblbox">
+        <table>
+          <thead><tr>
+            <th>序号</th><th>时刻</th><th>灰度</th><th>err</th>
+            <th>pwm L/R</th><th>st</th><th>dL</th><th>dR</th><th>gz</th>
+          </tr></thead>
+          <tbody id="tb">
+            <tr id="empty"><td colspan="9" style="padding:30px;text-align:center;color:var(--fg3)">
+              点「开始接收」—— 数据会实时滚在这里；按 <kbd>空格</kbd> 打关键帧
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <span class="k">打点</span><kbd>空格</kbd>
+  <span id="marks"></span>
+  <div class="spacer"></div>
+  <span id="st-text">就绪 —— 点「开始接收」</span>
+  <span class="k">|</span>
+  <span id="st-rate">0 帧/s</span>
+  <span class="k">|</span>
+  <span id="st-perf" class="muted">渲染 —</span>
+  <span class="k">|</span>
+  <span id="st-us" class="muted">$U —</span>
+  <span class="k">|</span>
+  <span id="st-dir" class="muted"></span>
+  <div class="spacer"></div>
+  <button id="btn-quit" class="ghost" style="padding:3px 9px;font-size:12px"
+          title="关掉本地服务（重开：双击「蓝牙日志.bat」）">退出服务</button>
+</footer>
+
+<dialog id="dlg">
+  <h3>导出片段</h3>
+  <div class="row"><label for="ex-a">起始帧</label><input id="ex-a" type="number" min="1" value="1"></div>
+  <div class="row"><label for="ex-b">结束帧</label><input id="ex-b" type="number" min="1" value="1"></div>
+  <div class="row"><label for="ex-name">片段名</label><input id="ex-name" placeholder="例：第3个弯道 / 精停那一下"></div>
+  <div class="row"><label for="ex-who">操作人</label><input id="ex-who" placeholder="任务号-姓名（可空）"></div>
+  <div class="row muted" style="font-size:11.5px">导出会生成 telemetry.csv + derived.csv + meta.json + note.md（只读），并自动生成共享摘要</div>
+  <div class="acts">
+    <button id="ex-cancel" class="ghost">取消</button>
+    <button id="ex-ok" class="primary">导出</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+/* ============ 常量：与固件/驱动一致（改动请同步 btview.py 的对应常量）============ */
+const MM_PER_COUNT = 0.115;      // 名义：⌀70mm 轮、1910 计数/转
+const WB_MM        = 150.0;      // 两轮中心距
+const US = { base:70, half:35, beam:15, range:1200, near:300, min:50, ring:[300,600,900,1200] };
+const CAR = { len:200, wf:180, wr:140 };
+
+/* ============ 状态 ============ */
+let st = {}, us = {l:null, r:null, t:0}, frameMs = 20;
+let grayNow = "00000000", errNow = "0.0";
+let spdHist = [], gyroHist = [], lastFields = null;
+let yawGyro = 0, yawEnc = 0, nDrawn = 0, fpsWin = [];
+let markers = [], onlyMove = false, follow = true;
+let lastFrameAt = 0, lastState = -1, lastFrameMs = 0;
+let absOffsetMs = null;
+const nowMs = () => Date.now();
+
+/* ============ 表格批量渲染（★ 关键性能修复，2026-10-01）============
+   实踩：原来【每收到一帧就直接插一行 DOM】+ 每行都读一次 scrollHeight / 写 scrollTop ✗
+   ⇒ 50 帧/s × 浏览器强制重排 ⇒ 主线程打满 ⇒ **整个界面卡死，按钮都点不动** ✗✗
+   （“过了一会儿才卡” = 行数摸到 500 上限后才真正拖垮 ✓）
+   现在：① 帧先进队列，每 140ms 批量刷一次（50fps 人眼也读不过来 ✓）
+         ② 一次插入用 DocumentFragment（整批只重排一次 ✓）
+         ③ 滚动判断每批只算一次，且只有“贴底”时才自动跟随（否则不打扰你看旧数据 ✓）
+         ④ 行数上限 200（要完整数据看 CSV / 导出片段 ✓）*/
+const ROW_CAP = 200, RENDER_MS = 140;
+let renderQ = [];
+/* 性能自检（2026-10-01 加）：flushRows 的耗时 + 当前行数
+   为什么要留着：界面卡死是真实踩过的坑 ✗ ⇒ 有这两个数，下次一眼就能分辨
+   “是渲染太慢”还是“是没数据/断连”（后者告警条会说 ✓）*/
+let perfFlushMs = 0, perfRows = 0, perfMaxMs = 0;
+
+const $ = id => document.getElementById(id);
+const num = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+
+/* ============ SSE ============ */
+function connect() {
+  const es = new EventSource("/api/stream");
+  es.addEventListener("hello", e => { st = JSON.parse(e.data); applyStatus(); drawMap(); });
+  es.addEventListener("frames", e => { JSON.parse(e.data).forEach(addFrame); });
+  es.addEventListener("us", e => {
+    us = JSON.parse(e.data);
+    // 事件的 ms 是【固件绝对 tick】，而表格是【帧号×帧间隔（相对）】⇒ 差几百秒，没法看 ✗
+    // 用“刚收到的那一帧的 ms”当作零点来对齐 ✓（误差 = 两者到达的时间差，~0.1s，够用 ✓）
+    if (lastFrameMs) absOffsetMs = us.t - lastFrameMs;
+    drawMap();
+  });
+  es.addEventListener("event", e => {
+    const ev = JSON.parse(e.data);
+    addEvent(ev);                      // 固件事件直接进左下角列表（不再弹窗 ✓）
+  });
+  es.addEventListener("status", e => { st = JSON.parse(e.data); applyStatus(); });
+  es.onerror = () => { $("dot").className = "dot err"; };   // 服务断了（自动重连）
+}
+
+/* ============ 每帧渲染 ============ */
+function addFrame(f) {
+  lastFrameAt = nowMs();
+  lastState = f.st;
+  lastFrameMs = f.ms;          // 事件时间对齐用（见 us 的监听）
+  if (f.ms) fpsWin.push(performance.now());
+  // ⚠️ 帧间隔必须吸附到 10ms 倍数：固件控制环固定 100Hz ⇒ 真实间隔只会是 10/20/30ms
+  //    （估算值会被丢帧带偏，实测出现过 23ms ✗）；偏差会让车速/转角静默算错 1.5 倍
+  if (st.frame_ms) frameMs = Math.max(10, Math.min(30, Math.round(st.frame_ms / 10) * 10));
+  const dt = frameMs / 1000;
+  const dl = num(f.dl), dr = num(f.dr);
+  const spd = (dl + dr) / 2 * MM_PER_COUNT / dt;
+  const yenc = ((dr - dl) * MM_PER_COUNT / WB_MM) * 57.2958 / dt;
+
+  yawGyro += num(f.gz) * dt;
+  yawEnc  += yenc * dt;
+  spdHist.push(spd); if (spdHist.length > 15) spdHist.shift();
+  gyroHist.push(num(f.gz)); if (gyroHist.length > 130) gyroHist.shift();
+
+  grayNow = f.gray; errNow = (num(f.err)).toFixed(1);
+  lastFields = f;
+  nDrawn++;
+
+  const moving = !(f.gray.replace(/0/g, "") === "" && !dl && !dr && !f.pl && !f.pr);
+  if (!onlyMove || moving) renderQ.push({ f, spd });        // 进队列，不直接碰 DOM ✓
+  if (renderQ.length > 1200) renderQ.splice(0, renderQ.length - 600);   // 极端堆积时丢弃旧的
+  if (f.ms % 200 === 0) renderCards();          // 卡片 ~5Hz 刷够用
+}
+
+function makeRow(f, spd) {
+  const tr = document.createElement("tr");
+  if (markers.some(m => Math.abs(m.n - f.i) <= 1)) tr.className = "mark";
+  tr.innerHTML =
+    `<td class="muted">${f.i}</td><td class="muted">${(f.ms / 1000).toFixed(2)}</td>` +
+    `<td>${f.gray}</td><td>${num(f.err).toFixed(1)}</td>` +
+    `<td>${f.pl}/${f.pr}</td><td class="st${f.st}">${f.st}</td>` +
+    `<td>${f.dl}</td><td>${f.dr}</td><td>${num(f.gz).toFixed(0)}</td>`;
+  return tr;
+}
+
+function flushRows() {
+  if (!renderQ.length) return;
+  const t0 = performance.now();
+  const tb = $("tb"), box = $("tblbox");
+  const empty = $("empty"); if (empty) empty.remove();
+  // ⚠️ 这三个读取会强制排版 ⇒ 每批只能算一次（原来每行算一次 = 卡死的根源 ✗）
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  const frag = document.createDocumentFragment();
+  for (const item of renderQ) frag.appendChild(makeRow(item.f, item.spd));
+  renderQ = [];
+  tb.appendChild(frag);
+  while (tb.children.length > ROW_CAP) tb.removeChild(tb.firstChild);
+  if (follow && atBottom) box.scrollTop = box.scrollHeight;
+  perfFlushMs = performance.now() - t0;
+  perfRows = tb.children.length;
+  if (perfFlushMs > perfMaxMs) perfMaxMs = perfFlushMs;
+}
+setInterval(flushRows, RENDER_MS);
+
+function addRow(f, spd) {
+  const tb = $("tb");
+  const empty = $("empty"); if (empty) empty.remove();
+  const tr = document.createElement("tr");
+  const isMark = markers.some(m => Math.abs(m.n - f.i) <= 1);
+  if (isMark) tr.className = "mark";
+  tr.innerHTML =
+    `<td class="muted">${f.i}</td><td class="muted">${(f.ms / 1000).toFixed(2)}</td>` +
+    `<td>${f.gray}</td><td>${num(f.err).toFixed(1)}</td>` +
+    `<td>${f.pl}/${f.pr}</td><td class="st${f.st}">${f.st}</td>` +
+    `<td>${f.dl}</td><td>${f.dr}</td><td>${num(f.gz).toFixed(0)}</td>`;
+  tb.appendChild(tr);
+  while (tb.children.length > 500) tb.removeChild(tb.firstChild);   // 只留最近 500 行
+  if ($("autoscroll") !== null || true) {
+    const box = $("tblbox");
+    if (box.scrollTop + box.clientHeight > box.scrollHeight - 60) box.scrollTop = box.scrollHeight;
+  }
+}
+
+/* ============ 卡片 ============ */
+function renderCards() {
+  const spd = spdHist.length ? spdHist.reduce((a, b) => a + b, 0) / spdHist.length : 0;
+  const moving = Math.abs(spd) > 3;
+  $("v-spd").innerHTML = (moving ? (spd >= 0 ? "+" : "") + spd.toFixed(1) : "0.0") +
+    '<span style="font-size:11px;color:var(--fg3)"> mm/s</span>';
+  $("s-spd").textContent = moving ? "按 0.115mm/计数 名义换算" : "静止";
+
+  const g = lastFields ? num(lastFields.gz) : 0;
+  const src = Math.abs(g) >= 5 ? Math.abs(g).toFixed(0) + "°/s（陀螺）"
+            : Math.abs(yawEnc - 0) >= 0 ? "" : "";
+  let turn = "—", by = "依据：—";
+  if (Math.abs(g) >= 5) { turn = g > 0 ? "◀ 左转" : "右转 ▶"; by = "依据：陀螺仪"; }
+  else if (lastFields && Math.abs(((num(lastFields.dr) - num(lastFields.dl)) * MM_PER_COUNT / WB_MM) * 57.2958 / (frameMs / 1000)) >= 8) {
+    const ye = ((num(lastFields.dr) - num(lastFields.dl)) * MM_PER_COUNT / WB_MM) * 57.2958 / (frameMs / 1000);
+    turn = ye > 0 ? "◀ 左转" : "右转 ▶"; by = "依据：编码器差速";
+  } else { turn = "▲ 直行"; by = "依据：两者都接近 0"; }
+  $("v-turn").textContent = turn;
+  $("s-turn").textContent = by;
+
+  $("v-yaw").innerHTML = (g >= 0 ? "+" : "") + g.toFixed(1) +
+    '<span style="font-size:11px;color:var(--fg3)"> °/s</span>';
+  $("s-yaw").textContent = `陀螺 ${yawGyro.toFixed(0)}°  编码 ${yawEnc.toFixed(0)}°`;
+
+  const dots = $("gray");
+  if (dots.children.length !== 8) {
+    dots.innerHTML = "";
+    for (let i = 0; i < 8; i++) dots.appendChild(document.createElement("i"));
+  }
+  for (let i = 0; i < 8; i++) dots.children[i].className = grayNow[i] === "1" ? "on" : "";
+  $("s-gray").textContent = `偏差 err = ${errNow}   ${grayNow}`;
+
+  drawTrend();
+}
+
+function drawTrend() {
+  const c = $("trend"), dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  const x = c.getContext("2d");
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x.clearRect(0, 0, w, h);
+  x.strokeStyle = "#2b3a4a"; x.lineWidth = 1; x.beginPath(); x.moveTo(0, h / 2); x.lineTo(w, h / 2); x.stroke();
+  if (!gyroHist.length) return;
+  const step = w / gyroHist.length;
+  gyroHist.forEach((v, i) => {
+    const vv = Math.max(-60, Math.min(60, v));
+    let y = h / 2 - (vv / 60) * (h / 2 - 3);
+    // gz 恒为 0 时要看得见一条“平线”（实测：1.2px 缩图后就看不见了 ✗，改成 2.6px ✓）
+    if (Math.abs(y - h / 2) < 2.6) y = h / 2 - 2.6;
+    x.strokeStyle = vv >= 0 ? "#4dabf7" : "#ffa94d";
+    x.lineWidth = Math.max(1.4, step * 0.65);
+    x.beginPath(); x.moveTo(i * step + step / 2, h / 2); x.lineTo(i * step + step / 2, y); x.stroke();
+  });
+}
+
+/* ============ 超声波俯视图（SVG）============ */
+function drawMap() {
+  const svg = $("map"), W = 360, H = 330;
+  const cx = W / 2, py = H - 74;
+  const span = (US.half + US.beam) * Math.PI / 180;
+  const R = Math.min(py - 18, (W / 2 - 12) / Math.sin(span));
+  const px = mm => R * mm / US.range;
+  let s = "";
+
+  // 参考弧
+  US.ring.forEach(rr => {
+    const r = px(rr);
+    const a0 = (90 - US.half - US.beam) * Math.PI / 180, a1 = (90 + US.half + US.beam) * Math.PI / 180;
+    const x0 = cx + r * Math.cos(a0), y0 = py - r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1), y1 = py - r * Math.sin(a1);
+    s += `<path d="M${x0.toFixed(1)},${y0.toFixed(1)} A${r.toFixed(1)},${r.toFixed(1)} 0 0 0 ${x1.toFixed(1)},${y1.toFixed(1)}"
+            fill="none" stroke="#16222e"/>`;
+    s += `<text x="${(cx + 4).toFixed(1)}" y="${(py - r + 3).toFixed(1)}" fill="#37485a" font-size="10">${rr / 10}cm</text>`;
+  });
+
+  // 波束 + 实测弧
+  [[-1, us.l, "左"], [1, us.r, "右"]].forEach(([sx, mm]) => {
+    const ax = cx + sx * px(US.base) / 2;
+    const axis = 90 - sx * US.half;
+    const a0 = axis - US.beam, a1 = axis + US.beam;
+    const p = (a, r) => [ax + r * Math.cos(a * Math.PI / 180), py - r * Math.sin(a * Math.PI / 180)];
+    const [x0, y0] = p(a0, R), [x1, y1] = p(a1, R);
+    s += `<path d="M${ax.toFixed(1)},${py} L${x0.toFixed(1)},${y0.toFixed(1)} L${x1.toFixed(1)},${y1.toFixed(1)} Z"
+            fill="#101a24" stroke="#1f2d3a"/>`;
+    if (mm !== null && mm > 0) {
+      const r = px(Math.min(mm, US.range));
+      let col = "#4dabf7";
+      if (mm < US.min) col = "#ff6b6b";
+      else if (mm < US.near) col = "#ff9f43";
+      const [mx0, my0] = p(a0, r), [mx1, my1] = p(a1, r);
+      s += `<path d="M${mx0.toFixed(1)},${my0.toFixed(1)} A${r.toFixed(1)},${r.toFixed(1)} 0 0 0 ${mx1.toFixed(1)},${my1.toFixed(1)}"
+              fill="none" stroke="${col}" stroke-width="3.5" stroke-linecap="round"/>`;
+      const [lx, ly] = p(axis, r + 14);
+      s += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="${col}" font-size="11" font-weight="600"
+              text-anchor="middle" font-family="Consolas,monospace">${mm}</text>`;
+    }
+  });
+
+  // 车体：前宽后窄（前驱）
+  const wf = px(CAR.wf) / 2, wr = px(CAR.wr) / 2, L = px(CAR.len);
+  s += `<path d="M${cx - wf},${py} L${cx + wf},${py} L${cx + wr},${py + L} L${cx - wr},${py + L} Z"
+          fill="#16202b" stroke="#3d5a75"/>`;
+  [-1, 1].forEach(sx => {
+    const ax = cx + sx * px(US.base) / 2;
+    s += `<circle cx="${ax.toFixed(1)}" cy="${py}" r="3" fill="#63e6be"/>`;
+  });
+  s += `<text x="${cx}" y="16" fill="#42566a" font-size="10" text-anchor="middle">↑ 车头方向</text>`;
+  s += `<text x="4" y="${H - 5}" fill="#334354" font-size="9.5">半径线性刻度 · 淡色楔形 = ±15° 波束 · 圆弧 = 障碍物可能在这段弧上</text>`;
+  svg.innerHTML = s;
+
+  // 数字 + 提示
+  const set = (id, v) => {
+    const el = $(id);
+    if (v === null || v === undefined) { el.innerHTML = `—<small>${id === "us-l" ? "左" : "右"}探头</small>`; el.className = ""; return; }
+    const label = v > 0 ? `${v}<small>${id === "us-l" ? "左" : "右"}探头 · mm</small>`
+                        : `${v}<small>状态码（没测到）</small>`;
+    el.innerHTML = label;
+    el.className = v > 0 ? (v < US.near ? "near" : "") : "bad";
+  };
+  set("us-l", us.l); set("us-r", us.r);
+
+  const hits = [];
+  if (us.l > 0) hits.push(`左前 ${(us.l / 10).toFixed(0)} cm`);
+  if (us.r > 0) hits.push(`右前 ${(us.r / 10).toFixed(0)} cm`);
+  $("us-hint").innerHTML = (hits.length ? "→ 障碍在 <b>" + hits.join(" / ") + "</b>"
+    : "→ 两侧 1.2m 内无回波（<b>-2 = 没测到，不是故障</b>）") +
+    (us.t ? `<br><span class="muted">固件时刻 ${us.t} ms</span>` : "");
+}
+
+/* ============ 状态栏 / 顶栏 ============ */
+function applyStatus() {
+  const map = { idle: ["dot", "就绪"], connecting: ["dot conn", "连接中"], live: ["dot live", "接收中"], error: ["dot err", "出错"] };
+  const [cls, txt] = map[st.state] || ["dot", ""];
+  $("dot").className = cls;
+  $("st-text").textContent = (st.msg || txt) + (st.note ? " · 备注 " + st.note : "");
+  $("n-recv").textContent = (st.n_recv || 0) + " 帧";
+  if (st.frame_ms) frameMs = Math.max(10, Math.min(30, Math.round(st.frame_ms / 10) * 10));
+  const ages = st.us_age;
+  $("st-us").textContent = `$U ${st.n_us || 0} 条` +
+    (ages !== null && ages !== undefined ? ` · 最近 ${ages.toFixed(1)}s 前` : "") +
+    (st.us_dropped ? ` · 拦下 ${st.us_dropped}` : "") +
+    (st.us_bad ? ` · 没测到 ${st.us_bad}` : "");
+  $("st-dir").textContent = st.session ? st.session : "";
+  $("btn-start").disabled = st.recording;              // ⚠️ 只看“是否在记录”：
+  // 曾经写成“live 就不能点”，结果【已连接但没在记录】时（例如刚删完日志）
+  // 两个按钮都点不了 = 卡死 ✗（2026-10-01 自测发现）
+  $("btn-start").textContent = st.recording ? "记录中…" : (st.state === "live" ? "开始记录" : "开始接收");
+  $("btn-stop").disabled = !(st.recording || st.state === "live");   // 连着就能停 ✓
+  $("btn-export").disabled = !(st.n_recv > 0);
+  // ⭐ 记录中禁止删日志（2026-10-01 用户要求）：正在录的时候那一下太危险 ✗
+  $("btn-discard").disabled = !st.session || st.recording;
+  $("btn-discard").title = st.recording ? "正在记录 —— 先点「停止接收」才能删" : "删除界面上现在这份日志";
+  $("us-meta").textContent = frameMs ? `帧间隔 ${frameMs}ms` : "";
+  markers = st.markers || [];
+  renderMarks();
+}
+
+function renderMarks() {
+  const el = $("marks");
+  if (!markers.length) { el.innerHTML = '<span class="muted">（还没打点）</span>'; return; }
+  el.innerHTML = markers.slice(-6).map(m =>
+    `<span class="tagmark" title="点右侧 × 删除">#${m.n} ${m.name || ""}
+      <a href="#" data-n="${m.n}" style="color:inherit;text-decoration:none">×</a></span>`).join(" ");
+  el.querySelectorAll("a").forEach(a => a.onclick = ev => {
+    ev.preventDefault();
+    fetch("/api/unmark", { method: "POST", body: JSON.stringify({ n: +a.dataset.n }) })
+      .then(r => r.json()).then(j => { markers = j.markers || []; renderMarks(); });
+  });
+}
+
+/* 帧率（客户端测：最近 2 秒） */
+setInterval(() => {
+  const now = performance.now();
+  fpsWin = fpsWin.filter(t => now - t < 2000);
+  $("st-rate").textContent = (fpsWin.length / 2).toFixed(1) + " 帧/s";
+  const pf = $("st-perf");
+  if (pf) pf.textContent = `渲染 ${perfFlushMs.toFixed(1)}ms(峰 ${perfMaxMs.toFixed(0)}) · 行 ${perfRows} · 队列 ${renderQ.length}`;
+}, 500);
+
+/* ============ 交互 ============ */
+$("btn-start").onclick = () => {
+  fetch("/api/start", {
+    method: "POST",
+    body: JSON.stringify({ device: $("dev").value, note: $("note").value })
+  }).then(r => r.json()).then(j => {
+    $("tb").innerHTML = ""; nDrawn = 0; yawGyro = yawEnc = 0;
+    spdHist = []; gyroHist = [];
+    logLine("开始接收 / 记录 —— 日志目录：" + (j.session || ""), "ok");
+  }).catch(() => logLine("开始接收失败", "err"));
+};
+$("btn-stop").onclick = () => {
+  fetch("/api/stopall", { method: "POST" }).then(r => r.json()).then(j => {
+    logLine("已停止接收" + (j.share ? "；共享摘要：" + j.share : "") + "（蓝牙已断开；再连点「开始接收」）", "ok");
+  }).catch(() => logLine("停止失败", "err"));
+};
+$("btn-discard").onclick = () => {
+  if (!confirm("删除界面上现在这份日志？\n（目录连同 CSV 一起删；已导出的片段不会被删）")) return;
+  fetch("/api/discard", { method: "POST" }).then(r => r.json()).then(j => {
+    logLine(j.msg, j.ok ? "warn" : "err");
+    $("tb").innerHTML = "";
+  });
+};
+$("only-move").onchange = e => { onlyMove = e.target.checked; $("tb").innerHTML = ""; renderQ = []; };
+$("follow").onchange = e => { follow = e.target.checked; };
+
+const dlg = $("dlg");
+$("btn-quit").onclick = () => {
+  if (!confirm("停止后台服务？\n\n关掉后这个页面就不能再收数据了。\n重开：双击「蓝牙日志.bat」")) return;
+  fetch("/api/quit", { method: "POST" }).catch(() => {});
+  logLine("已请求停止服务 —— 这个页面可以关掉了", "warn");
+};
+$("btn-export").onclick = () => {
+  $("ex-a").value = 1;
+  $("ex-b").value = Math.max(1, st.n_recv || 1);
+  $("ex-name").value = "";
+  $("ex-who").value = "";
+  dlg.showModal();
+};
+$("ex-cancel").onclick = () => dlg.close();
+$("ex-ok").onclick = () => {
+  dlg.close();
+  fetch("/api/export", {
+    method: "POST",
+    body: JSON.stringify({ a: +$("ex-a").value, b: +$("ex-b").value, name: $("ex-name").value, who: $("ex-who").value })
+  }).then(r => r.json()).then(j => logLine(j.msg + (j.dir ? " → " + j.dir : ""), j.ok ? "ok" : "err"));
+};
+
+/* ⭐ 空格打关键帧：**不再问名字** ✗（用户 2026-10-01：“本就是一瞬间的事情”）
+   直接记下帧号 + 时刻；要补说明事后写在 markers.txt 里 ✓ */
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && document.activeElement.tagName !== "INPUT") {
+    e.preventDefault();
+    const n = st.n_recv || 0;
+    fetch("/api/mark", { method: "POST", body: JSON.stringify({ n: n, name: "" }) })
+      .then(r => r.json()).then(j => {
+        markers = j.markers || []; renderMarks();
+        logLine("关键帧 #" + n, "ok");
+      }).catch(() => logLine("打点失败", "err"));
+  }
+});
+
+/* 事件卡片（左列下半段） */
+let evCount = 0;
+function addEvent(ev) {
+  const box = $("evlist");
+  const empty = box.querySelector(".empty"); if (empty) empty.remove();
+  evCount++;
+  $("ev-n").textContent = evCount + " 条";
+  let t = ev.ms / 1000;
+  if (absOffsetMs !== null) t = Math.max(0, (ev.ms - absOffsetMs) / 1000);
+  const d = document.createElement("div");
+  d.className = "row";
+  d.innerHTML = `<span class="t">${t.toFixed(1)}s</span><span class="c">${ev.code}</span><span class="n">${ev.note || ""}</span>`;
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 300) box.removeChild(box.firstChild);
+}
+
+/* 告警条：把“为什么看着像卡住”直接写出来（用户 2026-10-01 实踩：车进精停后所有值不变 ✗）*/
+function updateAlert() {
+  const el = $("alert");
+  const silent = lastFrameAt ? (nowMs() - lastFrameAt) / 1000 : null;
+  const live = st.state === "live" || st.state === "connecting";
+  let txt = "", cls = "", show = true;
+  if (st.state === "error") {
+    txt = "<b>蓝牙出错</b>：" + (st.msg || "") + " —— 点「开始接收」重连";
+    cls = "err";
+  } else if (live && !st.recording) {
+    /* ⭐ “连着但没在记录”——最容易让人以为坏了的状态 ✗（删完日志、或刚连上还没点记录）*/
+    txt = "<b>已连接，但【没有在记录】</b>：点「开始记录」才会存到 logs/ ✓";
+    cls = "warn";
+  } else if (!live && lastFrameAt) {
+    /* ⭐ 有过数据、现在不在接收 ⇒ 一定是谁停掉了/断连了 —— 必须明说 ✓
+       （2026-10-01 实踩：AI 清理测试日志时点了“停止接收”，用户那边看到“界面还在但数据不动”
+        却没有提示 ✗ 直接当成卡死）*/
+    txt = "<b>已停止接收 / 已断开</b>：数据不会再来（已录的已在 logs/ ✓）。要再跑一趟就点「开始接收」"
+        + (silent !== null ? `（已停 ${silent.toFixed(0)} 秒）` : "");
+    cls = "info";
+  } else if (lastState === 4) {
+    txt = "<b>车已进入精停（state=4）</b>：固件已停机、不再驱动电机。要再跑：发 <code>FINRESET</code> 后长按 PA12 ✓";
+    cls = "info";
+  } else if (live && silent !== null && silent > 2.0) {
+    txt = `<b>已 ${silent.toFixed(1)} 秒没收到帧</b>：查车上总开关/电池；若固件刚进精停或丢线停机，属正常 ✓`;
+    cls = "warn";
+  } else { show = false; }
+  el.className = show ? ("on " + cls) : "";
+  el.innerHTML = txt;
+}
+setInterval(updateAlert, 500);
+
+/* 界面自己的反馈消息 —— **不再弹右下角浮层** ✗（用户 2026-10-01 要求）
+   统一写进左下角的「事件 / 操作记录」框，与固件事件共用一个地方 ✓
+   （标签写“界面”以便区分：橙色的 code 列 = 固件 $E，蓝色“界面” = 上位机动作）*/
+function logLine(msg, kind) {
+  const box = $("evlist");
+  if (!box) return;
+  const empty = box.querySelector(".empty"); if (empty) empty.remove();
+  const d = document.createElement("div");
+  d.className = "row app " + (kind || "");
+  const t = document.createElement("span"); t.className = "t";
+  t.textContent = new Date().toTimeString().slice(0, 8);
+  const c = document.createElement("span"); c.className = "c"; c.textContent = "界面";
+  const n = document.createElement("span"); n.className = "n"; n.textContent = msg;
+  d.append(t, c, n);
+  box.appendChild(d);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 300) box.removeChild(box.firstChild);
+}
+
+/* 窄屏：把左右改成上下（布局优化） */
+addEventListener("resize", () => {
+  $("main").classList.toggle("narrow", innerWidth < 980);
+});
+
+/* 启动 */
+connect();
+renderCards();          // 先把灰度灯/趋向线的“空态”画出来（不用等数据）
+drawMap();
+renderMarks();
+$("main").classList.toggle("narrow", innerWidth < 980);
+</script>
+</body>
+</html>
