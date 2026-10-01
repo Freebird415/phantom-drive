@@ -61,6 +61,37 @@ class DeFramer:
         self.raw = bytearray()
         self.aligned = False      # 先找同步头再开始切帧
         self._txt = bytearray()   # 半截文本行的缓存（文本行可能被拆到两条通知里）
+        # 帧间隔（ms）：**自动跟随固件的 BLE 分频**（控制环 100Hz ⇒ dt = 10ms × 分频）
+        # 2026-10-01：分频从 3 改成 2（33fps → 50fps）⇒ 30ms 变 20ms；
+        #   写死会害车速/转角静默偏 1.5 倍 ✗ ⇒ 用 $U 行里的固件 tick 反推（见 _track_dt）
+        self.frame_ms = 20.0
+        self._last_us = None      # (帧号, 固件 tick)
+
+    def _track_dt(self, line: str):
+        """从 $U 行（带固件 HAL tick）反推【真实帧间隔】，自动跟分频。
+
+        做法：两次相邻 $U（相隔 ~250ms）之间的 tick 差 ÷ 帧数 = 每帧毫秒；
+              再做指数平滑（单次估计有 ±1 帧抖动，平滑后 <2%）。
+        """
+        if not line.startswith("$U,"):
+            return
+        parts = line.split(",")
+        if len(parts) < 2:
+            return
+        try:
+            tick = int(parts[1])
+        except ValueError:
+            return
+        last = self._last_us
+        if last is not None and self.n > last[0] and tick > last[1]:
+            dt = (tick - last[1]) / float(self.n - last[0])
+            # ⚠️ 丢帧会把“每个到达帧”摊得比真实间隔更长（实测 86% 送达 ⇒ 20ms 被算成 23.4ms ✗）
+            #    但固件控制环固定 100Hz ⇒ **帧间隔必然是 10ms 的整数倍** ⇒ 吸附到最近倍数 ✓
+            #    （实测：23.4 → 20.0 ✓；限制在 10~30ms 内，挡住丢包一半以上的极端会话）
+            if 8.0 <= dt <= 90.0:
+                dt = max(10.0, min(30.0, round(dt / 10.0) * 10.0))
+                self.frame_ms = 0.75 * self.frame_ms + 0.25 * dt
+        self._last_us = (self.n, tick)
 
     # ------------------------ 文本行抽取（$U / $E）------------------------
     # 2026-10-01 新增：固件把超声波（$U）与事件（$E）也走 BLE 了（见 app_log.c 的
@@ -145,10 +176,15 @@ class DeFramer:
             gray = ",".join(str((bits >> i) & 1) for i in range(8))
             sign = "-" if err10 < 0 else ""
             e = abs(err10)
-            lines.append("$T,%u,%s,%s%d.%d,%d,%d,%d,%d,%d,%d" % (
-                self.n * 40,                 # 25Hz => 40ms/帧
+            lines.append("$T,%d,%s,%s%d.%d,%d,%d,%d,%d,%d,%d" % (
+                # ⚠️ 用【吸附后】的间隔（10ms 整数倍）：EMA 估算值会抖（实测漂到 21~23ms ✗），
+                #    直接拿去合成 ms，会让表格的“时刻”列出现莫名其妙的跳变 ✗
+                int(self.n * (round(self.frame_ms / 10.0) * 10.0)),
                 gray, sign, e // 10, e % 10,
                 pl, pr, st, dl, dr, gz))
+
+        for t in texts:                       # 用 $U 行的 tick 校正帧间隔（在切完帧之后做）
+            self._track_dt(t)
         return lines
 
 

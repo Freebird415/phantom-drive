@@ -37,6 +37,7 @@ import asyncio
 import collections
 import csv
 import io
+import math
 import queue
 import shutil
 import sys
@@ -245,7 +246,26 @@ def promote_children(d: Path, keep_prefix: bool = True) -> list:
 #    所以下面带 mm 的量当“数量级/趋势”用可靠，当绝对尺用要留个心眼。
 MM_PER_COUNT = 0.115        # 名义：⌀70mm 轮、1910 计数/转
 WB_MM = 150.0               # 两轮中心距（车宽方向）
-DT_S = 1.0 / 33.3           # BLE 每帧名义 30ms（每 3 个 10ms 采样发 1 帧）
+DT_S = 1.0 / 50.0            # 帧间隔（秒）—— 默认对应固件 BLE 分频 2（50fps）
+                            # ⚠️ 运行时会按实收数据自动校正（见 _pump 的 "dt_ms"），
+                            #    固件改分频后不需要改这里 ✓（导出片段用的 dt 另从 ms 列推）
+
+# ============ 超声波几何（2026-10-01 用户提供 + 台面实测）============
+# 两颗探头**各向外掰**，不是朝前。用户描述：“间距 7cm，左向左偏、右向右偏，
+# 两束形成的钝角指向车正前方 110°” —— 等价地：**每颗偏离正前方 35°**
+#   （两束之间的夹角 = 180° − 110° = 70° = 35° + 35° ✓ 两种说法同一个形状）
+# ⚠️ 这个角度是整个俯视图的基准，若实物改了探头朝向，**必须同步改这里**
+#    （确认办法：把书放在车的 35° 斜前方，应只有对应那颗能读到）
+US_BASE_MM  = 70.0     # 两颗探头间距（车宽方向）
+US_HALF_DEG = 35.0     # 每颗向外掰的角度（偏离正前方）
+US_BEAM_DEG = 15.0     # HC-SR04 波束半角（实测 ~15°）
+US_MIN_MM   = 50.0     # 实测 <5cm 不可靠（余振）⇒ 图上标个盲区提示
+US_RANGE_MM = 1200.0   # 图上显示的最大半径（线性刻度；超过就不画）
+US_NEAR_MM  = 300.0    # 与 A02 的 AV_NEAR_CM 一致：进 30cm 就变橙色
+# 车体（俯视示意，仅用于画形状；真实尺寸以 CAD 为准）
+CAR_LEN_MM  = 200.0    # 车长
+CAR_WF_MM   = 180.0    # 车头宽（前驱 ⇒ 前宽后窄）
+CAR_WR_MM   = 140.0    # 车尾宽
 
 DERIVED_COLS = ["idx", "t_s", "gray", "err", "pwm_l", "pwm_r", "state", "dl", "dr",
                 "mm_l", "mm_r", "speed_mm_s", "yaw_enc_dps", "gyro_dps",
@@ -279,7 +299,12 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
 
     st = {"frames": len(rows), "moving": 0, "left": 0, "right": 0, "straight": 0,
           "dist_mm": 0.0, "yaw_enc": 0.0, "yaw_gyro": 0.0, "vmax": 0.0, "vsum": 0.0,
-          "dur_s": len(rows) * DT_S, "n_gyro_nonzero": 0}
+          "dur_s": 0.0, "n_gyro_nonzero": 0}
+    # ⚠️ 帧间隔不能写死（固件 BLE 分频可调：分频3 ⇒ 30ms、分频2 ⇒ 20ms；快照 ⇒ 10ms）
+    #    2026-10-01 实踩：btlog 曾写死 40ms、又改分频 ⇒ 车速会静默偏 1.5 倍 ✗
+    mult, dt_ms = shared_log.frame_timing(rows)        # 两者同源，保证互相一致
+    dt = dt_ms / 1000.0
+    st["dur_s"] = len(rows) * dt
     with dst.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(DERIVED_COLS)
@@ -290,9 +315,9 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
             dl, dr = _f(r.get("dl")), _f(r.get("dr"))
             gz_dps = _f(r.get("gz"))                    # telemetry 已换算成 °/s
             mm_l, mm_r = dl * MM_PER_COUNT, dr * MM_PER_COUNT
-            speed = (mm_l + mm_r) / 2.0 / DT_S
+            speed = (mm_l + mm_r) / 2.0 / dt
             # 差速积出来的偏航角速度（正 = 左转/逆时针，与陀螺仪同号）
-            yaw_enc = ((mm_r - mm_l) / WB_MM) * 57.2958 / DT_S if WB_MM else 0.0
+            yaw_enc = ((mm_r - mm_l) / WB_MM) * 57.2958 / dt if WB_MM else 0.0
             if abs(gz_dps) >= 5.0:
                 turn, src_ = ("L" if gz_dps > 0 else "R"), "gyro"
             elif abs(yaw_enc) >= 8.0:
@@ -300,16 +325,16 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
             else:
                 turn, src_ = "-", "-"
             moving = 1 if (abs(dl) + abs(dr) > 0 or pl or pr) else 0
-            w.writerow([i, "%.3f" % ((i - a) * DT_S), gray, "%.1f" % err,
+            w.writerow([i, "%.3f" % ((i - a) * dt), gray, "%.1f" % err,
                         "%d" % pl, "%d" % pr, stt, "%d" % dl, "%d" % dr,
                         "%.2f" % mm_l, "%.2f" % mm_r, "%.1f" % speed,
                         "%.1f" % yaw_enc, "%.1f" % gz_dps, turn, src_, moving])
-            # ⚠️ ×3：BLE 每 3 个采样才发 1 帧，而每帧的 dl/dr 只是【10ms】的增量
-            #    ⇒ 直接按帧累加会少 3 倍（2026-10-01 实踩：整段“全程”算出 1865mm，
-            #      乘 3 才对得上真实里程）
-            st["dist_mm"] += (mm_l + mm_r) / 2.0 * 3.0
-            st["yaw_enc"] += yaw_enc * DT_S
-            st["yaw_gyro"] += gz_dps * DT_S
+            # ⚠️ 每帧的 dl/dr 只是【10ms】的增量，而帧与帧相隔 mult×10ms
+            #    ⇒ 按帧累加要 ×mult（BLE = 分频数；快照 = 1）
+            #    2026-10-01 实踩：整段“全程”算出 1865mm，乘 3 才对得上真实里程
+            st["dist_mm"] += (mm_l + mm_r) / 2.0 * mult
+            st["yaw_enc"] += yaw_enc * dt
+            st["yaw_gyro"] += gz_dps * dt
             st["vsum"] += speed
             st["vmax"] = max(st["vmax"], abs(speed))
             st["moving"] += moving
@@ -407,6 +432,7 @@ class BleWorker(threading.Thread):
                 self.n += 1
                 self.rec.feed(line)                     # CSV 永远收全部帧
                 self.q.put(("frame", line))             # 排版/过滤都在界面线程做
+            self.q.put(("dt_ms", de.frame_ms))          # 帧间隔自动跟随固件分频
 
         # ---- 找设备 ----
         if self.use_addr:
@@ -846,6 +872,7 @@ class App(tk.Tk):
 
     # ---------- 界面 ----------
     def _build(self):
+        self._apply_dark_style()          # ⚠️ 必须在创建 ttk 控件之前（否则滚动条还是浅色 ✗）
         pad = {"padx": 6, "pady": 4}
         top = ttk.Frame(self)
         top.pack(fill="x", **pad)
@@ -940,12 +967,102 @@ class App(tk.Tk):
                            insertbackground="#d0d8e0", font=("Consolas", 10),
                            bd=0, highlightthickness=0, padx=6, pady=2)
         self.txt.pack(side="left", fill="both", expand=True)
+
+        # ---- 右侧：超声波俯视图（2026-10-01 新增）----
+        # ⚠️ 必须在 scrollbar 之前 pack：否则滚动条会被挤到面板右边去 ✗
+        us = tk.Frame(box, bg="#0d1216")
+        us.pack(side="right", fill="y", padx=(6, 0))
+        tk.Label(us, text="超声波俯视图 · 车头朝上", bg="#0d1216", fg="#6b7c8c",
+                 font=("", 8)).pack(anchor="w")
+        self.us_W, self.us_H = 236, 252
+        self.us_cv = tk.Canvas(us, width=self.us_W, height=self.us_H, bg="#0b1014",
+                               highlightthickness=1, highlightbackground="#243040")
+        self.us_cv.pack()
+        self.v_us_txt = tk.StringVar(value="等 $U 帧 …（点「开始接收」）")
+        tk.Label(us, textvariable=self.v_us_txt, bg="#0d1216", fg="#9fb3c8",
+                 font=("Consolas", 8), justify="left", anchor="w",
+                 wraplength=232).pack(anchor="w", pady=(3, 0))
+
         sb = ttk.Scrollbar(box, orient="vertical", command=self.txt.yview)
         sb.pack(side="right", fill="y")
         self.txt.configure(yscrollcommand=sb.set)
         for tag, col in (("ev", "#7fb0ff"), ("warn", "#ffb86b"), ("frame", "#d0d8e0"),
                          ("mark", "#8ce99a")):
             self.txt.tag_configure(tag, foreground=col)
+        self._dark_titlebar()             # 标题栏/窗口边框改深色（失败就算了，不影响功能）
+        self.bind("<Map>", lambda _e: self._dark_titlebar())   # 映射后再补一次（DWM 只对已显示的窗口生效）
+
+    # ---------- 深色窗口（2026-10-01：用户反馈“边框是白的、和深色界面不协调”）----------
+    def _apply_dark_style(self):
+        """把 ttk 控件全部改深色（默认 Windows ttk 主题忽略颜色，永远是浅灰 ✗）。
+
+        2026-10-01 踩：只改了滚动条，结果顶部两条控制栏还是白的 ✗
+        （用户反馈的“白边框”其实指的就是它们 —— 截图里 frm/按钮/下拉框一片浅灰）
+        ⇒ 改成：切 clam 主题 + 把 Frame/Label/Button/Entry/Combobox/Checkbutton
+           全部配一遍深色；再顺手把下拉框弹出列表（Tk listbox）也设深色 ✓
+        """
+        try:
+            st = ttk.Style(self)
+            if "clam" in st.theme_names():
+                st.theme_use("clam")
+        except Exception:
+            return
+
+        BG, FG, PANEL, EDGE, HI = "#0d1216", "#c8d4e0", "#1b2530", "#243040", "#2b3a4a"
+        st.configure(".", background=BG, foreground=FG, fieldbackground=PANEL,
+                     bordercolor=EDGE, lightcolor=EDGE, darkcolor=EDGE)
+        for name in ("TFrame", "TLabelframe", "TLabelframe.Label", "TLabel"):
+            st.configure(name, background=BG, foreground=FG)
+        st.configure("TLabelframe", bordercolor=EDGE)
+
+        for name in ("TButton", "Toolbutton"):
+            st.configure(name, background=PANEL, foreground=FG, bordercolor=EDGE,
+                         lightcolor=PANEL, darkcolor=PANEL, relief="flat", padding=(8, 3))
+            st.map(name, background=[("disabled", "#141b22"), ("pressed", HI), ("active", "#22303d")],
+                   foreground=[("disabled", "#4a5a6a")])
+
+        for name in ("TEntry", "TCombobox", "TSpinbox"):
+            st.configure(name, fieldbackground=PANEL, background=PANEL, foreground=FG,
+                         bordercolor=EDGE, arrowcolor=FG, lightcolor=PANEL, darkcolor=PANEL,
+                         insertcolor=FG)
+            st.map(name, fieldbackground=[("readonly", PANEL), ("disabled", "#141b22")],
+                   foreground=[("readonly", FG), ("disabled", "#4a5a6a")])
+
+        st.configure("TCheckbutton", background=BG, foreground=FG, indicatorcolor=PANEL,
+                     bordercolor=EDGE, lightcolor=PANEL, darkcolor=PANEL)
+        st.map("TCheckbutton", background=[("active", BG)],
+               indicatorcolor=[("selected", "#4dabf7"), ("pressed", HI)])
+
+        # 下拉框弹出列表是原生 Tk listbox，不走 ttk ⇒ 只能用 option 数据库设色
+        for pat, col in (("*TCombobox*Listbox.background", PANEL),
+                         ("*TCombobox*Listbox.foreground", FG),
+                         ("*TCombobox*Listbox.selectBackground", HI),
+                         ("*TCombobox*Listbox.selectForeground", "#ffffff")):
+            try:
+                self.option_add(pat, col)
+            except Exception:
+                pass
+
+        for name in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            st.configure(name, background=PANEL, troughcolor=BG, bordercolor=BG,
+                         arrowcolor="#6b7c8c", darkcolor=PANEL, lightcolor=PANEL, relief="flat")
+            st.map(name, background=[("active", HI), ("pressed", "#3a4a5a")])
+
+    def _dark_titlebar(self):
+        """Windows 10 2004+ / 11：把标题栏与窗口边框也改成深色。
+
+        用 DWM 的 DWMWA_USE_IMMERSIVE_DARK_MODE（新版属性号 20、旧版 Win10 是 19）。
+        ⚠️ 必须在窗口**已经映射到屏幕之后**调用才生效 ⇒ 除了 _build 末尾，还挂到 <Map> 上再试一次。
+        """
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id()) or self.winfo_id()
+            for attr in (20, 19):
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(ctypes.c_int(1)), ctypes.sizeof(ctypes.c_int))
+        except Exception:
+            pass
 
     # ---------- 仪表盘小卡片 ----------
     def _card_frame(self, parent, title):
@@ -1359,16 +1476,26 @@ class App(tk.Tk):
                     self.recorded = self.session_dir          # 本轮录制的母日志
                     self.nag_ok = False
                     self.btn_save.configure(state="normal")
+                elif kind == "dt_ms":
+                    global DT_S
+                    if payload and abs(payload - DT_S * 1000.0) > 0.5:
+                        DT_S = payload / 1000.0             # 仪表盘立刻改用它，不再等改代码
                 elif kind == "frame":
                     # ---- 超声波（$U）与事件（$E）：2026-10-01 起也走蓝牙 ----
                     if payload.startswith("$U,"):
                         p = payload.split(",")
                         if len(p) >= 4:
                             try:
-                                self.us_l, self.us_r = int(p[2]), int(p[3])
+                                nl, nr = int(p[2]), int(p[3])
                             except ValueError:
                                 pass
                             else:
+                                # -6（触发太快被驱动拦下）/ -3（上一发没完）不是“没测到” ✓
+                                # 它们的意思是“本轮没测，上一个值仍有效” ⇒ 保留旧值，别让圆弧闪掉
+                                if nl not in (-6, -3):
+                                    self.us_l = nl
+                                if nr not in (-6, -3):
+                                    self.us_r = nr
                                 self.us_t = time.time()
                                 self.us_n += 1
                         continue                         # 别打到日志区（2Hz 会很吵 ✗）
@@ -1432,7 +1559,7 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         now = datetime.now()
-        if (now - self._gyro_t).total_seconds() >= 0.2:      # 仪表盘每秒刷 5 次够用
+        if (now - self._gyro_t).total_seconds() >= 0.1:      # 仪表盘每秒刷 10 次（超声波/灰度跟着变快）
             self._gyro_t = now
             self._refresh_dash()
         self.after(80, self._pump)
@@ -1497,6 +1624,9 @@ class App(tk.Tk):
             self.s_us.set("%d 条 · 最近 %.1fs 前%s" %
                           (self.us_n, age, "  ← 进入 30cm!" if near < 300 else ""))
 
+        # ---------- 俯视图 + 方位文字（2026-10-01）----------
+        self._update_us_view()
+
         # ---------- 陀螺仪健康提示（静默失效以前很隐蔽：至少它现在会喊一声）----------
         stale = (time.time() - self.gyro_last_nonzero) > 15.0
         if self.gyro_hist and stale:
@@ -1523,6 +1653,92 @@ class App(tk.Tk):
     def _refresh_gyro(self):
         """（保留旧名字，转发到仪表盘刷新；早期测试脚本用得到）"""
         self._refresh_dash()
+
+    # ==================== 超声波俯视图（2026-10-01）====================
+    def _update_us_view(self):
+        """文字解释 + 重画俯视图。"""
+        if self.us_l is None:
+            self.v_us_txt.set("等 $U 帧 …（点「开始接收」）")
+        else:
+            def one(v, who):
+                return "%s：没测到" % who if (v is None or v <= 0) else "%s：%d mm" % (who, v)
+            lines = [one(self.us_l, "左"), one(self.us_r, "右")]
+            hits = []
+            if self.us_l is not None and self.us_l > 0:
+                hits.append("左前 %d cm" % (self.us_l // 10))
+            if self.us_r is not None and self.us_r > 0:
+                hits.append("右前 %d cm" % (self.us_r // 10))
+            lines.append("→ " + ("障碍在 " + " / ".join(hits) if hits else
+                                 "两侧 1.2m 内无回波（-2=没测到，不是故障 ✓）"))
+            if time.time() - self.us_t > 2.0:
+                lines.append("⚠ 已 %.0f 秒未更新" % (time.time() - self.us_t))
+            self.v_us_txt.set("\n".join(lines))
+        self._draw_us()
+
+    def _draw_us(self):
+        """画小车俯视图：车头朝上，两颗探头各向外掰 35°（波束半角 15°）。
+
+        几何依据（用户 2026-10-01 提供 + 台面实测）：
+          探头间距 70mm、各偏离正前方 35° ⇒ 左看「偏左 20°~50°」、右看「偏右 20°~50°」
+          ⇒ **正前方 ±20° 是盲区**（实测：书放车头正前 30cm，两颗都读不到 ✓）
+
+        画法（关键）：测到的距离画成**横贯波束的一段圆弧** ——
+          单颗探头只能给“距离”，给不出横向位置 ⇒ 障碍物是“这段弧上某处” ✓
+          **故意不画成单个点**（那会假装知道横向位置 ✗）
+        刻度：线性（不夸大）；>120cm 不画；<5cm 是实测盲区 ⇒ 标红
+        """
+        c, W, H = self.us_cv, self.us_W, self.us_H
+        c.delete("all")
+        cx = W / 2.0
+        py = H - 46.0                                          # 探头（车头）线
+        span = math.radians(US_HALF_DEG + US_BEAM_DEG)
+        R = min(py - 14.0, (W / 2.0 - 10.0) / math.sin(span))   # 最外射线别越出画布
+
+        def px(mm):
+            return R * (float(mm) / US_RANGE_MM)              # 线性刻度
+
+        for rr in (300, 600, 900, 1200):                      # 参考弧（只画在波束可能到的角度内）
+            r = px(rr)
+            c.create_arc(cx - r, py - r, cx + r, py + r, start=22.0, extent=136.0,
+                         style="arc", outline="#17242f")
+            c.create_text(cx + 3, py - r, text="%dcm" % (rr // 10), anchor="w",
+                          fill="#37485a", font=("", 7))
+
+        fresh = (self.us_l is not None) and (time.time() - self.us_t < 2.0)
+        for sx, mm in ((-1, self.us_l), (1, self.us_r)):
+            ax = cx + sx * px(US_BASE_MM) / 2.0               # 该探头位置
+            axis = 90.0 - sx * US_HALF_DEG                    # 屏幕角：左 90+35、右 90−35
+            a0, a1 = axis - US_BEAM_DEG, axis + US_BEAM_DEG
+            pts = [ax, py]
+            for a in (a0, a1):
+                pts += [ax + R * math.cos(math.radians(a)), py - R * math.sin(math.radians(a))]
+            c.create_polygon(*pts, fill="#101a24", outline="#1f2d3a")
+            if mm is not None and mm > 0:
+                r = px(min(mm, US_RANGE_MM))
+                if not fresh:
+                    col = "#4a5a6a"                           # 数据陈旧 ⇒ 灰，别当成实时 ✗
+                elif mm < US_MIN_MM:
+                    col = "#ff6b6b"                           # <5cm：实测不可靠
+                elif mm < US_NEAR_MM:
+                    col = "#ff9f43"                           # 进 30cm = A02 的判据
+                else:
+                    col = "#4dabf7"
+                c.create_arc(ax - r, py - r, ax + r, py + r, start=a0,
+                             extent=2.0 * US_BEAM_DEG, style="arc", outline=col, width=3)
+                ma = math.radians(axis)
+                c.create_text(ax + (r + 11) * math.cos(ma), py - (r + 11) * math.sin(ma),
+                              text="%d" % mm, fill=col, font=("Consolas", 8, "bold"))
+
+        wf, wr = px(CAR_WF_MM) / 2.0, px(CAR_WR_MM) / 2.0     # 车体（前宽后窄 ⇒ 前驱）
+        y1 = min(py + px(CAR_LEN_MM), H - 4.0)
+        c.create_polygon(cx - wf, py, cx + wf, py, cx + wr, y1, cx - wr, y1,
+                         fill="#16202b", outline="#3d5a75")
+        for sx in (-1, 1):                                     # 探头位置（按 7cm 刻度）
+            ax = cx + sx * px(US_BASE_MM) / 2.0
+            c.create_oval(ax - 2, py - 2, ax + 2, py + 2, fill="#8ce99a", outline="")
+        c.create_text(cx, 9, text="↑ 车头方向", fill="#42566a", font=("", 7))
+        c.create_text(4, H - 10, text="半径线性刻度 · 虚线之间即 ±15° 波束", anchor="w",
+                      fill="#334354", font=("", 7))
 
 
 def _json_str(s: str) -> str:

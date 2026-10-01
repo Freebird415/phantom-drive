@@ -33,29 +33,53 @@ PREFIX = "共享_"                 # 只有 `共享_*.md` 会被 git 放行入�
 BLOCKS = "▁▂▃▄▅▆▇█"
 MM_PER_COUNT = 0.115        # 名义值（推定，未精标 —— 见 项目记录/经验与踩坑.md ㊾）
 WB_MM = 150.0
-DT_S = 1.0 / 33.3           # BLE 每帧名义 30ms（每帧的 dL/dR 只是 10ms 增量 ⇒ 要 ×3）
+DT_S = 1.0 / 33.3           # ⚠️ 仅作兼容保留：真正用的是 rows_dt_ms() 从 ms 列推出来的 DT
+                            #（固件 BLE 分频调过 3→2 ⇒ 写死 30ms 会错 1.5 倍 ✗）
+
+
+def frame_timing(rows):
+    """返回 (mult, dt_ms)：一帧代表几个 10ms 采样、相邻两帧真实间隔（毫秒）。
+
+    ⚠️ 背景与历史包袱（2026-10-01 整理，本项目在这里栽过三次）：
+      · 固件控制环固定 **100Hz** ⇒ **帧间隔 = 10ms × 发送分频**（恒定不变的关系 ✓）
+      · BLE：分频 3 ⇒ 30ms/×3（旧）；分频 2 ⇒ 20ms/×2（2026-10-01 起）
+      · 板载快照（插线 DUMP）：逐帧 ⇒ 10ms/×1
+      · ❗2026-10-01 **之前** btlog 把 ms 写成“帧号×40”的合成值（不管真实分频）⇒
+        那批日志的 ms 恒为 40ms，而其真实分频是 3 ⇒ **看到 ~40ms 就按 ×3 处理** ✓
+        （新日志的 ms = 帧号×真实间隔，40ms 只会对应分频 4 —— 本项目没用过）
+    ⇒ dt 一律取 mult×10ms（由构定关系推出，不被 ms 合成值带偏）✓
+    """
+    med = rows_dt_ms_raw(rows)
+    if 36.0 <= med <= 44.0:            # 旧的 40ms 合成值 ⇒ 真实是 ×3 / 30ms
+        return 3.0, 30.0
+    m = max(1.0, min(10.0, round(med / 10.0)))
+    return m, m * 10.0
 
 
 def frame_mult(rows) -> float:
-    """自动分辨这是哪种日志 —— 决定要不要 ×3：
+    """一帧代表多少个 10ms 采样（= 固件的发送分频）—— 详见 frame_timing()。"""
+    return frame_timing(rows)[0]
 
-    · **无线 BLE 日志**：固件每 3 个采样才发 1 帧 ⇒ 每帧的 dl/dr 只是 **10ms** 的增量，
-      而帧与帧之间是 30ms ⇒ 一帧代表的路程要 **×3**（且 ms 字段是PC合成的 40ms 假值）
-    · **板载快照**（插线 DUMP）：本来就是 100Hz 逐帧 ⇒ **不乘**（ms 字段是真实时间，相邻差 ~10ms）
 
-    判据：看相邻两帧 ms 的真实差值（快照≈ 10ms；BLE 的是合成值≈ 40ms）
-    """
+def rows_dt_ms(rows) -> float:
+    """相邻两帧的真实时间差（ms）—— 详见 frame_timing()。"""
+    return frame_timing(rows)[1]
+
+
+def rows_dt_ms_raw(rows) -> float:
+    """只看 ms 列的中位数差值（不做任何修正）；无 ms 时退 30ms。"""
     dif = []
     for i in range(1, min(len(rows), 400)):
         try:
-            dif.append(int(rows[i]["ms"]) - int(rows[i-1]["ms"]))
+            d = int(rows[i]["ms"]) - int(rows[i - 1]["ms"])
         except (KeyError, ValueError, TypeError):
-            pass
+            continue
+        if d > 0:
+            dif.append(d)
     if not dif:
-        return 3.0
+        return 30.0
     dif.sort()
-    med = dif[len(dif) // 2]
-    return 1.0 if med <= 15 else 3.0          # ≈10ms ⇒ 快照；≈40ms ⇒ BLE
+    return float(dif[len(dif) // 2])
 
 
 def spark(vals, width=96, lo=None, hi=None):
@@ -89,7 +113,8 @@ def f(v, d=0.0):
 
 
 def summarize(rows):
-    MULT = frame_mult(rows)               # BLE ⇒ 3；快照 ⇒ 1
+    MULT = frame_mult(rows)               # 一帧代表几个 10ms 采样（BLE 分频 / 快照）
+    DT = rows_dt_ms(rows) / 1000.0        # 每帧真实时间步长（秒）—— 不再写死 30ms ✗
     err, pl, pr, spd, gy, enc, gray = [], [], [], [], [], [], []
     for r in rows:
         dl, dr = f(r.get("dl")), f(r.get("dr"))
@@ -99,23 +124,23 @@ def summarize(rows):
         pl.append(f(r.get("pwm_l")))
         pr.append(f(r.get("pwm_r")))
         # ⚠️ 一帧代表的路程 = (mm_l+mm_r)/2 × MULT
-        #    BLE 每帧只是 10ms 增量（×3）；板载快照本来就是逐帧（×1）
-        spd.append((ml + mr) / 2.0 * MULT / DT_S)
+        #    BLE 每帧只是 10ms 增量（MULT = 分频）；板载快照本来就是逐帧（MULT=1）
+        spd.append((ml + mr) / 2.0 * MULT / DT)
         gy.append(g)
-        enc.append(((mr - ml) / WB_MM) * 57.2958 / DT_S)
+        enc.append(((mr - ml) / WB_MM) * 57.2958 / DT)
     n = max(1, len(rows))
     mov = [i for i, r in enumerate(rows) if abs(f(r.get("dl"))) + abs(f(r.get("dr"))) > 0
            or f(r.get("pwm_l")) or f(r.get("pwm_r"))]
     st = {}
     for r in rows:
         st[r.get("state", "?")] = st.get(r.get("state", "?"), 0) + 1
-    # 与 btview 的 note.md 口径统一：每帧位移 = spd × 30ms；有符号累加（前进为正）
-    dist = sum(spd) * DT_S
+    # 与 btview 的 note.md 口径统一：每帧位移 = spd × DT；有符号累加（前进为正）
+    dist = sum(spd) * DT
     ae = [abs(e) for e in err]
-    yaw_g = sum(gy) * DT_S
-    yaw_e = sum(enc) * DT_S
+    yaw_g = sum(gy) * DT
+    yaw_e = sum(enc) * DT
     return {
-        "frames": len(rows), "dur": len(rows) * DT_S, "moving": len(mov), "mult": MULT,
+        "frames": len(rows), "dur": len(rows) * DT, "moving": len(mov), "mult": MULT,
         "dist_mm": dist, "v_mean": sum(abs(v) for v in spd) / n,
         "v_max": max([abs(v) for v in spd], default=0.0),
         "err_mean": sum(ae) / n, "err_max": max(ae, default=0.0),
@@ -147,7 +172,15 @@ def build_md(dirpath: Path, name: str, who: str, commit: str, note: str,
     if commit:
         A("| 固件提交 | `%s` |" % commit)
     A("| 备注 | %s |" % (note or "—"))
-    A("| 数据来源 | 无线 BLE（约 33 帧/s；每帧 = 10ms 增量的快照）|")
+    # ⚠️ 这一句以前写死“约 33 帧/s”✗ —— 固件 BLE 分频 2026-10-01 从 3 改成 2（50fps）
+    #    ⇒ 写死就过期了（跟“状态白名单”“ms=40”同一类坑）⇒ 改成从数据自身推 ✓
+    _m = s.get("mult", 3.0) if isinstance(s, dict) else 3.0
+    _dt = _m * 10.0
+    if abs(_m - 1.0) < 0.01:
+        A("| 数据来源 | 板载快照（100Hz 逐帧；每帧 = 1 个 10ms 采样）|")
+    else:
+        A("| 数据来源 | 无线 BLE（约 %.0f 帧/s，帧间隔 %.0fms；每帧的 dL/dR 只是 10ms 增量 ⇒ 汇总已 ×%g）|"
+          % (1000.0 / _dt, _dt, _m))
     A("| **本地完整数据** | `%s`（**未入库**，要细节找本人）|"
       % str(dirpath).replace("\\", "/"))
     A("")
@@ -195,9 +228,11 @@ def build_md(dirpath: Path, name: str, who: str, commit: str, note: str,
     A("## 五、读这份数据要知道的三件事")
     A("")
     A("1. **每帧的时间含义**：本份来自 %s ⇒ %s"
-      % ("板载快照（100Hz 逐帧）" if abs(s.get("mult", 3.0) - 1.0) < 0.01 else "无线 BLE（约 33 帧/s）",
+      % ("板载快照（100Hz 逐帧）" if abs(s.get("mult", 3.0) - 1.0) < 0.01
+         else "无线 BLE（帧间隔 %.0fms）" % (s.get("mult", 3.0) * 10.0),
          "一帧就是一个 10ms 采样，**直接累加即可**" if abs(s.get("mult", 3.0) - 1.0) < 0.01
-         else "一帧只是 10ms 的增量（固件每 3 个采样才发 1 帧）⇒ 自己按行累加要 **×3**；上面的汇总是对的 ✓"))
+         else "一帧只是 10ms 的增量（固件每 %g 个采样才发 1 帧）⇒ 自己按行累加要 **×%g**；上面的汇总是对的 ✓"
+              % (s.get("mult", 3.0), s.get("mult", 3.0))))
     A("2. `state`：0=丢线/待机 · 1=循迹 · 5=起步找线 · 4=精停（2/3 留给避障）")
     A("3. mm/s 用**名义尺度** %.3f mm/计数（推定值，未精标，误差量级 ±20~40%%）——比趋势可靠，当绝对尺要小心" % MM_PER_COUNT)
     A("")

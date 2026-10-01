@@ -109,6 +109,7 @@ static uint8_t  s_seek;           /* 1 = 起步找线阶段（发车后还没看
 static uint32_t s_seek_t0;        /* 起步找线开始时刻 */
 static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（终点线武装用）*/
 static uint8_t  s_fin_armed;      /* ⭐ 锁存：一旦在线上跑够时间就置 1（不再被黑条清零）*/
+static int32_t  s_odo_cnt;        /* ⭐ v8：累计里程（编码器计数，绝对值）—— 给精停放“最少跑够多远”的门槛 */
 static uint16_t s_wide_hold;      /* ⭐ 穿过宽黑区后的“保持直行”倒计时(ms) */
 static uint32_t s_startt_t0;      /* 上一次报“经过起始线 T 头”的时刻（限流：2s 最多一条）*/
 /* 每计数多少 mm。**出厂推定值 0.115**（2026-10-01 实测反推：
@@ -281,6 +282,7 @@ void Trace_StartRun(void)
     s_track_ms = 0u;
     s_fin_armed = 0u;                 /* v6：新一趟重新武装（锁存清 0）*/
     s_wide_hold = 0u;
+    s_odo_cnt = 0;                    /* v8：里程清零（每趟重新计）*/
     s_last_line_err = 0.0f;
     s_risk = 0u; s_clear_frames = 0u;
 }
@@ -406,13 +408,37 @@ void Trace_Step(uint8_t allow_drive)
    证据：场地那趟 8 路全黑持续 8 秒（268 帧）也毫无反应，整趟 state 里没有 4 ✓
    修法：用【锁存标志】s_fin_armed（跑够时间置 1，只有新一趟开始时才清 ✓）*/
 #define TR_FIN_ARM_TICKS 150u   /* 在线上连续跑 150 拍（1.5s）即武装 */
+#define TR_FIN_MIN_MM    800    /* ⭐ v8：里程门槛 —— 不到这个里程绝不当终点
+                                   为什么：桌面推车几百 mm 就会误判成终点（实测 ✗），
+                                   而真赛道至少要跑 1.5m 以上 ✓（名义尺度，±20~40%）*/
 
 /* ①-1 “终点线武装”（锁存式）：
-      黑条期间不累计；但只要累计够过，就把锁存置 1 —— **不可被后续黑条清掉** ✓ */
+      黑条期间不累计；但只要累计够过，就把锁存置 1 —— **不可被后续黑条清掉** ✓
+   ⭐ v8（2026-10-01 桌面实踩）：武装条件必须限定在【窄线】上 ✗
+      事故：车在灰色地板上被推着滚 → 灰度看到 1~7 路黑（当成“跟线”）→ 攒够 1.5s ⇒ 武装 ✗
+            → 再遇全黑（灰地板/阴影）⇒ **误判成终点线** ⇒ 进精停、车就地停住，看起来“卡住”✗
+      依据：真赛道实测巡线时黑的是 **1~2 路**（43% / 47%），**3 路及以上只占 0.1%**
+      ⇒ 只在 `1 <= cnt <= 3` 时累计；宽黑（4~8 路）不算“在跟线”✓ */
 if (cnt >= 8) {
     /* 黑条期间不累计（但已锁存的武装保持 ✓）*/
-} else if (cnt > 0 && !s_fin_armed) {
+} else if (cnt >= 1 && cnt <= 3 && !s_fin_armed) {
     if ((s_track_ms += 10u) >= TR_FIN_ARM_TICKS) { s_fin_armed = 1u; }
+}
+
+/* ①-1c 累计里程（只累计数，不累 mm —— 免得 0.115mm 被取整成 0 ✗）
+   ⚠️ 为什么需要：桌面推几把只有几百 mm，也会触发精停（2026-10-01 实踩）✗
+   ✓ 有了它：要有 TR_FIN_MIN_MM（默认 800mm）的里程才可能认终点
+      ⇒ 桌面推车（几百 mm）永远进不了精停 ✓，也顺手挡住“中途误放的黑块”✓
+   ⚠️ mm/计数是**名义值**（0.115mm，未精标，±20~40%）⇒ 门槛只当“米级尺子”用 ✓ */
+{
+    static int16_t odo_l0, odo_r0;
+    static uint8_t odo_init;
+    int16_t cl = En_Count(ENC_L), cr = En_Count(ENC_R);
+    if (!odo_init) { odo_l0 = cl; odo_r0 = cr; odo_init = 1u; }
+    int32_t dc = ((int32_t)(cl - odo_l0) + (int32_t)(cr - odo_r0)) / 2;
+    if (dc < 0) { dc = -dc; }            /* 前后推都算里程（绝对值）*/
+    s_odo_cnt += dc;
+    odo_l0 = cl; odo_r0 = cr;
 }
 
 /* ①-1b 宽黑区“保持直行”倒计时（见 ② 的宽黑区判据）*/
@@ -420,30 +446,34 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_hold = TR_WIDE_HOLD_MS; }
 else if (s_wide_hold >= 10u)     { s_wide_hold -= 10u; }
 else                             { s_wide_hold = 0u; }
 
-        /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且已武装 */
-        if (cnt >= 8) {
-            if (s_fin_need < 250u) { s_fin_need++; }
-            if (s_fin_need >= TR_FIN_NEED && s_fin == 0u) {
-                if (s_fin_armed) {                       /* ⭐ v6：看锁存标志，不再看会被清零的 s_track_ms ✓ */
-                    s_fin = 1u;                              /* 进入"走最后一段" */
-                    s_fin_l0 = En_Count(ENC_L);
-                    s_fin_r0 = En_Count(ENC_R);
-                    s_fin_mm = 0;
-                    s_fin_t0 = HAL_GetTick();
-                    Tlm_SendEvent(80, "FINISH LINE");
-                } else {
-                    /* 全黑但没武装 ⇒ 这是起始线 T 头，开过去。
-                       ⚠️ 2026-10-01 实踩：原本每拍（100Hz）都发一条事件，
-                          车停在起点 T 头上时把串口刷爆（实测日志里满屏 $E 83）✗
-                          ⇒ 限流：2 秒最多一条 ✓ */
-                    if ((ms - s_startt_t0) >= 2000u) {
+        /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且【已武装】+【里程够】
+             ⭐ v8：里程门槛（TR_FIN_MIN_MM）是桌面误判的第二道闸 ✓ */
+        {
+            float mmpc = (s_mm_per_cnt > 0.0f) ? s_mm_per_cnt : 0.115f;
+            int32_t odo_mm = (int32_t)((float)s_odo_cnt * mmpc);
+            if (cnt >= 8) {
+                if (s_fin_need < 250u) { s_fin_need++; }
+                if (s_fin_need >= TR_FIN_NEED && s_fin == 0u) {
+                    if (s_fin_armed && odo_mm >= TR_FIN_MIN_MM) {
+                        s_fin = 1u;                              /* 进入"走最后一段" */
+                        s_fin_l0 = En_Count(ENC_L);
+                        s_fin_r0 = En_Count(ENC_R);
+                        s_fin_mm = 0;
+                        s_fin_t0 = HAL_GetTick();
+                        Tlm_SendEvent(80, "FINISH LINE");
+                    } else if ((ms - s_startt_t0) >= 2000u) {
+                        /* 全黑但不认（事件跟流：2 秒最多一条，避免刷屏 ✗） */
                         s_startt_t0 = ms;
-                        Tlm_SendEvent(83, "START T ignored");
+                        if (!s_fin_armed) {
+                            Tlm_SendEvent(83, "START T ignored");
+                        } else {
+                            Tlm_SendEvent(84, "FIN gated: too short");   /* 里程不够 ⇒ 不当终点 ✓ */
+                        }
                     }
                 }
+            } else {
+                s_fin_need = 0u;
             }
-        } else {
-            s_fin_need = 0u;
         }
 
         /* ①-3 精停状态机（驱动/超时/刹车都在这收口，并直接 return，

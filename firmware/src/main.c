@@ -114,11 +114,14 @@ int main(void)
                 注意：要从“上一发结束”计时，不能用累加器 —— 否则一次 30ms 超时
                 之后会补发一串，反而把节拍打乱（驱动层的 60ms 守卫会拦下）。
                 AUTO 0 可临时关掉，让 US 命令独占节拍 ---- */
-        /* 节拍 250ms：实测（2026-09-23，探头朝天花板/前面有线）
-             250ms → 左右各 2Hz，成功率 100%
-             100ms → 左右各 5Hz，左侧掉到 42%（失败后的 600ms 恢复期把节拍拦下）
-           探头正式装好、对着赛道以后可以把这里调回 100ms 再实测。 */
-        if (Tlm_UsAuto() && (int32_t)(HAL_GetTick() - last_us) >= 250) {
+        /* 节拍 100ms（2026-10-01 改回）：左右各 5Hz
+             ⚠️ 2026-09-23 曾记“100ms ⇒ 左侧掉到 42%”并把节拍放慢到 250ms ✗
+             但现在看，那个 42% 很可能是**把失败后 600ms 恢复期的 `-6` 当失败**统计出来的✗
+             （`-6` = 驱动自己拦下重复触发，不算故障；而 10/01 台面实测 50 秒零 `-2`/`-1`）
+              ⇒ 改回 100ms，**本次实测会重新统计成功率**（看 `-2`/`-1` 而不是看 `-6`）
+             若真出现大量 `-2` ⇒ 再改回 200ms 即可（就在这里）*/
+#define US_PERIOD_MS  100u
+        if (Tlm_UsAuto() && (int32_t)(HAL_GetTick() - last_us) >= (int32_t)US_PERIOD_MS) {
             uint8_t mode = Tlm_UsAuto();
             if (mode == 2u) {            /* 只测左 */
                 Us_Read(US_L);
@@ -130,7 +133,7 @@ int main(void)
             }
             Avoid_Step();       /* A02：拿到新读数立刻决策（可能接管电机）*/
             Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
-            Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);  /* 超声波也走蓝牙（2Hz，供 btview 实时显示）*/
+            Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);  /* 超声波也走蓝牙（4Hz）*/
             last_us = HAL_GetTick();
         }
 

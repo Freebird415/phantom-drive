@@ -152,7 +152,11 @@ void Log_BleTick(void)
     static uint8_t nf;
 
     if (!s_ble_on) { return; }
-    if ((div = (uint8_t)(div + 1u)) < 3u) { return; }    /* 100Hz → 33.3Hz 采样 */
+    /* ⭐ 2026-10-01：分频 3 → 2（33fps → 50fps）—— 用户反馈“灰度刷新率偏低”
+       ⚠️ 发送量同时从 289B/s 升到 433B/s（突发仍是 6帧=52B，只是更密）
+       ⚠️ BLE 实际容量随会话波动（决策登记 E-29：1.5~34 帧/s）⇒ **本次实测会统计真正送达的 fps**
+          若送达率反而不如 33fps（丢包增多），就把这个 2 改回 3 即可 ✓ */
+    if ((div = (uint8_t)(div + 1u)) < 2u) { return; }    /* 100Hz → 50Hz 采样 */
     div = 0u;
 
     for (uint8_t i = 0; i < sizeof(LogFrame); i++) {
@@ -201,7 +205,7 @@ void Log_BleUsFrame(int32_t l_mm, int32_t r_mm)
     int  n;
 
     if (!s_ble_on) { return; }
-    if ((uint32_t)(HAL_GetTick() - s_ble_us_ms) < 500u) { return; }   /* 2Hz 限流 */
+    if ((uint32_t)(HAL_GetTick() - s_ble_us_ms) < 250u) { return; }   /* 4Hz 限流 */
     s_ble_us_ms = HAL_GetTick();
 
     n = snprintf(buf, sizeof buf, "$U,%u,%d,%d\r\n",
