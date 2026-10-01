@@ -56,6 +56,7 @@ void Tlm_SendParams(void)
 void Tlm_SendEvent(uint8_t code, const char *note)
 {
     printf("$E,%u,%u,%s\r\n", (unsigned)HAL_GetTick(), (unsigned)code, note);
+    Log_BleEvent(code, note);     /* 事件也回传蓝牙：跑车时插不了串口，事件是现场唯一线索 */
 }
 
 void Tlm_SendT(uint32_t ms, const int s[8], float err, int pwm_l, int pwm_r, int state)
@@ -207,6 +208,7 @@ static void handle_command(char *line)
             if (k + 1 < n) { HAL_Delay(100); }
         }
         Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
+        Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);   /* 手动 US 也立刻让蓝牙看到 ✓ */
         return;
     }
     if (strncmp(line, "AUTO ", 5) == 0) {

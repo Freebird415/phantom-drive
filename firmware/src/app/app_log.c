@@ -178,6 +178,48 @@ void Log_BleTick(void)
     Bsp_Uart2Tx(burst, sizeof burst);
 }
 
+/* ==================== $U / $E 也走蓝牙（2026-10-01 新增） ====================
+   为什么必须加：避障调试只能在【跑动的车】上做 ⇒ 插不了串口 ✗
+   ⇒ 超声波读数（btview 的超声波面板 / 日志里的 kind=U 行）与避障事件都必须能从 BLE 看到 ✓
+
+   格式：**纯文本行**，与串口完全一致（tools/telemetry.py 的 parse_line 早就支持 ✓）
+       $U,<ms>,<l_mm>,<r_mm>     （负值是状态码 -1/-2…，代表“没测到”，绝不要当成“很近”✗）
+       $E,<ms>,<code>,<note>
+
+   限流：自动测量本身 4Hz（左右交替各 250ms）；这里 **500ms 才发一条 = 2Hz ≈ 50B/s**
+   ⇒ 对 `$T` 主流影响可忽略（BLE 实测容量随会话波动 1.5~34 帧/s ⇒ 见决策登记 E-29；
+      此处注释过去写的“天花板 60~70B/s”已被推翻，不要再当结论引用 ✗）
+
+   ⚠️ 文本行混在二进制帧流里是安全的：接收端靠 `AA 55 AA 55` 同步头重新对齐，
+      而 ASCII 字符不可能产生 0xAA ⇒ 造不出“假同步头”✓（工具侧再按 `^\$[A-Z]+,` 校验一次）
+   ⚠️ 用 snprintf 而不是 sprintf：note 是上层字符串，防溢出 ✓*/
+static uint32_t s_ble_us_ms;
+
+void Log_BleUsFrame(int32_t l_mm, int32_t r_mm)
+{
+    char buf[48];
+    int  n;
+
+    if (!s_ble_on) { return; }
+    if ((uint32_t)(HAL_GetTick() - s_ble_us_ms) < 500u) { return; }   /* 2Hz 限流 */
+    s_ble_us_ms = HAL_GetTick();
+
+    n = snprintf(buf, sizeof buf, "$U,%u,%d,%d\r\n",
+                 (unsigned)HAL_GetTick(), (int)l_mm, (int)r_mm);
+    if (n > 0) { Bsp_Uart2Tx((const uint8_t *)buf, (uint16_t)n); }
+}
+
+void Log_BleEvent(uint8_t code, const char *note)
+{
+    char buf[72];
+    int  n;
+
+    if (!s_ble_on) { return; }
+    n = snprintf(buf, sizeof buf, "$E,%u,%u,%s\r\n",
+                 (unsigned)HAL_GetTick(), (unsigned)code, note ? note : "");
+    if (n > 0) { Bsp_Uart2Tx((const uint8_t *)buf, (uint16_t)n); }
+}
+
 /* ------------------------------ Flash ------------------------------ */
 /* 写入前先擦 16 页（约 0.5 秒，CPU 会停住 —— 只在停车后调用）
  * ⚠️⚠️ **必须关中断**：STM32F1 编程 Flash 时 CPU 会停住等 BSY，

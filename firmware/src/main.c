@@ -130,6 +130,7 @@ int main(void)
             }
             Avoid_Step();       /* A02：拿到新读数立刻决策（可能接管电机）*/
             Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
+            Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);  /* 超声波也走蓝牙（2Hz，供 btview 实时显示）*/
             last_us = HAL_GetTick();
         }
 

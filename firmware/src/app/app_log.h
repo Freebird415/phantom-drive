@@ -58,6 +58,8 @@ void     Log_Note(uint8_t bits8, float err, int pwm_l, int pwm_r, int state);
    ⚠️ 发送走 Bsp_Uart2Tx 队列（非阻塞），不会拖慢控制周期。*/
 void     Log_SetBle(uint8_t on);        /* 命令 BTL 0|1 */
 uint8_t  Log_Ble(void);
+void     Log_BleUsFrame(int32_t l_mm, int32_t r_mm);    /* $U 也走蓝牙（内部 500ms 限流 = 2Hz）*/
+void     Log_BleEvent(uint8_t code, const char *note);  /* $E 也走蓝牙（事件很少）*/
 uint16_t Log_BleDrop(void);             /* 队列满丢弃字节数 */
 void     Log_BleTick(void);             /* main 主循环调（每拍一次）*/
 const uint8_t *Log_LiveFrame(void);     /* 最新一帧的 8 字节（不论是否在记录）*/
