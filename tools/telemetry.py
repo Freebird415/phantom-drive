@@ -17,6 +17,7 @@ CSV_COLUMNS = [
     "kind", "ms",
     "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
     "err", "pwm_l", "pwm_r", "state",
+    "dl", "dr", "gz",
     "kp", "ki", "kd", "base_speed",
     "code", "note",
     "l_mm", "r_mm",
@@ -26,18 +27,22 @@ CSV_COLUMNS = [
 def parse_line(line: str):
     """解析一行遥测。返回 (kind, dict) 或 None。
 
-    $T,ms,s0..s7,err,pwm_l,pwm_r,state           14 段
+    $T,ms,s0..s7,err,pwm_l,pwm_r,state               14 段（旧）
+    $T,ms,s0..s7,err,pwm_l,pwm_r,state,dl,dr       16 段（新：加了左右轮编码器增量）
     $P,ms,kp,ki,kd,base_speed                     6 段
     $E,ms,code,note                               4 段
     $U,ms,l_mm,r_mm                               4 段（超声波，-1=无回波）
+
+  说明：$T 的第 14/15 段（dl/dr）是**加在行尾**的（符合 docs/遥测协议.md 四的扩展规则），
+  所以 14 段的旧日志和 16 段的新日志都能解析 ✓
     """
     line = line.strip()
     if not line.startswith("$"):
         return None
     parts = line.split(",")
     try:
-        if parts[0] == "$T" and len(parts) == 14:
-            return "T", {
+        if parts[0] == "$T" and len(parts) in (14, 16, 17):
+            row = {
                 "ms": int(parts[1]),
                 **{f"s{i}": int(parts[2 + i]) for i in range(8)},
                 "err": float(parts[10]),
@@ -45,6 +50,12 @@ def parse_line(line: str):
                 "pwm_r": int(parts[12]),
                 "state": int(parts[13]),
             }
+            if len(parts) >= 16:            # 新格式：左右轮编码器增量（可重建轨迹）
+                row["dl"] = int(parts[14])
+                row["dr"] = int(parts[15])
+            if len(parts) >= 17:            # 更新：陀螺仪偏航率（2°/s 每 LSB）
+                row["gz"] = int(parts[16]) * 2
+            return "T", row
         if parts[0] == "$P" and len(parts) == 6:
             return "P", {
                 "ms": int(parts[1]),

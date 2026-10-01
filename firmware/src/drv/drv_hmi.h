@@ -19,7 +19,11 @@
 
 void    Hmi_Init(void);
 uint8_t Hmi_Key(void);              /* 1 = 按下 */
-void    Hmi_Beep(uint16_t ms);      /* 响 ms 毫秒（非阻塞版本见 Hmi_Poll） */
+void    Hmi_Beep(uint16_t ms);      /* 响 ms 毫秒（**阻塞实现**；未提供非阻塞版本） */
+
+/* 静音开关（命令 `MUTE 0|1`）：台面调试或旁边有人休息时用，只拦 Hmi_Beep() */
+void    Hmi_SetMute(uint8_t on);
+uint8_t Hmi_Mute(void);
 void    Hmi_BeepOn(void);
 void    Hmi_BeepOff(void);
 void    Hmi_PrintDebug(void);

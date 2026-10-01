@@ -67,8 +67,10 @@ void En_Init(void)
 
 int16_t En_Count(EncId id)
 {
-    if (id == ENC_L) { return (int16_t)__HAL_TIM_GET_COUNTER(&s_tim4); }
-    return (int16_t)__HAL_TIM_GET_COUNTER(&s_tim3);
+    int16_t raw = (id == ENC_L) ? (int16_t)__HAL_TIM_GET_COUNTER(&s_tim4)
+                               : (int16_t)__HAL_TIM_GET_COUNTER(&s_tim3);
+    /* 方向符号统一在这里乘（决策 E-22：符号唯一出处） */
+    return (int16_t)(raw * (id == ENC_L ? ENC_SIGN_L : ENC_SIGN_R));
 }
 
 void En_Reset(void)

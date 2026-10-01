@@ -42,7 +42,14 @@ static uint8_t ol_probe(void)
 void Ol_Init(void)
 {
     s_i2c2.Instance             = I2C2;
-    s_i2c2.Init.ClockSpeed      = 100000;   /* 面包板 + 杜邦线，先稳 */
+    s_i2c2.Init.ClockSpeed      = 100000;  /* ⚠️ 2026-10-01 实测：改 400k 后 OLED 写入超时，
+                                             每次要等 50ms 超时 ⇒ 主循环节奏被打乱 ⇒ 
+                                             D 项爆表 ⇒ 车左右猛打、OLED 也不亮 ✗
+                                             ⇒ 退回 100k。分页刷新足够用（1 页 ~12ms）。
+                                             I2C2 只挂 OLED + MPU6050（都支持 400k），
+                                             PCB 走线短 + OLED 板载 4.7k 上拉 ⇒ 稳定 ✓
+                                             为什么要提：OLED 刷满屏要传 1024B，
+                                             100k 下要 ~100ms，会把控制循环卡死 ✗ */
     s_i2c2.Init.DutyCycle       = I2C_DUTYCYCLE_2;
     s_i2c2.Init.OwnAddress1     = 0;
     s_i2c2.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;
@@ -87,6 +94,14 @@ static void ol_init_seq(void)
 /* ---------------- 帧缓冲 ---------------- */
 void Ol_FbClear(void) { memset(s_fb, 0, sizeof(s_fb)); }
 
+void Ol_FbFlushPage(int page)
+{
+    if (page < 0 || page > 7) { return; }
+    ol_c1(0x21); ol_c1(0x00); ol_c1(0x7F);              /* 列 0~127 */
+    ol_c1(0x22); ol_c1((uint8_t)page); ol_c1((uint8_t)page);  /* 只选这一页 */
+    ol_wr(0x40, s_fb[page], OLED_W);
+}
+
 void Ol_FbFlush(void)
 {
     ol_c1(0x21); ol_c1(0x00); ol_c1(0x7F);              /* 列 0~127 */
@@ -102,6 +117,27 @@ static void fb_ascii(int x, int page, char c)
     if (idx < FONT_ASCII_FIRST || idx >= FONT_ASCII_FIRST + FONT_ASCII_COUNT) { idx = '?'; }
     const uint8_t *g = FONT_ASCII[idx - FONT_ASCII_FIRST];
     for (int i = 0; i < 6; i++) { s_fb[page][x + i] = g[i]; }
+}
+
+/* 16×16 大号 ASCII（真字模，与汉字同高）：8 字/行、4 行，0.96" 上足够清晰 ✓ */
+int Ol_TextBig(int x, int page, const char *s)
+{
+    int x0 = x;
+    if (page < 0 || page + 1 > 7) { return 0; }
+    for (; *s; s++, x += 16) {
+        if (x + 15 >= OLED_W) { break; }
+        uint8_t c = (uint8_t)*s, k = 0, found = 0;
+        for (k = 0; k < FONT_BIG_COUNT; k++) {
+            if (FONT_BIG_UTF8[k] == c) { found = 1; break; }
+        }
+        if (!found) { k = 0; }                        /* 无此字 ⇒ 画空格 */
+        const uint8_t *g = FONT_ASCII_BIG[k];         /* 32B = 16 列 × 2 字节 */
+        for (int i = 0; i < 16; i++) {
+            s_fb[page][x + i]     |= g[i * 2];
+            s_fb[page + 1][x + i] |= g[i * 2 + 1];
+        }
+    }
+    return x - x0;
 }
 
 /* 查汉字字模下标；找不到返回 -1 */

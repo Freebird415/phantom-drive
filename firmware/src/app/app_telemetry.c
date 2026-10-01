@@ -11,20 +11,34 @@
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
 #include "drv/drv_mpu6050.h"
+#include "app_trace.h"          /* 算法开关命令 TRACE 用 */
+#include "app_avoid.h"          /* 算法开关命令 AVOID 用 */
+#include "app_log.h"            /* 板载快照命令 SNAP / DUMP 用 */
 
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 1.20f, 0.00f, 0.05f, 30 };
+static Params s_p = { 6.00f, 0.00f, 0.20f, 8 };
+/* ↑ 2026-10-01【慢速档】：base_speed 8（约 45mm/s）、kp 6、kd 0.2
+   —— 弯急，先用能转的最低速跑，目标是把黑线稳定压在中间。
+   跑车时插不了串口 ⇒ 参数必须做进默认值（`SET` 的值断电就丢）。
+   慢速时 steer/base 的比例要跟着降，否则同样 kp 在低速下会"甩头"。*/
+/* ↑ 2026-10-01：kp=14、kd=0.3（加 D 项提前预判急弯）、base_speed=35
+   （15 太低：实测电机卡在死区，只跑 24mm/s ⇒ 差速没劲）。
+   2026-09-30：默认 kp 1.2→10、base_speed 30→15。
+   改默认值的理由：跑车时插不了串口，断电后 SET 的参数会丢
+   ⇒ 必须把“跑车那套参数”做进固件默认值里。A01/A02 以后可按需改。 */
 
 Params *Tlm_Params(void) { return &s_p; }
 
 /* ==================== 发帧 ==================== */
 void Tlm_SendParams(void)
 {
-    printf("$P,%u,%.2f,%.2f,%.2f,%d\r\n",
-           (unsigned)HAL_GetTick(),
-           (double)s_p.kp, (double)s_p.ki, (double)s_p.kd, s_p.base_speed);
+    char a[16], b[16], c[16];
+    Bsp_FmtFix(a, sizeof a, s_p.kp, 2, 0);
+    Bsp_FmtFix(b, sizeof b, s_p.ki, 2, 0);
+    Bsp_FmtFix(c, sizeof c, s_p.kd, 2, 0);
+    printf("$P,%u,%s,%s,%s,%d\r\n", (unsigned)HAL_GetTick(), a, b, c, s_p.base_speed);
 }
 
 void Tlm_SendEvent(uint8_t code, const char *note)
@@ -34,10 +48,12 @@ void Tlm_SendEvent(uint8_t code, const char *note)
 
 void Tlm_SendT(uint32_t ms, const int s[8], float err, int pwm_l, int pwm_r, int state)
 {
-    printf("$T,%u,%d,%d,%d,%d,%d,%d,%d,%d,%.1f,%d,%d,%d\r\n",
+    char e[16];
+    Bsp_FmtFix(e, sizeof e, err, 1, 0);
+    printf("$T,%u,%d,%d,%d,%d,%d,%d,%d,%d,%s,%d,%d,%d\r\n",
            (unsigned)ms,
            s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-           (double)err, pwm_l, pwm_r, state);
+           e, pwm_l, pwm_r, state);
 }
 
 void Tlm_SendU(uint32_t ms, int32_t l_mm, int32_t r_mm)
@@ -65,16 +81,106 @@ static uint8_t s_us_auto = 1;      /* 主循环自动测超声波；AUTO 0 可�
 
 uint8_t Tlm_UsAuto(void) { return s_us_auto; }
 
+/* ---- 轻量浮点解析（**不要**用 sscanf("%f")）--------------------------------
+   ⚠️ newlib-nano 的 %f 【解析】需要单独链接 `-Wl,-u,_scanf_float`；
+      实测把固件从 47.3KB 顶到 53.9KB（超当时的 48KB 红线）⇒ 所以自己解析（几十字节，不拉库）。
+      同理**打印**也一律用 Bsp_FmtFix（%f 会拉 ~9KB）。
+      同样原因也不能用 atof（拉 ~7KB）。
+   支持：前导空格、正负号、整数、小数；缺省 0。返回 1 = 至少解析出一个数字。 */
+static int parse_float(const char *s, float *out)
+{
+    int neg = 0, got = 0;
+    float v = 0.0f, frac = 0.1f;
+    while (*s == ' ' || *s == '\t') { s++; }
+    if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+    while (*s >= '0' && *s <= '9') { v = v * 10.0f + (float)(*s - '0'); got = 1; s++; }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9') {
+            v += (float)(*s - '0') * frac; frac *= 0.1f; got = 1; s++;
+        }
+    }
+    if (!got) { return 0; }
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* ---- 轻量整数解析（同样是为了不拉 sscanf 库）--------------------
+   返回：解析到的数字个数（0 = 一个都没解析到）。
+   分隔符不限定是空格：遇到的第一个非数字字符就当下一段的开始。 */
+static int parse_int(const char *s, int *out)
+{
+    int got = 0;
+    while (*s != 0) {
+        int neg = 0, v = 0, d = 0;
+        while (*s == ' ' || *s == '\t' || *s == ',') { s++; }
+        if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); d = 1; s++; }
+        if (d) { if (out) { *out = neg ? -v : v; } got++; }
+        if (*s != 0 && !( (*s >= '0' && *s <= '9') || *s == ' ' || *s == '\t' || *s == ','
+                          || *s == '+' || *s == '-' )) { s++; }
+        if (out) { out++; }
+    }
+    return got;
+}
+
 static void handle_command(char *line)
 {
     /* ---- 连通性 / 参数 ---- */
     if (strcmp(line, "PING") == 0) { Tlm_SendEvent(90, "PONG"); return; }
     if (strcmp(line, "GET") == 0)  { Tlm_SendParams(); return; }
 
+    /* ---- 算法发车开关（A01/A02）----
+       ⚠️ 两个都默认关（只算不发）。开之前先把车架起来、轮子悬空！ */
+    if (strncmp(line, "TRACE ", 6) == 0) {
+        Trace_SetDrive(line[6] == '1');
+        printf("# TRACE drive=%u  灰度=%s\r\n", (unsigned)Trace_GetDrive(),
+               Trace_Online() ? "在线" : "**不在线(模拟数据/不驱动)**");
+        return;
+    }
+    if (strncmp(line, "AVOID ", 6) == 0) {
+        Avoid_SetDrive(line[6] == '1');
+        printf("# AVOID drive=%u\r\n", (unsigned)Avoid_GetDrive());
+        return;
+    }
+
+    /* ---- 板载 RAM 快照（跑车时插不了串口，跑完用 DUMP 读）----
+       ⚠️ RAM 断电就丢：必须先 “SNAP 0”（或按 PA12 按钮）再关总开关 */
+    if (strcmp(line, "SNAP 1") == 0)   { Log_Reset(); Log_Start(); Log_Status(); return; }
+    if (strcmp(line, "SNAP 0") == 0)   { Log_Stop(); Log_Status(); return; }
+    if (strcmp(line, "SNAPRESET") == 0){ Log_Reset(); Log_Status(); return; }
+    /* BLE 实时日志回传（跑车时插不了串口，用无线把 8B 帧发回电脑）*/
+    if (strncmp(line, "BTL ", 4) == 0) {
+        Log_SetBle(line[4] == '1');
+        printf("# BTL=%u  (%s)  4B同步头+6x8B帧=52B/次, 每180ms一次, 实测送达~7.7帧/s  drop=%u\r\n",
+               (unsigned)Log_Ble(), Log_Ble() ? "开：数据从 BLE 推给电脑" : "关",
+               (unsigned)Log_BleDrop());
+        return;
+    }
+    if (strcmp(line, "SNAP") == 0 || strcmp(line, "SNAP?") == 0) { Log_Status(); return; }
+    if (strcmp(line, "DUMP") == 0)     { Log_Dump(); return; }
+    if (strcmp(line, "SNAPFLASH") == 0){ Log_FlashInfo(); return; }
+
+    /* ---- 终点精停（T 头）----
+       ⚠️ 参数解析用 parse_float（不用 sscanf "%f"，也不 atof）—— 见文件上方注释 */
+    if (strncmp(line, "DISTCAL ", 8) == 0) {
+        float m = 0.0f;
+        if (parse_float(line + 8, &m)) { Trace_DistCal(m); }
+        else { printf("# 用法：DISTCAL <米>   例：ENCRESET → 推车走 1m → DISTCAL 1.0\r\n"); }
+        return;
+    }
+    if (strncmp(line, "STOPDIST ", 9) == 0) {
+        int d = 0;
+        if (parse_int(line + 9, &d) == 1) { Trace_SetStopDist(d); }
+        return;
+    }
+    if (strcmp(line, "FINSTAT") == 0)       { Trace_FinStatus(); return; }
+    if (strcmp(line, "FINRESET") == 0)      { Trace_FinReset(); return; }
+
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {
         int id = -1, n = 1;
-        if (line[2] == ' ') { (void)sscanf(line + 3, "%d %d", &id, &n); }
+        if (line[2] == ' ') { (void)parse_int(line + 3, &id); }
         if (id < -1 || id > 1) { id = -1; }
         if (n < 1) { n = 1; }
         if (n > 30) { n = 30; }
@@ -98,6 +204,64 @@ static void handle_command(char *line)
     /* ---- MPU6050（诊断用） ---- */
     if (strcmp(line, "MPU") == 0) { Mpu_PrintDebug(); return; }
 
+    /* ---- BLE 波特率扫描：BTBAUD <n> 改速率；BTAT 发 AT 看回什么 ---- */
+    if (strncmp(line, "BTBAUD ", 7) == 0) {
+        int b = 0;
+        if (parse_int(line + 7, &b) == 1 && b >= 1200 && b <= 921600) {
+            Bsp_Uart2SetBaud((uint32_t)b);
+            printf("# BLE baud -> %d\r\n", b);
+            HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        }
+        return;
+    }
+    if (strcmp(line, "BTAT") == 0) {
+        /* HC-08 手册原文：AT 指令「不用回车换行」；但部分兼容品接受 CRLF
+           -> 两种形式各试一次，谁有回包就用谁（回来的字节原样打印，CR 用 | 标出） */
+        /* 实测（2026-09-30，HC-06 丝印的 BLE 克隆）：**必须 CRLF 结尾**，
+           无结尾或只给 \r 都不回包 -> CRLF 放第一优先 */
+        static const uint8_t form[2][4] = { { 'A', 'T', 13, 10 }, { 'A', 'T', 0, 0 } };
+        static const uint8_t flen[2]    = { 4u, 2u };
+        char out[40];
+        Bsp_Uart2TxAbort();                      /* 阻塞式发送前清空日志队列，避免抢 UART */
+        HAL_UART_AbortReceive_IT(Bsp_Uart2());
+        for (int f = 0; f < 2; f++) {
+            uint8_t c; int n = 0;
+            HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)form[f], flen[f], 100);
+            while (n < 30) {
+                if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 120) != HAL_OK) { break; }
+                if (c >= 32 && c < 127) { out[n++] = (char)c; }
+                else if (c == 13) { out[n++] = '|'; }
+            }
+            out[n] = 0;
+            printf("# BTAT form=%u len=%u n=%d <%s>\r\n",
+                   (unsigned)f, (unsigned)flen[f], n, out);
+            if (n > 0) { break; }
+        }
+        HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        return;
+    }
+
+    /* ---- 向 BLE 口发一条任意文本（自动补 CRLF —— 实测该模块必须 CRLF）----
+       例：BTSEND AT+VERSION   /   BTSEND AT+BAUD  */
+    if (strncmp(line, "BTSEND ", 7) == 0) {
+        char out[40]; int n = 0; uint8_t c;
+        Bsp_Uart2TxAbort();                      /* 阻塞式发送前清空日志队列，避免抢 UART */
+        HAL_UART_AbortReceive_IT(Bsp_Uart2());
+        HAL_UART_Transmit(Bsp_Uart2(), (uint8_t *)(line + 7),
+                          (uint16_t)strlen(line + 7), 200);
+        { uint8_t eol[2] = { 13, 10 };
+          HAL_UART_Transmit(Bsp_Uart2(), eol, 2, 100); }
+        while (n < 38) {
+            if (HAL_UART_Receive(Bsp_Uart2(), &c, 1, 200) != HAL_OK) { break; }
+            if (c >= 32 && c < 127) { out[n++] = (char)c; }
+            else if (c == 13) { out[n++] = '|'; }
+        }
+        out[n] = 0;
+        printf("# BTSEND <%s> -> n=%d <%s>\r\n", line + 7, n, out);
+        HAL_UART_Receive_IT(Bsp_Uart2(), &s_blebyte, 1);
+        return;
+    }
+
     /* ---- BLE：主动发一句给手机 ---- */
     if (strncmp(line, "BT ", 3) == 0) {
         printf("# BLE> %s\r\n", line + 3);
@@ -110,10 +274,27 @@ static void handle_command(char *line)
     if (strcmp(line, "KEY") == 0)  { Hmi_PrintDebug(); return; }
     if (strncmp(line, "BEEP", 4) == 0) {
         int ms = 200;
-        if (line[4] == ' ') { (void)sscanf(line + 5, "%d", &ms); }
+        if (line[4] == ' ') { (void)parse_int(line + 5, &ms); }
         if (ms < 1) { ms = 1; } if (ms > 3000) { ms = 3000; }
-        printf("HMI> 蜂鸣 %d ms\r\n", ms);
+        printf("HMI> 蜂鸣 %d ms%s\r\n", ms, Hmi_Mute() ? "（静音中，不会响）" : "");
         Hmi_Beep((uint16_t)ms);
+        return;
+    }
+    /* 静音开关：旁边有人休息/台面反复调试时用（只拦 Hmi_Beep，不影响 BeepOn/Off）*/
+    if (strncmp(line, "MUTE ", 5) == 0) {
+        Hmi_SetMute(line[5] == '1');
+        printf("# MUTE=%u  %s\r\n", (unsigned)Hmi_Mute(), Hmi_Mute() ? "(蜂鸣器已静音)" : "(恢复)");
+        return;
+    }
+
+    /* ---- 编码器引脚原始电平（诊断：转轮子时看 C1/C2 到底有没有跳变）----
+       C1/C2 是开漏输出，静态时可能是高或低；关键是“转的时候会不会变” */
+    if (strcmp(line, "ENCPIN") == 0) {
+        printf("# ENCPIN L:PB6=%d PB7=%d | R:PA6=%d PA7=%d\r\n",
+               (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_6),
+               (int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7),
+               (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6),
+               (int)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_7));
         return;
     }
 
@@ -123,9 +304,9 @@ static void handle_command(char *line)
 
     /* ---- 电机 (TB6612) ---- */
     if (strncmp(line, "MOT", 3) == 0) {              /* MOT <左 %> <右 %> ；不带参数=报当前状态 */
-        int l = 0, r = 0;
-        if (line[3] == ' ' && sscanf(line + 4, "%d %d", &l, &r) == 2) {
-            Mo_Set(l, r);
+        int v[2] = {0, 0};
+        if (line[3] == ' ' && parse_int(line + 4, v) == 2) {
+            Mo_Set(v[0], v[1]);
         }
         Mo_PrintDebug();
         return;
@@ -142,14 +323,33 @@ static void handle_command(char *line)
         Ol_Present();
         return;
     }
-    if (strcmp(line, "OLED") == 0) { Ol_PrintDebug(); return; }
-    if (strcmp(line, "OLEDTXT") == 0) { Ol_TextTest(); return; }
+    if (strcmp(line, "OLED") == 0) {
+        Trace_DashEnable(0u);      /* 先停仪表盘，否则测试图案 0.5s 就被盖掉 */
+        Ol_PrintDebug();
+        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
+        return;
+    }
+    if (strcmp(line, "OLEDTXT") == 0) {
+        Trace_DashEnable(0u);
+        Ol_TextTest();
+        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
+        return;
+    }
+    if (strncmp(line, "DASH ", 5) == 0) {
+        Trace_DashEnable(line[5] == '1');
+        printf("# DASH=%c\r\n", line[5] == '1' ? '1' : '0');
+        return;
+    }
 
     /* ---- 在线调参 ---- */
     if (strncmp(line, "SET ", 4) == 0) {
-        char  name[16] = {0};
+        char name[16] = {0};
         float val = 0.0f;
-        if (sscanf(line + 4, "%15s %f", name, &val) == 2) {
+        const char *p = line + 4;
+        int i = 0;
+        while (p[i] != 0 && p[i] != ' ' && i < (int)sizeof(name) - 1) { name[i] = p[i]; i++; }
+        name[i] = 0;
+        if (i > 0 && parse_float(p + i, &val)) {
             if      (strcmp(name, "kp") == 0)         { s_p.kp = val; }
             else if (strcmp(name, "ki") == 0)         { s_p.ki = val; }
             else if (strcmp(name, "kd") == 0)         { s_p.kd = val; }
@@ -166,7 +366,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2) {          /* BLE：原样回声 + 打到调试口 */
         char c = (char)s_blebyte;
-        HAL_UART_Transmit(Bsp_Uart2(), &s_blebyte, 1, 50);
+        Bsp_Uart2Tx(&s_blebyte, 1);           /* 非阻塞回声（别拖主循环）*/
         if (c == '\n' || c == '\r') {
             if (s_blerlen > 0) { s_bleline[s_blerlen] = 0; printf("# BLE< %s\r\n", s_bleline); s_blerlen = 0; }
         } else if (s_blerlen < sizeof(s_bleline) - 1) {

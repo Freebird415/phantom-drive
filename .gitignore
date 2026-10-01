@@ -20,7 +20,15 @@ Listings/
 *.lnp
 
 # ---- IDE / 编辑器 ----
-.vscode/
+# .vscode 只共享「团队公共配置」（按钮/任务），生成物（含本机绝对路径）不入库
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+firmware/.vscode/*
+!firmware/.vscode/settings.json
+!firmware/.vscode/tasks.json
+!firmware/.vscode/extensions.json
 .idea/
 *.uvguix.*
 *.uvoptx

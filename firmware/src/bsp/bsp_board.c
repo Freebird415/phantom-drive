@@ -3,6 +3,7 @@
  * ========================================================================== */
 #include "bsp_board.h"
 #include <stdint.h>
+#include <stdio.h>
 
 /* ==================== 时钟 ==================== */
 void Bsp_ClockInit(void)
@@ -166,7 +167,7 @@ UART_HandleTypeDef *Bsp_Uart2(void) { return &s_huart2; }
 void Bsp_Uart2Init(void)
 {
     s_huart2.Instance          = USART2;
-    s_huart2.Init.BaudRate     = 115200;
+    s_huart2.Init.BaudRate     = 9600;    /* ⚠️ HC-06 / AT-09 类 BLE 模块默认 9600（不是 115200）*/
     s_huart2.Init.WordLength   = UART_WORDLENGTH_8B;
     s_huart2.Init.StopBits     = UART_STOPBITS_1;
     s_huart2.Init.Parity       = UART_PARITY_NONE;
@@ -176,7 +177,97 @@ void Bsp_Uart2Init(void)
     if (HAL_UART_Init(&s_huart2) != HAL_OK) { while (1) { } }
 }
 
+void Bsp_Uart2SetBaud(uint32_t baud)
+{
+    s_huart2.Init.BaudRate = baud;
+    (void)HAL_UART_Init(&s_huart2);
+}
+
+/* ==================== USART2 非阻塞发送（环形队列）==================== */
+#define U2TXQ 256u                       /* 256B：8B 帧 @50Hz ⇒ 可缓冲 ~0.6s */
+static uint8_t           s_u2q[U2TXQ];
+static volatile uint16_t s_u2h, s_u2t;
+static uint8_t           s_u2cur;        /* 正在发送的那一字节（必须稳定地址）*/
+static volatile uint8_t  s_u2busy;       /* 1 = 有一字节正在路上 */
+static volatile uint16_t s_u2drop;       /* 队列满丢弃的字节数 */
+
+static void u2_kick(void)
+{
+    /* ⚠️ 关键：正在发就直接返回，让 TxCplt 接着推。
+       否则会向一个 BUSY 的 UART 重发而把已出队的字节丢掉
+       （实测丢的是同步头里的一个字节 ⇒ PC 端永远找不到完整同步头）*/
+    if (s_u2busy) { return; }
+    if (s_u2h == s_u2t) { return; }                     /* 队列空 */
+
+    s_u2cur = s_u2q[s_u2h];
+    s_u2h = (uint16_t)((s_u2h + 1u) % U2TXQ);
+    s_u2busy = 1u;
+    if (HAL_UART_Transmit_IT(&s_huart2, &s_u2cur, 1) != HAL_OK) {
+        s_u2h = (uint16_t)((s_u2h + U2TXQ - 1u) % U2TXQ);   /* 没发起来：字节退回队列 */
+        s_u2busy = 0u;
+    }
+}
+
+void Bsp_Uart2Tx(const uint8_t *d, uint16_t n)
+{
+    __disable_irq();                                    /* 与 TxCplt 互斥（仅几周期）*/
+    for (uint16_t i = 0; i < n; i++) {
+        uint16_t nt = (uint16_t)((s_u2t + 1u) % U2TXQ);
+        if (nt == s_u2h) { s_u2drop = (uint16_t)(s_u2drop + (n - i)); break; }
+        s_u2q[s_u2t] = d[i];
+        s_u2t = nt;
+    }
+    __enable_irq();
+    u2_kick();
+}
+
+void Bsp_Uart2TxAbort(void)
+{
+    __disable_irq();
+    s_u2h = s_u2t = 0u;
+    s_u2busy = 0u;
+    __enable_irq();
+    (void)HAL_UART_AbortTransmit(&s_huart2);
+}
+
+uint16_t Bsp_Uart2TxDrops(void) { return s_u2drop; }
+
+/* 每发完一字节继续推队列 */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) { s_u2busy = 0u; u2_kick(); }
+}
+
 void USART2_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&s_huart2);
+}
+
+/* ---- 定点格式化（实现见 bsp_board.h 的说明）----
+   全程整数运算：把 v×10^dec 四舍五入成整数，再自己拼 ".dd" 尾巴。
+   好处：不链接 newlib 的浮点 printf（_dtoa_r + _printf_float + 双精度库 ≈ 6KB）。*/
+void Bsp_FmtFix(char *dst, int n, float v, int dec, int plus)
+{
+    static const int32_t SC[5] = { 1, 10, 100, 1000, 10000 };
+    int32_t scale, q, a, ip, fp;
+    const char *sign;
+
+    if (dec < 0) { dec = 0; }
+    if (dec > 4) { dec = 4; }
+    scale = SC[dec];
+
+    {   /* float → 整数（四舍五入；只需单精度乘加，不拉双精度库）*/
+        float x = v * (float)scale;
+        q = (int32_t)(x >= 0.0f ? x + 0.5f : x - 0.5f);
+    }
+    a = (q < 0) ? -q : q;
+    sign = (q < 0) ? "-" : (plus ? "+" : "");
+
+    if (dec == 0) {
+        snprintf(dst, (size_t)n, "%s%ld", sign, (long)a);
+    } else {
+        ip = a / scale;
+        fp = a % scale;
+        snprintf(dst, (size_t)n, "%s%ld.%0*ld", sign, (long)ip, dec, (long)fp);
+    }
 }
