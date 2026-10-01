@@ -18,7 +18,11 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 6.00f, 0.00f, 0.20f, 8 };
+static Params s_p = { 9.00f, 0.00f, 0.30f, 12 };
+/* ↑ 2026-10-01【1.5× 档】：把慢速档（kp6/kd0.2/base8）整体 ×1.5 ⇒ kp9/kd0.3/base12。
+   为什么连 kp/kd 一起乘：修正量是叠加在 base 上的舵量，base 提了 1.5 倍，
+   转向灵敏度得跟着提，否则同样的弯会欠修正。
+   现场想微调：`SET base_speed 10` / `SET kp 8`（断电会丢，定稿要写回默认值）*/
 /* ↑ 2026-10-01【慢速档】：base_speed 8（约 45mm/s）、kp 6、kd 0.2
    —— 弯急，先用能转的最低速跑，目标是把黑线稳定压在中间。
    跑车时插不了串口 ⇒ 参数必须做进默认值（`SET` 的值断电就丢）。
@@ -176,6 +180,7 @@ static void handle_command(char *line)
     }
     if (strcmp(line, "FINSTAT") == 0)       { Trace_FinStatus(); return; }
     if (strcmp(line, "FINRESET") == 0)      { Trace_FinReset(); return; }
+    if (strncmp(line, "SEEK ", 5) == 0)   { Trace_SetSeek(line[5] == '1'); Tlm_SendEvent(95, line[5]=='1' ? "SEEK ON" : "SEEK OFF"); return; }   /* 调试：起步找线 */
 
     /* ---- 超声波 ---- */
     if (line[0] == 'U' && line[1] == 'S') {

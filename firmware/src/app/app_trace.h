@@ -33,6 +33,8 @@ void    Trace_Init(void);
 void    Trace_Step(uint8_t allow_drive);
 
 void    Trace_SetDrive(uint8_t on);     /* 命令 `TRACE 0|1` 用 */
+void    Trace_StartRun(void);           /* ⭐ 发车统一入口：复位精停 + 开启起步找线 */
+void    Trace_SetSeek(uint8_t on);      /* 命令 `SEEK 0|1`：手动开关起步找线（调试用）*/
 uint8_t Trace_Online(void);             /* 灰度是否在线（1=真实读数；0=模拟数据且不驱动）*/
 uint8_t Trace_GetDrive(void);
 

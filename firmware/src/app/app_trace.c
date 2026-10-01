@@ -27,7 +27,7 @@
 
 #include <stdio.h>
 
-#define TR_BASE_DEFAULT   8      /* 基准速度的兜底值。
+#define TR_BASE_DEFAULT   12     /* 基准速度的兜底值。
            ⚠️ 2026-10-01 实测：**15% 占空比时电机卡在死区附近挣扎** ——
               左右轮真实增量只有 2.5/3.8 counts/帧 ⇒ 仅 ~24mm/s（满速 1210mm/s 的 2%）。
               ⇒ base_speed 必须抬到 30 以上，差速才有"劲"可用。 */
@@ -63,7 +63,7 @@ static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常�
    依据：JGB37-520 12V 330RPM + 7cm 轮 ⇒ 满速约 1210mm/s；
         15% 占空比扣除死区后估计只有 100~200mm/s ⇒ 取 130 保守中值。
    ⚠️ 这个估算误差可能达 2 倍 —— 好在安全窗口很宽（15~215mm），能容忍 ✓ */
-#define TR_FIN_MMPS_EST 130
+#define TR_FIN_MMPS_EST 195
 
 /* ⭐ 走最后一段的【超时兜底】（2026-10-01 实车踩到）：
    精停原本只能靠"走够 D mm"退出；一旦车轮不动（堵转/打滑/离地/抵住，
@@ -72,11 +72,25 @@ static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常�
    ⇒ 加 3 秒硬超时：就算一米没走够，也照样刹车停住 ✓ */
 #define TR_FIN_TIMEOUT_MS 3000u
 
+/* ⭐ 2026-10-01 场地实车新增两条（都是当天踩出来的）*/
+/* ① 起步找线：起始位置是“车摆在起始线 T 头【前】” ⇒ 发车瞬间八路全 0。
+      若按“丢线即停车”，车就永远走不了 ✗（实测：长按后纹丝不动）。
+      ⇒ 起步后 s_seek 期间改成【慢速直行找线】，看到线自动转正常循迹；
+        超过这个时间还没找到才停车（安全兜底）。*/
+#define TR_SEEK_TIMEOUT_MS 3000u
+/* ② 终点线“武装”时间：起点的 T 头也是“八路全黑”，会被误判成终点 ✗
+      ⇒ 必须先在线上连续跑够这么久，才允许把全黑当终点线。
+      （用时间而不用里程：mm/计数 尺度还没定死，时间与尺度无关 ✓）*/
+#define TR_FIN_ARM_MS 1500u
+
 static uint8_t  s_fin;            /* 0=巡线 1=走最后一段 2=已停 */
 static uint8_t  s_fin_need;       /* 全黑连续帧计数 */
 static int32_t  s_fin_mm;         /* 最后一段已走 mm */
 static int16_t  s_fin_l0, s_fin_r0;   /* 进入最后一段时的编码器起点 */
 static uint32_t s_fin_t0;         /* 未标定时退化成按时间 */
+static uint8_t  s_seek;           /* 1 = 起步找线阶段（发车后还没看到线）*/
+static uint32_t s_seek_t0;        /* 起步找线开始时刻 */
+static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（终点线武装用）*/
 /* 每计数多少 mm。**出厂推定值 0.115**（2026-10-01 实测反推：
    100% 占空比 = 10506 计数/s；按 JGB37-520 12V 330RPM + ⌀70mm 轮 ⇒ 理论满速 1210mm/s
    ⇒ 1210 / 10506 = 0.115）。误差约 ±10%，对最后一段 80mm 来说 ±8mm —— 安全窗口 (15,215) 完全够。
@@ -147,6 +161,18 @@ static uint8_t tr_pack(const int s[8])
 }
 
 void    Trace_SetDrive(uint8_t on) { s_drive = on ? 1u : 0u; }
+void    Trace_SetSeek(uint8_t on)  { s_seek = on ? 1u : 0u; s_seek_t0 = HAL_GetTick(); }
+
+/* ⭐ 发车统一入口（按钮 / 以后加命令都调它）：复位精停 + 打开【起步找线】
+   为什么必须有 seek：起始线是个 T 头，车摆在它【前】面 ⇒ 发车瞬间就是全白，
+   旧逻辑会立刻“丢线停车” ⇒ 车一动不动（2026-10-01 场地实测 ✗）*/
+void Trace_StartRun(void)
+{
+    Trace_FinReset();
+    s_seek = 1u;
+    s_seek_t0 = HAL_GetTick();
+    s_track_ms = 0u;
+}
 uint8_t Trace_GetDrive(void)       { return s_drive; }
 uint8_t Trace_Online(void)         { return s_online; }
 void    Trace_DashEnable(uint8_t on) { s_dash = on ? 1u : 0u; }
@@ -238,31 +264,40 @@ void Trace_Step(uint8_t allow_drive)
             if (s[i]) { sum += i; cnt++; }   /* 只统计「看到黑」的那几路 */
         }
 
-        if (cnt == 0) {
-            /* 全白 = 丢线。最安全的处理是先停；想"循着上次方向找线"就改这里。 */
-            if (s_drive && allow_drive) { Mo_Stop(); }
-            Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
-            Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
-            s_state = 0;
-            return;
+        /* ============ ① 终点线检测 + 精停状态机（**必须先于“丢线”判断**）============
+           ⚠️ 2026-10-01 场地实踩：精停走最后一段时，车冲过终点 T 头后必然进入【全白】，
+              而旧的“全白⇒丢线⇒停车”会把这个阶段打断 ⇒ 精停走了 0mm 就停下 ✗
+              （日志证据：第 4194 帧全黑触发，第 4202 帧全白被丢线逻辑接管）*/
+
+        /* ①-1 “终点线武装”：刚过完起始 T 头后要等一会儿，才允许把全黑当终点，
+                否则**起点的 T 头也会被当成终点** ✗（这是当天第二个致命问题）*/
+        if (cnt >= 8) {
+            s_track_ms = 0u;                       /* 全黑期间不计数 */
+        } else if (cnt > 0 && s_track_ms < (TR_FIN_ARM_MS + 200u)) {
+            s_track_ms += 10u;                     /* 本函数 100Hz ⇒ 每拍 10ms */
         }
 
-        /* ---- 终止线检测：8 路全黑连续 TR_FIN_NEED 帧 ---- */
+        /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且已武装 */
         if (cnt >= 8) {
             if (s_fin_need < 250u) { s_fin_need++; }
             if (s_fin_need >= TR_FIN_NEED && s_fin == 0u) {
-                s_fin = 1u;                              /* 进入"走最后一段" */
-                s_fin_l0 = En_Count(ENC_L);
-                s_fin_r0 = En_Count(ENC_R);
-                s_fin_mm = 0;
-                s_fin_t0 = HAL_GetTick();
-                Tlm_SendEvent(80, "FINISH LINE");
+                if (s_track_ms >= TR_FIN_ARM_MS) {
+                    s_fin = 1u;                              /* 进入"走最后一段" */
+                    s_fin_l0 = En_Count(ENC_L);
+                    s_fin_r0 = En_Count(ENC_R);
+                    s_fin_mm = 0;
+                    s_fin_t0 = HAL_GetTick();
+                    Tlm_SendEvent(80, "FINISH LINE");
+                } else {
+                    Tlm_SendEvent(83, "START T ignored");     /* 起始线 T 头，开过去 */
+                }
             }
         } else {
             s_fin_need = 0u;
         }
 
-        /* ---- 终点精停：走完最后一段 ⇒ 刹车停 + 停止记录（自动存 Flash）---- */
+        /* ①-3 精停状态机（驱动/超时/刹车都在这收口，并直接 return，
+              不让下面的“丢线停车 / 循迹 PID”插手）*/
         if (s_fin != 0u) {
             int spd = p->base_speed;
             if (spd <= 0) { spd = TR_BASE_DEFAULT; }
@@ -303,6 +338,32 @@ void Trace_Step(uint8_t allow_drive)
             }
             return;
         }
+
+        /* ============ ② 丢线 / 起步找线 ============*/
+        if (cnt == 0) {
+            /* 全白 = 丢线（精停阶段在上面已经 return，不会走到这里 ✓）
+               ⭐ 起步找线：起始线是 T 头，车摆在它前面 ⇒ 发车瞬间全白。
+                  直接停车的话车就永远走不了 ✗ ⇒ s_seek 期间慢速直行去找线；
+                  超时还没找到才停车（安全兜底）。*/
+            if (s_drive && allow_drive) {
+                if (s_seek && (ms - s_seek_t0) < TR_SEEK_TIMEOUT_MS) {
+                    int sp = p->base_speed;
+                    if (sp <= 0) { sp = TR_BASE_DEFAULT; }
+                    Mo_Set(sp, sp);                      /* 慢速直行去找线 */
+                    Log_Note(tr_pack(s), 0.0f, sp, sp, 5);
+                    Tlm_SendT(ms, s, 0.0f, sp, sp, 5);
+                    s_state = 5;                         /* 5 = 起步找线（新状态码）*/
+                    return;
+                }
+                Mo_Stop();                               /* 找线超时 / 平时丢线 ⇒ 停车等待 */
+                s_seek = 0u;
+            }
+            Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
+            Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
+            s_state = 0;
+            return;
+        }
+        s_seek = 0u;   /* 看到线了：退出“起步找线” */
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
         err = (float)sum / (float)cnt - TR_POS_CENTER;
     } else {

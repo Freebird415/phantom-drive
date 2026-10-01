@@ -89,13 +89,19 @@ int main(void)
                     s_fired = 1u;
                     if (Trace_GetDrive()) {
                         Trace_SetDrive(0u); Log_Stop();
+                        /* ⭐ 3 短声 = 手动停车（场地没屏幕，靠声音确认按键生效）
+                           对照：1 短声=发车 ／ 2 长声=到终点自动停 */
+                        Hmi_Beep(90); HAL_Delay(110);
+                        Hmi_Beep(90); HAL_Delay(110);
+                        Hmi_Beep(90);
                         printf("# BTN(长按1s): 停车 + 停止记录 n=%u\r\n", (unsigned)Log_Count());
                     } else {
                         /* ⚠️ 故意**不** Log_Reset()（同上：防误碰清掉上一趟数据）*/
-                        Trace_FinReset();          /* 复位终点精停状态，准备新一趟 */
+                        Trace_StartRun();          /* ⭐ 复位终点精停 + 打开起步找线（起始线 T 头在前面 ✓）*/
                         Log_SetBle(1u);            /* ⭐ 顺便开无线回传：跑车时插不了串口，
                                                       长按按钮就把数据推到电脑 ✓ */
                         Log_Start(); Trace_SetDrive(1u);
+                        Hmi_Beep(150);             /* ⭐ 1 短声 = 已发车 */
                         printf("# BTN(长按1s): 开始记录 + 发车 + BLE回传（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
                     }
