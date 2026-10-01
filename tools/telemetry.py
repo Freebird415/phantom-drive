@@ -95,9 +95,22 @@ def git_info() -> dict:
 
 def new_experiment_dir(note: str) -> Path:
     """logs/2026-09-13_1530_过弯抖/"""
-    tag = "".join(c for c in note.strip() if c not in '\\/:*?"<>|').strip() or "未命名"
+    tag = "".join(c for c in note.strip() if c not in '\\/:*?"<>|').strip()
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    d = repo_root() / "logs" / f"{stamp}_{tag[:20]}"
+    # 2026-10-01：备注可以为空（网页面板已取消备注输入 ✓）⇒ 没备注就只用时间戳，别搞个“未命名”尾巴 ✗
+    name = f"{stamp}_{tag[:20]}" if tag else stamp
+    root = repo_root() / "logs"
+    d = root / name
+    # ⭐ 2026-10-01 实踩（真丢数据 ✗）：同一分钟内开始两次记录 ⇒ 目录名一模一样，
+    #    而 Recorder 用 open("w") 打开 CSV ⇒ **后一次把前一次的记录清空了** ✗✗
+    #    （实测：先录 6 秒（306 行），紧接着又录 4 秒 ⇒ 同一份文件只剩 198 行）
+    #    ⇒ 撞名就加 -2 / -3（与共享摘要同一套规则 ✓）
+    if d.exists():
+        for i in range(2, 100):
+            cand = root / f"{name}-{i}"
+            if not cand.exists():
+                d = cand
+                break
     d.mkdir(parents=True, exist_ok=True)
     return d
 

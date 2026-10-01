@@ -17,13 +17,17 @@
     --mono:"Consolas","JetBrains Mono","Cascadia Mono",monospace;
   }
   *{box-sizing:border-box}
-  /* ⭐ 深色滚动条（2026-10-01 用户反馈浏览器默认滚动条是白的 ✗）*/
-  *::-webkit-scrollbar{width:11px;height:11px}
-  *::-webkit-scrollbar-track{background:#0b1014}
-  *::-webkit-scrollbar-thumb{background:#243040;border-radius:6px;border:2px solid #0b1014}
-  *::-webkit-scrollbar-thumb:hover{background:#31465c}
-  *::-webkit-scrollbar-corner{background:#0b1014}
-  html{scrollbar-color:#243040 #0b1014;scrollbar-width:thin}   /* Firefox */
+  /* ⭐ 深色滚动条（2026-10-01 用户反馈滚动条看不见 ✗）
+     ⚠️ 关键教训：**千万别再写 `html{scrollbar-color:…;scrollbar-width:thin}`** ✗✗
+        那是标准属性，Chrome 一旦看到它就会【改用原生细条并完全忽略 ::-webkit-scrollbar】
+        ⇒ 自定义颜色/宽度全部失效（实测 offsetWidth-clientWidth 只剩 2px 边框 ⇒ 根本没有滚动条 ✗）
+        本项目真的踩了这一下：用户就是看不到日志右侧滚动条 ✓
+     ⇒ 只留 webkit 伪元素（Chrome/Edge 专属），不再混用两套 ✓ */
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:#0b1014}
+  ::-webkit-scrollbar-thumb{background:#2b3a4a;border-radius:6px;border:3px solid #0b1014}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4f66}
+  ::-webkit-scrollbar-corner{background:#0b1014}
   html,body{height:100%;margin:0}
   body{
     background:var(--bg); color:var(--fg); font:13px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;
@@ -49,6 +53,37 @@
   button{cursor:pointer; transition:.15s}
   button:hover:not(:disabled){background:var(--panel2); border-color:var(--edge2)}
   button:disabled{opacity:.42; cursor:not-allowed}
+  .chip{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:20px;
+    background:var(--panel); border:1px solid var(--edge); color:var(--fg3); font-size:12px;
+  }
+  .chip::before{content:""; width:8px; height:8px; border-radius:50%; background:#3a4a5a}
+  .chip.live{color:var(--green); border-color:#2b6b45}
+  .chip.live::before{background:var(--green); box-shadow:0 0 8px var(--green)}
+  .chip.conn{color:var(--orange); border-color:#7a5320}
+  .chip.conn::before{background:var(--orange); box-shadow:0 0 8px var(--orange)}
+  .chip.err{color:var(--red); border-color:#5e3036}
+  .chip.err::before{background:var(--red); box-shadow:0 0 8px var(--red)}
+  /* 导出面板（内嵌，不挡日志 —— 可以边看日志边填帧号 ✓）*/
+  .exrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .exrow label{color:var(--fg2); font-size:12px}
+  .exrow input{width:96px}
+  .exkeys{display:flex; flex-wrap:wrap; gap:8px; margin-top:9px}
+  .exkeys .k{
+    display:inline-flex; align-items:center; gap:5px; background:var(--bg2);
+    border:1px solid var(--edge); border-radius:7px; padding:3px 7px; font:12px var(--mono);
+  }
+  .exkeys .k b{color:var(--green)}
+  .exkeys button{padding:1px 7px; font-size:11px}
+  .openlist{display:flex; flex-wrap:wrap; gap:8px; max-height:190px; overflow:auto}
+  .openlist button{font-size:12px; padding:4px 10px}
+  .openlist button small{color:var(--fg3); margin-left:6px}
+  /* 拖入框（用户 2026-10-01 要求：“打开日志”改成拖入）*/
+  .drop{border:2px dashed var(--edge2); border-radius:10px; padding:18px 16px; text-align:center;
+        background:#0b1014; color:var(--fg2); font-size:12.5px; line-height:1.9; transition:.15s}
+  .drop b{color:var(--blue)}
+  .drop.over{border-color:var(--green); background:#0f1f1a}
+  .drop .muted{color:var(--fg3); font-size:11.5px}
   button.primary{background:#17384f; border-color:#245b7d; color:#d7ecff}
   button.primary:hover:not(:disabled){background:#1d4560}
   button.danger{background:#3a1f22; border-color:#5e3036; color:#ffd7d7}
@@ -56,15 +91,19 @@
   .spacer{flex:1}
 
   /* ---------------- 主体 ---------------- */
-  main{display:grid; grid-template-columns:360px 1fr; gap:10px; padding:10px; min-height:0}
-  /* 窄屏：改成上下堆叠，而且【main 自己可滚】——不然下面的表格永远够不着 ✗ */
-  main.narrow{grid-template-columns:1fr; overflow-y:auto}
-  main.narrow .tblwrap{min-height:340px}
-  .col{display:flex; flex-direction:column; gap:10px; min-height:auto}
-  /* ⚠️ 别写成 min-height:0（本来的写法）—— 那会让【地图卡片被压扁、卡片叠上去】✗
-     实测：窄屏时地图卡（内容 641px）被压到 299px，下面的卡片行直接盖在图上 ✗
-     ⇒ 只有真正需要“按剩余空间伸缩”的那个（表格 .tblwrap）才设 min-height:0 ✓ */
-  main.narrow .col > .card{flex:0 0 auto}
+  main{display:grid; grid-template-columns:minmax(360px, 480px) 1fr; gap:10px; padding:10px;
+       min-height:0; grid-template-rows:minmax(0, 1fr); grid-auto-rows:minmax(0, 1fr)}
+  /* ⚠️ grid-template-rows 那句是关键：不写的话隐式行高是 auto ✗
+     ⇒ 列会跟着内容（200 行表格）一起长高 ⇒ 表格自身永远不溢出 ⇒
+       纵向滚动条消失、整个页面变成一大条（实测：v_overflow 一直为 0 ✗）*/
+  .col{display:flex; flex-direction:column; gap:10px; min-height:0; min-width:0}
+  /* ⚠️ flex 子项默认会【被压缩】✗：2026-10-01 实测地图卡从 641px 被压到 299px、
+     内容溢出去叠到下一张卡片上 ⇒ 所以卡片一律 flex:0 0 auto ✓
+     但【表格卡片】必须相反：它要按剩余空间伸缩，内部的 .tbl 才能出滚动条 ✓
+     （本轮还踩了反方向：把 .col 的 min-height 改成 auto ⇒ 表格撑开→没滚动条→
+       屏幕上看得到的是最旧的 200 行，最新的被裁在下面 ⇒ 用户报“日志延迟 3 秒”✗✗）*/
+  .col > .card{flex:0 0 auto}
+  .col > .tblwrap{flex:1 1 auto; min-height:0}
   .card{
     background:var(--panel); border:1px solid var(--edge); border-radius:10px;
     padding:9px 11px; min-width:0;
@@ -89,7 +128,7 @@
   #trend{width:100%;height:44px;display:block}
 
   /* ---------------- 超声波俯视图 ---------------- */
-  #map{width:100%;max-width:420px;height:auto;display:block;margin:0 auto}
+  #map{width:100%;max-width:470px;height:auto;display:block;margin:0 auto}
   .usrow{display:flex; gap:8px; margin-top:8px}
   .usrow div{
     flex:1; background:var(--bg2); border:1px solid var(--edge); border-radius:8px;
@@ -101,7 +140,10 @@
   .hint{margin-top:8px; font-size:11.5px; color:var(--fg2); line-height:1.6}
 
   /* 事件流（填满左列下半段） */
-  .evlist{overflow:auto; font:12px/1.7 var(--mono); max-height:100%}
+  .evlist{overflow:auto; font:12px/1.7 var(--mono); max-height:230px}
+  /* ⚠️ 这里以前是 max-height:100% ✗ —— 在“没有确定高度”的 flex 列里等于没限制，
+     事件一多就把它下面的表格一路往下顶 ⇒ 用户报“一个板框跟着一直往下移动”✗
+     ⇒ 改成固定上限 ✓，表格的位置就稳了 ✓ */
   .evlist .row{display:flex; gap:8px; padding:2px 0; border-bottom:1px solid #131c25}
   .evlist .t{color:var(--fg3); min-width:52px}
   .evlist .c{color:var(--orange); min-width:30px}
@@ -110,8 +152,52 @@
 
   /* ---------------- 数据表 ---------------- */
   .tblwrap{flex:1; min-height:0; display:flex; flex-direction:column}
-  .tbl{overflow:auto; flex:1; border:1px solid var(--edge); border-radius:8px; background:var(--bg2)}
-  table{border-collapse:separate; border-spacing:0; width:100%; font:12px/1.45 var(--mono)}
+  /* ⭐ 监测中：按钮变黄，一眼就知道“现在不写文件”✓ */
+  button.monon{background:#3a2c12 !important; border-color:#8a6a24 !important; color:#ffc861 !important}
+  .tbl{overflow:auto; flex:1; min-width:0; border:1px solid var(--edge); border-radius:8px;
+       background:var(--bg2); overflow-anchor:none}
+  /* ⭐ 勾了「跟随最新」⇒ **直接禁用滚动**（用户 2026-10-01 要求）：
+     否则用户一边滚、程序一边拽回底部 ⇒ 画面会在“底部”和“上几百行”之间跳 ✗ */
+  .tblbox2.following .tbl{overflow:hidden}
+  .tblbox2.following #vbar{display:none !important}
+  /* ⭐ 自画滚动条（2026-10-01）：本机 Chrome 是【悬浮滚动条】模式，
+     ::-webkit-scrollbar 完全被忽略（实测连 !important 都不生效 ✗）
+     ⇒ 自己画一条常驻可见的，并支持拖动 ✓ */
+  /* ⚠️ min-width:0 是关键：flex 子项默认不会缩到内容以下 ✗
+     ⇒ 卡片会跟着表格一起变宽，永远不溢出 ⇒ 横向滚动条永远不出 ✗（实测 ✓）*/
+  .tblbox2{position:relative; flex:1; min-height:0; min-width:0; display:flex; flex-direction:column}
+  /* 横向自画滚动条（用户要求：gz 显示不全时在下面出现横向滚轮 ✓）*/
+  #hbar{position:relative; height:11px; margin:1px 12px 0 1px; background:#0b1014;
+        border-top:1px solid #16222e; display:none}
+  #hthumb{position:absolute; top:2px; bottom:2px; left:0; width:60px; background:#2b3a4a;
+          border-radius:5px; cursor:grab}
+  #hthumb:hover{background:#3a4f66}
+  #hthumb.drag{cursor:grabbing; background:#4dabf7}
+
+  /* 右侧说明（用户要求：空白处填实用的东西；小屏不显示 ✓）*/
+  .legend{display:none; width:300px; min-width:300px; margin-left:10px; overflow:auto;
+          background:var(--bg2); border:1px solid var(--edge); border-radius:8px; padding:9px 12px}
+  .legend h4{margin:9px 0 5px; font-size:11.5px; color:var(--fg3); letter-spacing:.4px}
+  .legend h4:first-child{margin-top:0}
+  .legend dl{margin:0; font-size:11.5px; line-height:1.75}
+  .legend dt{color:var(--blue); font-family:var(--mono); float:left; width:64px; clear:left}
+  .legend dd{margin:0 0 0 68px; color:var(--fg2)}
+  .legend .kv{color:var(--orange); font-family:var(--mono)}
+  @media (min-width:1300px){ .legend{display:block} }
+  /* 列宽（2026-10-01 用户：“列宽占满大半屏，太夸张”✗）—— 每列够显示就行的定宽，
+     剩余空间留白 ⇒ 数字列对齐好看，也不浪费。具体数值按下表：
+     序号66 时刻74 灰度104 err56 pwm86 st42 dL54 dR54 gz52 ≈ 588px */
+  table{border-collapse:separate; border-spacing:0; width:680px; max-width:100%;
+        table-layout:fixed; font:12px/1.45 var(--mono)}
+  thead th, tbody td{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #vbar{position:absolute; top:1px; bottom:1px; right:1px; width:11px; background:#0b1014;
+        border-left:1px solid #16222e; border-radius:0 7px 7px 0}
+  #vthumb{position:absolute; left:2px; right:2px; background:#2b3a4a; border-radius:5px; cursor:grab}
+  #vthumb:hover{background:#3a4f66}
+  #vthumb.drag{cursor:grabbing; background:#4dabf7}
+  /* ⚠️ 2026-10-01 又踩一次“重复定义”：这里原先还有一条 `table{width:100%}` ✗，
+     写在后面 ⇒ 把上面那段【定宽列】整个盖掉了（实测表宽 1384px，序号列 155px ✗）
+     ⇒ 已删。同一元素/选择器的规则只能有一处 ✓ */
   thead th{
     position:sticky; top:0; z-index:2; background:#182230; color:var(--fg2);
     font-weight:600; text-align:left; padding:6px 9px; border-bottom:1px solid var(--edge);
@@ -124,7 +210,26 @@
   .st1{color:var(--green)} .st0{color:var(--fg3)} .st4{color:var(--violet)}
   .st5,.st6{color:var(--orange)}
 
-  /* ---------------- 底栏 ---------------- */
+  /* ---------------- 小屏 / 窗口化布局（2026-10-01 用户要求）----------------
+   原来只有一条 JS 切换的 .narrow，堆叠后【事件框长高就把表格顶下去】✗
+   ⇒ 改成三级 CSS 断点，并把会长的东西都给定上限 ⇒ 表格位置始终稳定 ✓ */
+@media (max-width: 1180px){
+  main{grid-template-columns:minmax(300px, 360px) 1fr}
+  #map{max-width:360px}
+}
+@media (max-width: 900px){
+  main{grid-template-columns:1fr; overflow-y:auto}
+  .col{min-height:auto}
+  .col > .card{flex:0 0 auto}
+  #map{max-width:100%; max-height:260px; width:auto; margin:0 auto}   /* 地图不再吃满屏 ✓ */
+  .evlist{max-height:150px}
+  .cards{grid-template-columns:repeat(auto-fit, minmax(118px, 1fr))}
+  .tblwrap{min-height:340px}
+  header{gap:8px; padding:8px 10px}
+  .exrow input{width:78px}
+}
+
+/* ---------------- 底栏 ---------------- */
   footer{
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     padding:8px 14px; background:var(--bg2); border-top:1px solid var(--edge); font-size:12px;
@@ -165,11 +270,13 @@
   <div class="brand"><span id="dot" class="dot"></span>工创小车 · 蓝牙实时日志</div>
   <label for="dev">设备</label>
   <select id="dev"><option>JDY-69A-BLE</option><option>HC-06</option></select>
-  <label for="note">备注</label>
-  <input id="note" value="BLE实时" size="14">
-  <button id="btn-start" class="primary">开始接收</button>
+  <span id="conn" class="chip">蓝牙未连接</span>
+  <button id="btn-start" class="primary" disabled>开始接收</button>
   <button id="btn-stop" disabled>停止接收</button>
+  <button id="btn-clear" class="ghost" disabled>清空日志</button>
+  <button id="btn-mon" class="ghost" disabled>监测</button>
   <div class="spacer"></div>
+  <button id="btn-open" class="ghost">打开日志</button>
   <button id="btn-export" class="ghost" disabled>导出片段…</button>
   <button id="btn-discard" class="danger ghost" disabled>删除该日志</button>
 </header>
@@ -185,7 +292,7 @@
         <div id="us-l">—<small>左探头</small></div>
         <div id="us-r">—<small>右探头</small></div>
       </div>
-      <div class="hint" id="us-hint">等 $U 帧…（点「开始接收」）</div>
+      <div class="hint" id="us-hint">等 $U 帧…（点「开始接收」或「监测」）</div>
     </div>
     <div class="card" style="flex:1;min-height:120px;display:flex;flex-direction:column">
       <h3><span>事件 / 操作记录</span><span class="muted" id="ev-n">0 条</span></h3>
@@ -222,28 +329,99 @@
       </div>
     </div>
 
+    <div class="card" id="open-panel" style="display:none">
+      <h3><span>导入日志</span><span class="muted">把日志文件（或整个日志文件夹）拖到下面的框里 ✓</span></h3>
+      <div id="drop" class="drop">
+        <b>把日志拖到这里</b>
+        <div>只支持 <b>telemetry.csv</b>（每份日志目录里的那个文件 ✓）</div>
+        <div>也可以直接拖<b>整个日志文件夹</b>（会自己找里面的 CSV ✓）</div>
+        <div class="muted">导入后可当只读日志浏览 ✓，也能直接再截取导出片段 ✓（正在记录/监测时不能导入）</div>
+        <input id="drop-file" type="file" accept=".csv,text/csv" style="display:none">
+        <button id="pick-file" class="ghost" style="margin-top:8px">或者点这里选文件…</button>
+        <div id="drop-msg" class="muted" style="margin-top:6px"></div>
+      </div>
+    </div>
+
+    <div class="card" id="ex-panel" style="display:none">
+      <h3><span>导出片段</span><span class="muted" id="ex-hint">点关键帧的「起/止」快速填入，或直接输帧号（下面的日志可以边看边填 ✓）</span></h3>
+      <div class="exrow">
+        <label for="ex-a">起始帧</label><input id="ex-a" type="number" min="1" value="1">
+        <label for="ex-b">结束帧</label><input id="ex-b" type="number" min="1" value="1">
+        <label for="ex-name">片段名</label><input id="ex-name" placeholder="必填：例“第3个弯道”" style="flex:1;min-width:140px">
+        <label for="ex-who">组员</label><input id="ex-who" placeholder="选填：任务号-姓名" style="width:140px">
+        <button id="ex-ok" class="primary">导出</button>
+        <button id="ex-cancel" class="ghost">关闭</button>
+      </div>
+      <div class="exkeys" id="ex-keys"></div>
+    </div>
+
     <div class="card tblwrap" style="flex:1">
       <h3>
-        <span>实时帧</span>
+        <span>实时帧 <span class="muted" id="follow-hint"></span></span>
         <span>
-          <label style="margin-right:10px"><input type="checkbox" id="follow" checked> 跟随最新</label>
-          <label style="margin-right:10px"><input type="checkbox" id="only-move"> 只看动帧</label>
-          <span class="muted" id="n-recv">0 帧</span>
+          <label><input type="checkbox" id="follow" checked> 跟随最新</label>
         </span>
       </h3>
-      <div class="tbl" id="tblbox">
-        <table>
-          <thead><tr>
-            <th>序号</th><th>时刻</th><th>灰度</th><th>err</th>
-            <th>pwm L/R</th><th>st</th><th>dL</th><th>dR</th><th>gz</th>
-          </tr></thead>
-          <tbody id="tb">
-            <tr id="empty"><td colspan="9" style="padding:30px;text-align:center;color:var(--fg3)">
-              点「开始接收」—— 数据会实时滚在这里；按 <kbd>空格</kbd> 打关键帧
-            </td></tr>
-          </tbody>
-        </table>
+      <div style="display:flex;flex:1;min-height:0;min-width:0">
+      <div class="tblbox2 following" id="tblbox2">
+        <div class="tbl" id="tblbox">
+          <table>
+            <colgroup>
+              <col style="width:66px"><col style="width:74px"><col style="width:104px"><col style="width:56px">
+              <col style="width:86px"><col style="width:42px"><col style="width:54px"><col style="width:54px">
+              <col style="width:52px">
+            </colgroup>
+            <thead><tr>
+              <th>序号</th><th>时刻</th><th>灰度</th><th>err</th>
+              <th>pwm L/R</th><th>st</th><th>dL</th><th>dR</th><th>gz</th>
+            </tr></thead>
+            <tbody id="tb">
+              <tr id="empty"><td colspan="9" style="padding:30px;text-align:center;color:var(--fg3)">
+                点「开始接收」—— 数据会实时滚在这里；按 <kbd>空格</kbd> 打关键帧
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="vbar"><div id="vthumb"></div></div>
+        <div id="hbar"><div id="hthumb"></div></div>
       </div>
+      <!-- 右侧说明（第 5 条：空白处填实用的东西 ✓）
+           仅在【全屏/有空间】时显示（@media min-width:1300px）—— 小屏自动隐藏 ✓ -->
+      <aside class="legend">
+        <h4>列含义</h4>
+        <dl>
+          <dt>序号</dt><dd>本轮第几帧（<b>导出片段就填这个</b>）</dd>
+          <dt>时刻</dt><dd>相对本次开始的时间 = 帧号 × 帧间隔</dd>
+          <dt>灰度</dt><dd>8 路巡线传感器：<b>1 = 黑（压线）</b>、0 = 白（顺序：第1路→第8路）</dd>
+          <dt>err</dt><dd>偏差：0 = 正中；正 = 线在右（右转）；负 = 线在左（左转）</dd>
+          <dt>pwm L/R</dt><dd>左右电机占空比（-100~100）0/0 = 停</dd>
+          <dt>st</dt><dd>状态码，见下</dd>
+          <dt>dL/dR</dt><dd>本帧左右轮编码器增量（×倍率才是实际路程）</dd>
+          <dt>gz</dt><dd>陀螺仪偏航率（2°/s 每格；正 = 左转）</dd>
+        </dl>
+        <h4>state 状态码</h4>
+        <dl>
+          <dt class="kv">0</dt><dd>丢线 / 待机 / 停车</dd>
+          <dt class="kv">1</dt><dd>正常循迹</dd>
+          <dt class="kv">2</dt><dd>避障中</dd>
+          <dt class="kv">3</dt><dd>回线</dd>
+          <dt class="kv">4</dt><dd>终点精停（<b>车已停</b>：要再跑请发 FINRESET + 长按 PA12）</dd>
+          <dt class="kv">5</dt><dd>起步找线</dd>
+          <dt class="kv">6</dt><dd>丢线找线</dd>
+        </dl>
+        <h4>操作</h4>
+        <dl>
+          <dt>空格</dt><dd>打个关键帧（帧号记在页脚，导出时可一键填起/止）</dd>
+          <dt>跟随</dt><dd>取消勾选就定格在当前画面，滚轮自由查看；勾回才跟最新</dd>
+          <dt>打开日志</dt><dd>浏览/导出以前的日志（记录中不可用）</dd>
+        </dl>
+        <h4>常见现象</h4>
+        <dl>
+          <dt>全 0 白</dt><dd>车没在线上（桌面/空中）—— 不是故障</dd>
+          <dt>全 1 黑</dt><dd>宽黑区（T 头/阴影/灰地面）—— 固件当直行通过</dd>
+          <dt>pwm=0/0</dt><dd>未发车 / 已停 / 精停；看 st 列分辨</dd>
+        </dl>
+      </aside>
     </div>
   </div>
 </main>
@@ -261,22 +439,10 @@
   <span id="st-us" class="muted">$U —</span>
   <span class="k">|</span>
   <span id="st-dir" class="muted"></span>
-  <div class="spacer"></div>
-  <button id="btn-quit" class="ghost" style="padding:3px 9px;font-size:12px"
-          title="关掉本地服务（重开：双击「蓝牙日志.bat」）">退出服务</button>
 </footer>
 
-<dialog id="dlg">
-  <h3>导出片段</h3>
-  <div class="row"><label for="ex-a">起始帧</label><input id="ex-a" type="number" min="1" value="1"></div>
-  <div class="row"><label for="ex-b">结束帧</label><input id="ex-b" type="number" min="1" value="1"></div>
-  <div class="row"><label for="ex-name">片段名</label><input id="ex-name" placeholder="例：第3个弯道 / 精停那一下"></div>
-  <div class="row"><label for="ex-who">操作人</label><input id="ex-who" placeholder="任务号-姓名（可空）"></div>
-  <div class="row muted" style="font-size:11.5px">导出会生成 telemetry.csv + derived.csv + meta.json + note.md（只读），并自动生成共享摘要</div>
-  <div class="acts">
-    <button id="ex-cancel" class="ghost">取消</button>
-    <button id="ex-ok" class="primary">导出</button>
-  </div>
+<dialog id="dlg" style="display:none">
+  <h3>（旧弹窗已弃用 —— 导出改成内嵌面板了）</h3>
 </dialog>
 
 <script>
@@ -292,7 +458,11 @@ let st = {}, us = {l:null, r:null, t:0}, frameMs = 20;
 let grayNow = "00000000", errNow = "0.0";
 let spdHist = [], gyroHist = [], lastFields = null;
 let yawGyro = 0, yawEnc = 0, nDrawn = 0, fpsWin = [];
-let markers = [], onlyMove = false, follow = true;
+let markers = [], follow = true;
+/* ⭐ dataLive：用户点过「开始接收」/打开过历史日志后才为真 ✓
+   （2026-10-01 用户要求：“蓝牙连上只是通行证”，未开始 ⇒ 日志/超声图/状态全空白 ✗）
+   页面刷新即复位 ⇒ 下次打开又是空白 ✓ */
+let dataLive = false;
 let lastFrameAt = 0, lastState = -1, lastFrameMs = 0;
 let absOffsetMs = null;
 const nowMs = () => Date.now();
@@ -305,7 +475,7 @@ const nowMs = () => Date.now();
          ② 一次插入用 DocumentFragment（整批只重排一次 ✓）
          ③ 滚动判断每批只算一次，且只有“贴底”时才自动跟随（否则不打扰你看旧数据 ✓）
          ④ 行数上限 200（要完整数据看 CSV / 导出片段 ✓）*/
-const ROW_CAP = 200, RENDER_MS = 140;
+const ROW_CAP = 200, RENDER_MS = 100;      // 2026-10-01：批间隔 140→100ms（延迟再低一点 ✓）
 let renderQ = [];
 /* 性能自检（2026-10-01 加）：flushRows 的耗时 + 当前行数
    为什么要留着：界面卡死是真实踩过的坑 ✗ ⇒ 有这两个数，下次一眼就能分辨
@@ -321,6 +491,8 @@ function connect() {
   es.addEventListener("hello", e => { st = JSON.parse(e.data); applyStatus(); drawMap(); });
   es.addEventListener("frames", e => { JSON.parse(e.data).forEach(addFrame); });
   es.addEventListener("us", e => {
+    // ⭐ 超声图也是“状态内容”：未开始接收就不显示 ✓
+    if (!(st.recording || st.viewing || st.monitoring)) return;
     us = JSON.parse(e.data);
     // 事件的 ms 是【固件绝对 tick】，而表格是【帧号×帧间隔（相对）】⇒ 差几百秒，没法看 ✗
     // 用“刚收到的那一帧的 ms”当作零点来对齐 ✓（误差 = 两者到达的时间差，~0.1s，够用 ✓）
@@ -328,6 +500,8 @@ function connect() {
     drawMap();
   });
   es.addEventListener("event", e => {
+    // ⭐ 固件事件属于“日志的一部分”：未开始接收就不进事件框 ✓
+    if (!(st.recording || st.viewing || st.monitoring)) return;
     const ev = JSON.parse(e.data);
     addEvent(ev);                      // 固件事件直接进左下角列表（不再弹窗 ✓）
   });
@@ -337,6 +511,9 @@ function connect() {
 
 /* ============ 每帧渲染 ============ */
 function addFrame(f) {
+  // ⭐ 未开始接收/未打开历史日志/未开监测 ⇒ 一切不更新（卡片、趋势、日志行都不要动 ✓）
+  if (!(st.recording || st.viewing || st.monitoring)) return;
+  dataLive = true;
   lastFrameAt = nowMs();
   lastState = f.st;
   lastFrameMs = f.ms;          // 事件时间对齐用（见 us 的监听）
@@ -358,8 +535,12 @@ function addFrame(f) {
   lastFields = f;
   nDrawn++;
 
+  // ⭐ 只有【正在记录】或【浏览历史日志】才往日志里写行（用户 2026-10-01 要求）：
+  //    蓝牙连上只是状态 ⇒ 日志区应该是空白的，不该自动开始滚 ✗
+  //    （之前只看 recording ⇒ 打开历史日志时帧全被丢掉，表格空着 ✗ 已修）
   const moving = !(f.gray.replace(/0/g, "") === "" && !dl && !dr && !f.pl && !f.pr);
-  if (!onlyMove || moving) renderQ.push({ f, spd });        // 进队列，不直接碰 DOM ✓
+  if (st.recording || st.viewing || st.monitoring) renderQ.push({ f, spd });
+  void moving;
   if (renderQ.length > 1200) renderQ.splice(0, renderQ.length - 600);   // 极端堆积时丢弃旧的
   if (f.ms % 200 === 0) renderCards();          // 卡片 ~5Hz 刷够用
 }
@@ -376,23 +557,167 @@ function makeRow(f, spd) {
 }
 
 function flushRows() {
+  // ⚠️ 自画滚动条要在【早退之前】更新：加载完历史日志后队列就空了 ✗
+  //    如果只在末尾更新，静止画面里横向滚动条永远不出现 ✓（实测就是这么错的）
+  updateVBar();
+  updateHBar();
   if (!renderQ.length) return;
   const t0 = performance.now();
   const tb = $("tb"), box = $("tblbox");
   const empty = $("empty"); if (empty) empty.remove();
   // ⚠️ 这三个读取会强制排版 ⇒ 每批只能算一次（原来每行算一次 = 卡死的根源 ✗）
-  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  // （原来这里有一个 atBottom 判断，现在改成【自动跟随 + 滚动暂停】见下面的 scroll 监听 ✓）
   const frag = document.createDocumentFragment();
   for (const item of renderQ) frag.appendChild(makeRow(item.f, item.spd));
   renderQ = [];
   tb.appendChild(frag);
   while (tb.children.length > ROW_CAP) tb.removeChild(tb.firstChild);
-  if (follow && atBottom) box.scrollTop = box.scrollHeight;
+  if (follow) box.scrollTop = box.scrollHeight;   // 自动跟随（用户往上滚时会自动暂停 ✓）
   perfFlushMs = performance.now() - t0;
   perfRows = tb.children.length;
   if (perfFlushMs > perfMaxMs) perfMaxMs = perfFlushMs;
+  updateFollowHint();
 }
 setInterval(flushRows, RENDER_MS);
+
+/* ⭐ 自画横向滚动条（用户要求：cols 显示不全时在下面出现横向滚轮 ✓）*/
+function updateHBar() {
+  const b = $("tblbox"), bar = $("hbar"), th = $("hthumb");
+  if (!b || !bar || !th) return;
+  const over = b.scrollWidth - b.clientWidth;
+  if (over <= 2) { bar.style.display = "none"; return; }
+  bar.style.display = "block";
+  const W = bar.clientWidth || 1;
+  const w = Math.max(40, W * b.clientWidth / b.scrollWidth);
+  th.style.width = w + "px";
+  th.style.left = ((W - w) * Math.max(0, Math.min(1, b.scrollLeft / over))).toFixed(1) + "px";
+}
+$("hthumb").addEventListener("mousedown", e => {
+  e.preventDefault();
+  const b = $("tblbox"), bar = $("hbar"), th = $("hthumb");
+  th.classList.add("drag");
+  const move = ev => {
+    const rect = bar.getBoundingClientRect();
+    const w = th.offsetWidth;
+    const ratio = (ev.clientX - rect.left - w / 2) / Math.max(1, rect.width - w);
+    b.scrollLeft = Math.max(0, Math.min(1, ratio)) * (b.scrollWidth - b.clientWidth);
+  };
+  const up = () => {
+    th.classList.remove("drag");
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+});
+
+/* ⭐ 「打开日志」→ 改成**拖入框**（用户 2026-10-01 要求 ✓）
+   拖入 telemetry.csv（或整个日志文件夹）⇒ 传给服务端存成新会话 ⇒ 可直接再截取导出 ✓ */
+$("btn-open").onclick = () => {
+  const panel = $("open-panel");
+  panel.style.display = panel.style.display === "none" ? "" : "none";
+};
+$("pick-file").onclick = () => $("drop-file").click();
+$("drop-file").onchange = e => { if (e.target.files[0]) importFile(e.target.files[0]); };
+
+const dropBox = $("drop");
+["dragenter", "dragover"].forEach(ev => dropBox.addEventListener(ev, e => {
+  e.preventDefault(); dropBox.classList.add("over");
+}));
+["dragleave", "drop"].forEach(ev => dropBox.addEventListener(ev, e => {
+  e.preventDefault(); dropBox.classList.remove("over");
+}));
+dropBox.addEventListener("drop", async e => {
+  const items = e.dataTransfer.items;
+  if (items && items.length && items[0].webkitGetAsEntry) {          // 可能拖的是文件夹 ✓
+    const entry = items[0].webkitGetAsEntry();
+    if (entry && entry.isDirectory) {
+      const f = await findCsvInDir(entry);
+      if (f) return importFile(f);
+      return dropMsg("这个文件夹里没找到 telemetry.csv ✗");
+    }
+  }
+  const f = e.dataTransfer.files[0];
+  if (f) importFile(f);
+});
+function dropMsg(t) { $("drop-msg").textContent = t; }
+function findCsvInDir(dir) {
+  return new Promise(resolve => {
+    const rd = dir.createReader();
+    rd.readEntries(async ents => {
+      for (const en of ents) {
+        if (en.isFile && /telemetry\.csv$/i.test(en.name)) return resolve(en.file(p => resolve(p)));
+      }
+      for (const en of ents) {                       // 再往下一层找片段 ✓
+        if (en.isDirectory) {
+          const f = await findCsvInDir(en);
+          if (f) return resolve(f);
+        }
+      }
+      resolve(null);
+    });
+  });
+}
+function importFile(f) {
+  if (!/\.csv$/i.test(f.name)) { dropMsg("只支持 CSV 日志文件 ✗（就是每份日志里的 telemetry.csv）"); return; }
+  if (st.recording) { dropMsg("正在记录 —— 先「停止接收」再导入 ✗"); return; }
+  if (st.monitoring) { dropMsg("监测中 —— 先「停止监测」再导入 ✗"); return; }
+  dropMsg("正在导入 " + f.name + " …（" + Math.round(f.size / 1024) + " KB）");
+  fetch("/api/import?name=" + encodeURIComponent(f.name), {
+    method: "POST", body: f
+  }).then(r => r.json()).then(j => {
+    dropMsg(j.msg || "导入失败");
+    logLine(j.msg || "导入失败", j.ok ? "ok" : "err");
+    if (j.ok) { $("tb").innerHTML = ""; renderQ = []; follow = true; $("follow").checked = true; updateFollowHint(); }
+  }).catch(() => dropMsg("导入请求失败 ✗"));
+}
+
+/* ⭐ 自画滚动条：位置/长度跟着 scrollTop/scrollHeight 走，支持拖动 ✓ */
+function updateVBar() {
+  const b = $("tblbox"), bar = $("vbar"), th = $("vthumb");
+  if (!b || !bar || !th) return;
+  const over = b.scrollHeight - b.clientHeight;
+  if (over <= 2) { bar.style.display = "none"; return; }
+  bar.style.display = "";
+  const H = bar.clientHeight || 1;
+  const h = Math.max(26, H * b.clientHeight / b.scrollHeight);
+  th.style.height = h + "px";
+  th.style.top = ((H - h) * Math.max(0, Math.min(1, b.scrollTop / over))).toFixed(1) + "px";
+}
+$("tblbox").addEventListener("scroll", updateVBar);
+addEventListener("resize", () => setTimeout(updateVBar, 30));
+$("vthumb").addEventListener("mousedown", e => {
+  e.preventDefault();
+  const b = $("tblbox"), bar = $("vbar"), th = $("vthumb");
+  th.classList.add("drag");
+  const move = ev => {
+    const rect = bar.getBoundingClientRect();
+    const h = th.offsetHeight;
+    const ratio = (ev.clientY - rect.top - h / 2) / Math.max(1, rect.height - h);
+    b.scrollTop = Math.max(0, Math.min(1, ratio)) * (b.scrollHeight - b.clientHeight);
+  };
+  const up = () => {
+    th.classList.remove("drag");
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+  };
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", up);
+});
+
+/* ⭐ 自动跟随（2026-10-01 用户报“日志延迟 3 秒”）
+   根因：① 浏览器【滚动锚定】会在上方行被删时把位置“锚”回去 ✗ ⇒ .tbl 加 overflow-anchor:none
+         ② 以前只在“距底 40px 内”才跟随 ⇒ 一旦被锚走就永远差一截 ✗
+   现在：用户往上滚 ⇒ 自动暂停；滚回底部 ⇒ 自动恢复（聊天软件那套 ✓）*/
+function updateFollowHint() {
+  const el = $("follow-hint");
+  if (el) el.textContent = follow ? "· 跟随最新" : "· 已定格（勾选「跟随最新」恢复）";
+}
+$("tblbox").addEventListener("scroll", () => {
+  // ⚠️ 不再自动恢复跟随（用户 2026-10-01 明确要求）—— 只更新自画滚动条 ✓
+  updateVBar();
+  updateHBar();
+});
 
 function addRow(f, spd) {
   const tb = $("tb");
@@ -472,6 +797,12 @@ function drawTrend() {
 /* ============ 超声波俯视图（SVG）============ */
 function drawMap() {
   const svg = $("map"), W = 360, H = 330;
+  // ⭐ 未开始接收/未浏览历史/未开监测 ⇒ 不画超声图（用户 2026-10-01 要求）✓
+  if (!(st.recording || st.viewing || st.monitoring)) {
+    svg.innerHTML = '<text x="180" y="150" fill="#42566a" font-size="12" text-anchor="middle">未开始接收</text>' +
+                    '<text x="180" y="172" fill="#334354" font-size="10.5" text-anchor="middle">点左上角「开始接收」或「监测」后，这里显示小车两侧的障碍物距离</text>';
+    return;
+  }
   const cx = W / 2, py = H - 74;
   const span = (US.half + US.beam) * Math.PI / 180;
   const R = Math.min(py - 18, (W / 2 - 12) / Math.sin(span));
@@ -548,24 +879,48 @@ function applyStatus() {
   const map = { idle: ["dot", "就绪"], connecting: ["dot conn", "连接中"], live: ["dot live", "接收中"], error: ["dot err", "出错"] };
   const [cls, txt] = map[st.state] || ["dot", ""];
   $("dot").className = cls;
-  $("st-text").textContent = (st.msg || txt) + (st.note ? " · 备注 " + st.note : "");
-  $("n-recv").textContent = (st.n_recv || 0) + " 帧";
+  // ⭐ 监测模式要一眼看得出来（免得以为数据进了文件 ✓）
+  $("st-text").textContent = (st.monitoring ? "监测中（只显示，不写文件）· " : "") +
+                              (st.msg || txt) + (st.note ? " · 备注 " + st.note : "");
+  // （帧数显示已删：用户 2026-10-01 要求去掉，且它未开始时也显示 ✓）
   if (st.frame_ms) frameMs = Math.max(10, Math.min(30, Math.round(st.frame_ms / 10) * 10));
   const ages = st.us_age;
   $("st-us").textContent = `$U ${st.n_us || 0} 条` +
     (ages !== null && ages !== undefined ? ` · 最近 ${ages.toFixed(1)}s 前` : "") +
     (st.us_dropped ? ` · 拦下 ${st.us_dropped}` : "") +
     (st.us_bad ? ` · 没测到 ${st.us_bad}` : "");
-  $("st-dir").textContent = st.session ? st.session : "";
-  $("btn-start").disabled = st.recording;              // ⚠️ 只看“是否在记录”：
-  // 曾经写成“live 就不能点”，结果【已连接但没在记录】时（例如刚删完日志）
-  // 两个按钮都点不了 = 卡死 ✗（2026-10-01 自测发现）
-  $("btn-start").textContent = st.recording ? "记录中…" : (st.state === "live" ? "开始记录" : "开始接收");
-  $("btn-stop").disabled = !(st.recording || st.state === "live");   // 连着就能停 ✓
-  $("btn-export").disabled = !(st.n_recv > 0);
+  $("st-dir").textContent = st.viewing ? "浏览：" + st.viewing : (st.session || "");
+  // ⭐ 连接状态：只有三种（2026-10-01 用户指定）—— 蓝牙已连接 / 蓝牙未连接 / 蓝牙连接中
+  const cm = { idle: ["蓝牙未连接", ""], connecting: ["蓝牙连接中…", "conn"], live: ["蓝牙已连接", "live"] };
+  const [ct, cc] = cm[st.state] || ["蓝牙未连接", ""];
+  $("conn").textContent = ct;
+  $("conn").className = "chip " + cc;
+  // ⭐ 记录与连接【完全解耦】（用户要求 ✓）：
+  //    记录中  → 开始灭（保持写入）｜停止亮｜清空灭
+  //    已停止  → 停止灭｜开始亮（点=新的一份日志）｜清空亮（只清界面 ✓）
+  // ⭐ 「监测」按钮 + 监测中“只有停止监测可点，其他全灭”（用户要求 ✓）
+  const mon = !!st.monitoring;
+  $("btn-mon").textContent = mon ? "停止监测" : "监测";
+  $("btn-mon").classList.toggle("monon", mon);
+  $("btn-mon").disabled = !mon && (st.state !== "live" || !!st.recording || !!st.viewing);
+  $("btn-mon").title = mon ? "停止监测 ⇒ 数据清零（途中有记录会先保存）"
+                            : (st.state !== "live" ? "等蓝牙连上才能监测" : "只显示不写文件（调试用；按空格可随时开始/停止记录）");
+  // ⭐ 开始接收：只有【蓝牙已连接】且【没在记录】才能点 ✓
+  //   （连接中/未连接都禁 —— 否则点下去只会弹一句错误，看着像没反应 ✗）
+  $("btn-start").disabled = mon || !!st.recording || st.state !== "live";
+  $("btn-start").title = st.state !== "live" ? "等蓝牙连上才能开始（会自动重连，约 5 秒一次）" : "";
+  $("btn-stop").disabled = mon || !st.recording;
+  $("btn-clear").disabled = mon || !!st.recording || !st.session;
+  $("btn-export").disabled = mon || !(st.n_recv > 0);
+  // ⭐ 「打开日志」：记录中禁用（用户要求：只在接收结束/无日志时才能打开 ✓）
+  $("btn-open").disabled = mon || !!st.recording;
+  $("btn-open").title = st.recording ? "正在记录 —— 先停止再打开历史日志" : "浏览/导出以前的日志";
   // ⭐ 记录中禁止删日志（2026-10-01 用户要求）：正在录的时候那一下太危险 ✗
-  $("btn-discard").disabled = !st.session || st.recording;
-  $("btn-discard").title = st.recording ? "正在记录 —— 先点「停止接收」才能删" : "删除界面上现在这份日志";
+  // ⭐ 浏览历史日志时也禁止删（否则容易把以前的真数据误删 ✗）
+  $("btn-discard").disabled = mon || !st.session || !!st.recording || !!st.viewing;
+  $("btn-discard").title = st.recording ? "正在记录 —— 先点「停止接收」才能删"
+                        : (st.viewing ? "正在浏览历史日志 —— 为了防误删，这里禁止删除"
+                                      : "删除界面上现在这份日志");
   $("us-meta").textContent = frameMs ? `帧间隔 ${frameMs}ms` : "";
   markers = st.markers || [];
   renderMarks();
@@ -573,14 +928,36 @@ function applyStatus() {
 
 function renderMarks() {
   const el = $("marks");
-  if (!markers.length) { el.innerHTML = '<span class="muted">（还没打点）</span>'; return; }
-  el.innerHTML = markers.slice(-6).map(m =>
-    `<span class="tagmark" title="点右侧 × 删除">#${m.n} ${m.name || ""}
+  if (!markers.length) { el.innerHTML = '<span class="muted">（还没打点）</span>'; renderExKeys(); return; }
+  const off = Math.max(0, markers.length - 6);
+  el.innerHTML = markers.slice(-6).map((m, i) =>
+    `<span class="tagmark" title="点右侧 × 删除">#${off + i + 1}-${m.n}
       <a href="#" data-n="${m.n}" style="color:inherit;text-decoration:none">×</a></span>`).join(" ");
   el.querySelectorAll("a").forEach(a => a.onclick = ev => {
     ev.preventDefault();
     fetch("/api/unmark", { method: "POST", body: JSON.stringify({ n: +a.dataset.n }) })
       .then(r => r.json()).then(j => { markers = j.markers || []; renderMarks(); });
+  });
+  renderExKeys();
+}
+
+/* 导出面板里的关键帧快捷按钮（起/止）—— 用户要求“直接选关键帧” ✓ */
+function renderExKeys() {
+  const box = $("ex-keys");
+  if (!box) return;
+  if (!markers.length) { box.innerHTML = '<span class="muted">（还没打关键帧 —— 记录时按空格即可）</span>'; return; }
+  box.innerHTML = "";
+  markers.forEach((m, i) => {
+    const el = document.createElement("span");
+    el.className = "k";
+    const lb = document.createElement("b");
+    lb.textContent = "#" + (i + 1) + "-" + m.n;
+    const b1 = document.createElement("button"); b1.className = "ghost"; b1.textContent = "起";
+    const b2 = document.createElement("button"); b2.className = "ghost"; b2.textContent = "止";
+    b1.onclick = () => { $("ex-a").value = m.n; };
+    b2.onclick = () => { $("ex-b").value = m.n; };
+    el.append(lb, b1, b2);
+    box.appendChild(el);
   });
 }
 
@@ -597,62 +974,129 @@ setInterval(() => {
 $("btn-start").onclick = () => {
   fetch("/api/start", {
     method: "POST",
-    body: JSON.stringify({ device: $("dev").value, note: $("note").value })
+    body: JSON.stringify({})            // 备注已取消 ✓（目录名只用时间戳）
   }).then(r => r.json()).then(j => {
+    if (!j.ok) { logLine(j.msg || "开始接收失败", "err"); return; }
     $("tb").innerHTML = ""; nDrawn = 0; yawGyro = yawEnc = 0;
-    spdHist = []; gyroHist = [];
+    spdHist = []; gyroHist = []; renderQ = [];
     logLine("开始接收 / 记录 —— 日志目录：" + (j.session || ""), "ok");
   }).catch(() => logLine("开始接收失败", "err"));
 };
 $("btn-stop").onclick = () => {
-  fetch("/api/stopall", { method: "POST" }).then(r => r.json()).then(j => {
-    logLine("已停止接收" + (j.share ? "；共享摘要：" + j.share : "") + "（蓝牙已断开；再连点「开始接收」）", "ok");
+  // ⭐ 只停【记录】，不碰蓝牙连接（连接是自动的、每 5 秒重试 ✓）
+  //   （旧版调 /api/stopall = 停记录 + 断连接 ✗ —— 在新设计下会把自动连接踢掉 ✗）
+  fetch("/api/stop", { method: "POST" }).then(r => r.json()).then(j => {
+    logLine("已停止记录" + (j.share ? "；共享摘要：" + j.share : "") + "（蓝牙仍连着 ✓）", "ok");
   }).catch(() => logLine("停止失败", "err"));
 };
 $("btn-discard").onclick = () => {
   if (!confirm("删除界面上现在这份日志？\n（目录连同 CSV 一起删；已导出的片段不会被删）")) return;
   fetch("/api/discard", { method: "POST" }).then(r => r.json()).then(j => {
     logLine(j.msg, j.ok ? "warn" : "err");
-    $("tb").innerHTML = "";
+    resetView();
   });
 };
-$("only-move").onchange = e => { onlyMove = e.target.checked; $("tb").innerHTML = ""; renderQ = []; };
-$("follow").onchange = e => { follow = e.target.checked; };
+/* ⭐ 「跟随最新」复选框（2026-10-01 用户要求，取代“只看动帧”）：
+     默认勾选；取消后【定格在当前显示部分】，可以用滚轮自由查看；
+     即使滚到最底也**不自动恢复** ✗；只有重新勾上才回到最新并继续跟随 ✓ */
+$("follow").onchange = e => {
+  follow = e.target.checked;
+  // ⭐ 勾上 ⇒ 直接禁止滚动，强制跟随（用户 2026-10-01 要求 ✓）
+  $("tblbox2").classList.toggle("following", follow);
+  if (follow) { const b = $("tblbox"); b.scrollTop = b.scrollHeight; }
+  updateFollowHint();
+  updateVBar();
+};
 
-const dlg = $("dlg");
-$("btn-quit").onclick = () => {
-  if (!confirm("停止后台服务？\n\n关掉后这个页面就不能再收数据了。\n重开：双击「蓝牙日志.bat」")) return;
-  fetch("/api/quit", { method: "POST" }).catch(() => {});
-  logLine("已请求停止服务 —— 这个页面可以关掉了", "warn");
+/* ⭐ 界面回到初始态（2026-10-01 用户要求：清空/删除日志时，超声图与事件也要回归空白 ✗）
+   以前只清表格 ⇒ 超声图还在画、事件还在滚 ✗ */
+function resetView() {
+  $("tb").innerHTML = "";
+  renderQ = [];
+  dataLive = false;                       // 不再接受实时帧 ⇒ 全部归零 ✓
+  grayNow = "00000000"; errNow = "0.0";
+  spdHist = []; gyroHist = []; yawGyro = 0; yawEnc = 0; lastFields = null;
+  us = { l: null, r: null, t: 0 };
+  $("evlist").innerHTML = '<div class="empty">固件事件（$E）与界面操作（开始/停止/打点/导出）都记在这里 ✓</div>';
+  evCount = 0; $("ev-n").textContent = "0 条";
+  $("marks").innerHTML = '<span class="muted">（还没打点）</span>';
+  renderCards(); drawMap(); renderExKeys();
+  updateFollowHint(); updateVBar(); updateHBar();
+}
+
+/* ⭐ 「清空日志」= 只清界面（磁盘上的 CSV 不动 ✓；记录中不可用 ✓）*/
+$("btn-clear").onclick = () => {
+  resetView();
+  logLine("已清空日志显示（磁盘上的 CSV 不受影响 ✓）", "");
 };
-$("btn-export").onclick = () => {
-  $("ex-a").value = 1;
-  $("ex-b").value = Math.max(1, st.n_recv || 1);
-  $("ex-name").value = "";
-  $("ex-who").value = "";
-  dlg.showModal();
+
+/* ⭐ 「监测」（2026-10-01 用户要求）：开 = 一切正常显示但**不写文件** ✓；
+   关 = 数据清零、回初始态 ✓（监测途中若在记录 ⇒ 先保存再清零 ✓，与“叉掉页面也计入”一致）
+   监测中：只有本按钮可点（其余全灭 ✓），空格 = 开始/停止记录 ✓ */
+$("btn-mon").onclick = () => {
+  const on = !st.monitoring;
+  if (!on && st.recording &&
+      !confirm("正在记录中。\n停止监测会【先保存这份记录】再清零，确定停止？")) return;
+  fetch("/api/monitor", { method: "POST", body: JSON.stringify({ on: on }) })
+    .then(r => r.json()).then(j => {
+      logLine(j.msg || (on ? "已开始监测" : "已停止监测"), j.ok ? (on ? "ok" : "warn") : "err");
+      if (j.ok) resetView();
+    }).catch(() => logLine("监测切换失败", "err"));
 };
-$("ex-cancel").onclick = () => dlg.close();
+
+/* 连接/断开已取消（开 bat 自动连、每 5 秒重试 ✓）*/
+
+/* 导出面板（内嵌在日志上方，不遮日志 ✓）*/
+function openExport(on) {
+  $("ex-panel").style.display = on ? "" : "none";
+  if (on) {
+    if (!$("ex-a").value || +$("ex-a").value < 1) $("ex-a").value = 1;
+    if (!$("ex-b").value || +$("ex-b").value < 1) $("ex-b").value = Math.max(1, st.n_recv || 1);
+    renderExKeys();
+  }
+}
+$("btn-export").onclick = () => openExport($("ex-panel").style.display === "none");
+$("ex-cancel").onclick = () => openExport(false);
 $("ex-ok").onclick = () => {
-  dlg.close();
   fetch("/api/export", {
     method: "POST",
     body: JSON.stringify({ a: +$("ex-a").value, b: +$("ex-b").value, name: $("ex-name").value, who: $("ex-who").value })
   }).then(r => r.json()).then(j => logLine(j.msg + (j.dir ? " → " + j.dir : ""), j.ok ? "ok" : "err"));
 };
 
-/* ⭐ 空格打关键帧：**不再问名字** ✗（用户 2026-10-01：“本就是一瞬间的事情”）
-   直接记下帧号 + 时刻；要补说明事后写在 markers.txt 里 ✓ */
+const dlg = $("dlg");   // 旧弹窗保留但不再使用（导出已改成内嵌面板 ✓）
+/* （「退出服务」按钮已删：2026-10-01 用户要求关页面就退服务 ✓ 见 beforeunload）*/
+/* ⚠️ 2026-10-01 实踩：这里原来还有一份旧的 btn-export/ex-cancel/ex-ok 处理器（走旧弹窗），
+   写在后面 ⇒ 把上面新的【内嵌面板】处理器整个覆盖掉了 ✗（点“导出片段”没反应 ✓）
+   已删除。教训：同一个元素的事件处理器只能有一处 ✓ */
+
+/* ⭐ 空格：普通模式=打关键帧；监测模式=开始/停止记录（用户 2026-10-01 要求 ✓）
+   打关键帧不再问名字 ✗（“本就是一瞬间的事情”）—— 直接记下帧号 + 时刻 ✓ */
 document.addEventListener("keydown", e => {
-  if (e.code === "Space" && document.activeElement.tagName !== "INPUT") {
-    e.preventDefault();
-    const n = st.n_recv || 0;
-    fetch("/api/mark", { method: "POST", body: JSON.stringify({ n: n, name: "" }) })
-      .then(r => r.json()).then(j => {
-        markers = j.markers || []; renderMarks();
-        logLine("关键帧 #" + n, "ok");
-      }).catch(() => logLine("打点失败", "err"));
+  if (e.code !== "Space" || document.activeElement.tagName === "INPUT") return;
+  e.preventDefault();
+  // ---- 监测模式：空格 = 一键开始/停止【真实记录】（含回溯黑匣子 ✓）----
+  if (st.monitoring) {
+    if (st.recording) {
+      fetch("/api/stop", { method: "POST" }).then(r => r.json()).then(j => {
+        logLine("已停止记录（监测继续 ✓）" + (j.share ? "；共享摘要：" + j.share : ""), "ok");
+      }).catch(() => logLine("停止失败", "err"));
+    } else {
+      fetch("/api/start", { method: "POST", body: JSON.stringify({}) }).then(r => r.json()).then(j => {
+        if (!j.ok) { logLine(j.msg || "开始记录失败", "err"); return; }
+        $("tb").innerHTML = ""; nDrawn = 0; renderQ = [];
+        spdHist = []; gyroHist = []; yawGyro = yawEnc = 0;
+        logLine("【监测中记录】已开始（含刚才回溯的一段）→ " + (j.session || ""), "ok");
+      }).catch(() => logLine("开始记录失败", "err"));
+    }
+    return;
   }
+  const n = st.n_recv || 0;
+  fetch("/api/mark", { method: "POST", body: JSON.stringify({ n: n, name: "" }) })
+    .then(r => r.json()).then(j => {
+      markers = j.markers || []; renderMarks();
+      logLine("关键帧 #" + markers.length + "-" + n, "ok");
+    }).catch(() => logLine("打点失败", "err"));
 });
 
 /* 事件卡片（左列下半段） */
@@ -662,45 +1106,46 @@ function addEvent(ev) {
   const empty = box.querySelector(".empty"); if (empty) empty.remove();
   evCount++;
   $("ev-n").textContent = evCount + " 条";
-  let t = ev.ms / 1000;
+  // ⚠️ 对齐偏移要靠 $U 里的固件 tick 算出来；还没收到 $U 时宁可不显示时间 ✗
+  //    （否则会冒出 “1289.9s” 这种固件开机秒数，看着像 bug ✓）
+  let t = null;
   if (absOffsetMs !== null) t = Math.max(0, (ev.ms - absOffsetMs) / 1000);
   const d = document.createElement("div");
   d.className = "row";
-  d.innerHTML = `<span class="t">${t.toFixed(1)}s</span><span class="c">${ev.code}</span><span class="n">${ev.note || ""}</span>`;
+  d.innerHTML = `<span class="t">${t === null ? "—" : t.toFixed(1) + "s"}</span><span class="c">${ev.code}</span><span class="n">${ev.note || ""}</span>`;
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
   while (box.children.length > 300) box.removeChild(box.firstChild);
 }
 
 /* 告警条：把“为什么看着像卡住”直接写出来（用户 2026-10-01 实踩：车进精停后所有值不变 ✗）*/
+/* 顶部告警条 —— 只留【最必要的】✓（2026-10-01 用户要求：
+   “除了最必要的警告，像某元件没反应这种就不要提示，很烦人”✗）
+
+   保留只有两类：
+     ① 蓝牙出错（真故障，不提示就不知道为啥连不上 ✓）
+     ② 车已进精停 state=4（跑车时这是关键事件：车自己停了 ✓）
+   已删掉的（都是噪音 ✗）：
+     · “已 N 秒没收到帧，查总开关/电池…”（元件没反应类 ✗）
+     · “已连接但没在记录”（按钮自己会说 ✓）
+     · “已停止接收 / 已断开”（顶部蓝色小圆点+按钮状态已经写得很清楚 ✓）
+   其它一切状态都看【顶部的小圆点 + 左下角事件框】就行 ✓ */
 function updateAlert() {
   const el = $("alert");
-  const silent = lastFrameAt ? (nowMs() - lastFrameAt) / 1000 : null;
-  const live = st.state === "live" || st.state === "connecting";
   let txt = "", cls = "", show = true;
   if (st.state === "error") {
-    txt = "<b>蓝牙出错</b>：" + (st.msg || "") + " —— 点「开始接收」重连";
+    txt = "<b>蓝牙出错</b>：" + (st.msg || "") + " —— 点「连接蓝牙」重连";
     cls = "err";
-  } else if (live && !st.recording) {
-    /* ⭐ “连着但没在记录”——最容易让人以为坏了的状态 ✗（删完日志、或刚连上还没点记录）*/
-    txt = "<b>已连接，但【没有在记录】</b>：点「开始记录」才会存到 logs/ ✓";
-    cls = "warn";
-  } else if (!live && lastFrameAt) {
-    /* ⭐ 有过数据、现在不在接收 ⇒ 一定是谁停掉了/断连了 —— 必须明说 ✓
-       （2026-10-01 实踩：AI 清理测试日志时点了“停止接收”，用户那边看到“界面还在但数据不动”
-        却没有提示 ✗ 直接当成卡死）*/
-    txt = "<b>已停止接收 / 已断开</b>：数据不会再来（已录的已在 logs/ ✓）。要再跑一趟就点「开始接收」"
-        + (silent !== null ? `（已停 ${silent.toFixed(0)} 秒）` : "");
-    cls = "info";
   } else if (lastState === 4) {
     txt = "<b>车已进入精停（state=4）</b>：固件已停机、不再驱动电机。要再跑：发 <code>FINRESET</code> 后长按 PA12 ✓";
     cls = "info";
-  } else if (live && silent !== null && silent > 2.0) {
-    txt = `<b>已 ${silent.toFixed(1)} 秒没收到帧</b>：查车上总开关/电池；若固件刚进精停或丢线停机，属正常 ✓`;
-    cls = "warn";
   } else { show = false; }
-  el.className = show ? ("on " + cls) : "";
-  el.innerHTML = txt;
+  if (show) {
+    el.className = "on " + cls;
+    if (el.dataset.key !== txt) { el.dataset.key = txt; el.innerHTML = txt; }
+  } else {
+    el.className = "";
+  }
 }
 setInterval(updateAlert, 500);
 
@@ -723,17 +1168,20 @@ function logLine(msg, kind) {
   while (box.children.length > 300) box.removeChild(box.firstChild);
 }
 
-/* 窄屏：把左右改成上下（布局优化） */
-addEventListener("resize", () => {
-  $("main").classList.toggle("narrow", innerWidth < 980);
+/* 关闭页面 = 退出服务（2026-10-01 用户要求 ✓）
+   ⚠️ 刷新也会触发 beforeunload ⇒ 服务端给 5 秒宽限，新页面连上就取消退出 ✓ */
+addEventListener("beforeunload", () => {
+  try { navigator.sendBeacon("/api/bye", ""); } catch (e) { /* 忽略 */ }
 });
+
+/* 窄屏布局已改由 CSS 媒体查询负责（2026-10-01）—— 不再用 JS 切 class ✓
+   理由：JS 切的那一版堆叠后没有给“会长高的卡片”设上限 ⇒ 事件框把表格一直往下顶 ✗ */
 
 /* 启动 */
 connect();
 renderCards();          // 先把灰度灯/趋向线的“空态”画出来（不用等数据）
 drawMap();
 renderMarks();
-$("main").classList.toggle("narrow", innerWidth < 980);
 </script>
 </body>
 </html>
