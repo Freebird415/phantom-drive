@@ -86,7 +86,10 @@ class DeFramer:
                 break
 
             f = bytes(self.buf[:FRAME])
-            bits, err10, pl, pr, st, dl, dr, gz = struct.unpack("<BbbbBbbB", f)
+            # [!] 最后一个字节 gz8 是【有符号】(int8)：固件写的是 `(uint8_t)(int8_t)g`，
+            #     快照 DUMP 路径也按 `(int)(int8_t)f->gz8` 打印。
+            #     小写 b = signed char，写成大写 B 会把负值变成 200 多（本项目踩过一次）。
+            bits, err10, pl, pr, st, dl, dr, gz = struct.unpack("<BbbbBbbb", f)
             if st not in (0, 1, 4) or abs(err10) > 100:
                 self.aligned = False             # 错位：丢 1 字节，回到找同步头
                 del self.buf[:1]
