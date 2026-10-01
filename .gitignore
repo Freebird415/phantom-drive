@@ -71,4 +71,7 @@ venv/
 .env
 
 # ---- 实验日志（本地存档，不入库）----
-logs/
+# logs/ 不再整目录忽略：由 logs/.gitignore 只放行“共享_*.md”（2026-10-01）
+logs/*
+!logs/README.md
+!logs/共享_*.md

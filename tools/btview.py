@@ -59,6 +59,7 @@ except ImportError:
     raise SystemExit(1)
 
 import telemetry                                     # noqa: E402
+import shared_log                                   # noqa: E402  生成“共享日志/”里的小摘要 md
 from btlog import KNOWN, NOTIFY, DeFramer            # noqa: E402  复用同一套解帧（格式一致才能复用分析脚本）
 
 
@@ -87,6 +88,33 @@ def frame_fields(line: str):
     if len(p) < 17:
         return None
     return ("".join(p[2:10]), p[10], p[11], p[12], p[13], p[14], p[15], p[16])
+
+
+def _set_readonly(p: Path, on: bool = True):
+    """把文件/目录设为（或取消）只读。
+
+    为什么：`logs/` 里的原始数据**只此一份、没有远端备份**（不入库）。
+    2026-10-01 踩过：一次 `printf ... > logs/<某次运行>/telemetry.csv` 把真实跑车数据覆盖了 ✗。
+    ⇒ 录完就把原始 CSV 设成**只读**：任何误写直接失败；要删必须显式去属性（多一步、但安全）。
+    """
+    import stat as _stat
+    try:
+        mode = p.stat().st_mode
+        p.chmod(mode & ~_stat.S_IWRITE if on else mode | _stat.S_IWRITE)
+    except Exception:
+        pass
+
+
+def _rmtree_force(p: Path):
+    """删目录前先取消只读（否则 Windows 上删不掉）。"""
+    import shutil as _sh, stat as _stat
+    def onerr(func, path, _exc):
+        try:
+            Path(path).chmod(Path(path).stat().st_mode | _stat.S_IWRITE)
+            func(path)
+        except Exception:
+            pass
+    _sh.rmtree(p, onerror=onerr)
 
 
 def next_clip_dir(session_dir: Path) -> Path:
@@ -723,7 +751,8 @@ class LogBrowser(tk.Toplevel):
             return
         moved = promote_children(p)
         try:
-            shutil.rmtree(p)
+            moved = promote_children(p)
+            _rmtree_force(p)
         except Exception as e:
             messagebox.showerror("删除失败", str(e), parent=self)
             return
@@ -731,6 +760,52 @@ class LogBrowser(tk.Toplevel):
             messagebox.showinfo("已删除", "已删除原始日志；\n%d 个片段已提到上一层：\n%s"
                                 % (len(moved), "\n".join(m.name for m in moved)), parent=self)
         self._refresh()
+
+
+class ShareDialog(tk.Toplevel):
+    """生成【共享日志】（仓库里的 md 摘要）：填标题/记录者/结论，其余自动生成。"""
+
+    def __init__(self, master, log_dir: Path, default_name: str, n_frames: int):
+        super().__init__(master)
+        self.title("生成共享日志（进仓库的小摘要）")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        self.result = None
+        self.log_dir = log_dir
+        f = ttk.Frame(self)
+        f.pack(fill="both", expand=True, padx=8, pady=6)
+        ttk.Label(f, text="本地完整数据：%s（%d 帧，不会入库）" % (log_dir, n_frames),
+                  foreground="#666").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        rows = [("标题", "v_name", default_name),
+                ("记录者", "v_who", ""),
+                ("固件提交", "v_commit", ""),
+                ("一句话备注", "v_note", "")]
+        for i, (lab, attr, val) in enumerate(rows, start=1):
+            ttk.Label(f, text=lab).grid(row=i, column=0, sticky="w")
+            setattr(self, attr, tk.StringVar(value=val))
+            ttk.Entry(f, textvariable=getattr(self, attr), width=46).grid(
+                row=i, column=1, sticky="w", pady=1)
+        ttk.Label(f, text="结论 / 观察" + chr(10) + "（最值钱，别人就靠这段）").grid(
+            row=5, column=0, sticky="nw", pady=(6, 0))
+        self.txt = tk.Text(f, width=58, height=7, font=("", 9))
+        self.txt.grid(row=5, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(f, text="会自动带上：帧数/时长/里程/速度/偏差/转角/state/ASCII 曲线/关键帧",
+                  foreground="#666", font=("", 8)).grid(row=6, column=0, columnspan=2,
+                                                        sticky="w", pady=(4, 0))
+        bt = ttk.Frame(f)
+        bt.grid(row=7, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        ttk.Button(bt, text="生成到 共享日志/", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bt, text="取消", command=self.destroy).pack(side="right")
+
+    def _ok(self):
+        if not self.v_name.get().strip():
+            messagebox.showwarning("缺标题", "标题不能空（建议 日期_任务号_名字_版本）", parent=self)
+            return
+        self.result = dict(name=safe_dir_name(self.v_name.get()), who=self.v_who.get().strip(),
+                           commit=self.v_commit.get().strip(), note=self.v_note.get().strip(),
+                           obs=self.txt.get("1.0", "end").strip())
+        self.destroy()
 
 
 class App(tk.Tk):
@@ -791,6 +866,8 @@ class App(tk.Tk):
         self.btn_open = ttk.Button(top, text="打开日志…", command=self.open_log_dialog)
         self.btn_open.grid(row=0, column=9, padx=2)
         ttk.Button(top, text="打开目录", command=self.open_dir).grid(row=0, column=10, padx=2)
+        self.btn_share = ttk.Button(top, text="分享到共享日志…（已自动）", command=lambda: self.share_dialog())
+        self.btn_share.grid(row=0, column=11, padx=2)
 
         opt2 = ttk.Frame(self)
         opt2.pack(fill="x", **pad)
@@ -1012,8 +1089,14 @@ class App(tk.Tk):
             messagebox.showerror("导出失败", "写文件出错：\n%s" % e)
             return None
         self.exports.append((a, b, str(out)))
+        # ⭐ 导出片段也设只读（原始 CSV 不留可写的副本）
+        for f in out.rglob("*"):
+            if f.is_file():
+                _set_readonly(f, True)
         if self.session_dir == self.recorded:
             self.nag_ok = True                            # 本轮已保存过，不再唠叨
+        self.auto_share(out, d.result["name"] or out.name, d.result.get("who", ""),
+                        note_extra="由导出片段自动生成")     # ⭐ 默认开共享
         self._append("[保存] 第 %d~%d 帧（共 %d 帧）→ %s" % (a, b, n, out), "mark")
         self.status.set("已导出：%s" % out)
         if messagebox.askyesno("导出完成",
@@ -1022,6 +1105,54 @@ class App(tk.Tk):
             import subprocess
             subprocess.Popen(["explorer", str(out)])
         return out
+
+    def share_dialog(self, name_hint: str = ""):
+        """把当前日志/片段生成一份小的 md 摘要，写进仓库的 共享日志/（可入库）"""
+        if not (self.session_dir and (self.session_dir / "telemetry.csv").exists()):
+            messagebox.showinfo("还没有日志", "先录一段或打开一份日志，再来分享。")
+            return None
+        hint = name_hint or ("%s_%s" % (datetime.now().strftime("%Y-%m-%d"),
+                                        self.note.get().strip() or "日志"))
+        d = ShareDialog(self, self.session_dir, hint, self.n_recv)
+        self.wait_window(d)
+        if d.result is None:
+            return None
+        try:
+            rows = shared_log.load(self.session_dir)
+            md = shared_log.build_md(self.session_dir, d.result["name"], d.result["who"],
+                                     d.result["commit"], d.result["note"], d.result["obs"], rows)
+            out = shared_log.SHARED / ("%s.md" % d.result["name"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(md, encoding="utf-8")
+        except Exception as e:
+            messagebox.showerror("生成失败", str(e))
+            return None
+        self._append("[共享] 已生成 %s（%.1f KB）—— 记得补“结论”并提交" %
+                     (out.relative_to(shared_log.REPO), out.stat().st_size / 1024.0), "mark")
+        if messagebox.askyesno("共享版已生成",
+                               "已写入：" + chr(10) + "%s" % out.relative_to(shared_log.REPO)
+                               + chr(10) * 2 + "（本地 CSV 全量仍只在 logs/，不入库）"
+                               + chr(10) * 2 + "现在打开看看吗？"):
+            import subprocess
+            subprocess.Popen(["notepad", str(out)])
+        return out
+
+    def auto_share(self, log_dir: Path, name: str, who: str = "", note_extra: str = ""):
+        """自动生成一份可入库的摘要（默认开共享）——失败不影响主流程。"""
+        try:
+            rows = shared_log.load(log_dir)
+            if not rows:
+                return None
+            md = shared_log.build_md(log_dir, name, who, "", note_extra, "", rows)
+            out = shared_log.SHARED / ("%s%s.md" % (shared_log.PREFIX, name))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(md, encoding="utf-8")
+            self._append("[共享] 已自动生成 %s（%.1f KB）—— 补上「结论」后即可提交"
+                         % (out.relative_to(shared_log.REPO), out.stat().st_size / 1024.0), "mark")
+            return out
+        except Exception as e:
+            self._append("[!] 自动生成共享版失败（不影响记录）：%s" % e)
+            return None
 
     def _chain(self, out: Path) -> list:
         """记录“这份片段是从哪一路截出来的”，便于日后追溯多层嵌套。"""
@@ -1117,7 +1248,7 @@ class App(tk.Tk):
             return
         try:
             moved = promote_children(self.session_dir)   # 先保住子片段，再删母目录
-            shutil.rmtree(self.session_dir)
+            _rmtree_force(self.session_dir)              # 只读文件要先去属性
             self._append("[i] 已删除 %s%s" % (self.session_dir,
                                           "；%d 个片段已提到上一层" % len(moved) if moved else ""), "warn")
         except Exception as e:
@@ -1169,7 +1300,7 @@ class App(tk.Tk):
             elif ans is False:
                 try:
                     promote_children(self.session_dir)
-                    shutil.rmtree(self.session_dir)
+                    _rmtree_force(self.session_dir)
                     self._append("[i] 已删除 %s" % self.session_dir, "warn")
                 except Exception:
                     pass
@@ -1234,6 +1365,19 @@ class App(tk.Tk):
                             self._append("[i] 打点已写入 markers.txt", "mark")
                         except Exception:
                             pass
+                    # ⭐ 机械防护：录完把原始 CSV 设成只读（防误写/误覆盖）
+                    if self.session_dir:
+                        for f in ("telemetry.csv", "meta.json", "note.md", "markers.txt"):
+                            f2 = self.session_dir / f
+                            if f2.exists():
+                                _set_readonly(f2, True)
+                        self._append("[i] 原始数据已设为只读（防误写；要删请用「丢弃本次日志」）", "ev")
+                    # ⭐ 默认开共享：录完自动生成一份可入库的小摘要（3~6KB）
+                    if self.session_dir and self.n_recv:
+                        self.auto_share(self.session_dir,
+                                        "%s_%s" % (datetime.now().strftime("%Y-%m-%d"),
+                                                    self.note.get().strip() or "日志"),
+                                        who="", note_extra="自动生成（录制结束时）")
         except queue.Empty:
             pass
         now = datetime.now()
