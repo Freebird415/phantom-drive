@@ -528,15 +528,20 @@ def export_clip(hub: Hub, a: int, b: int, name: str, who: str = ""):
         # note.md：把摘要里最常用的几项落到片段目录（字段定义可随文件走 ✓）
         rows = shared_log.load(out)
         s = shared_log.summarize(rows) if rows else {}
+        us = shared_log.us_stats(out)          # ⭐ 以【片段自己】的 $U 为准（与共享摘要同一口径 ✓）
         (out / "note.md").write_text(
             "# 片段 %s\n\n- 来源：`%s` 第 %d~%d 帧（共 %d 帧）\n- 备注：%s\n\n"
             "## 汇总\n\n| 指标 | 值 |\n|---|---|\n"
             "| 时长 | %.1f s |\n| 均速 | %.1f mm/s |\n| 峰值速度 | %.1f mm/s |\n"
             "| 里程 | %.0f mm |\n| \\|err\\| 均值 | %.2f |\n| \\|err\\|≤1 占比 | %.1f%% |\n"
             "| 陀螺累计 | %.0f° |\n| 编码累计 | %.0f° |\n"
+            "| 超声波（$U） | %s |\n"
+            "| 超声波最近障碍 | 左 %s · 右 %s |\n"
             % (base, src_dir.name, a, b, n, hub.note,
                s.get("dur", 0), s.get("v_mean", 0), s.get("v_max", 0), s.get("dist_mm", 0),
-               s.get("err_mean", 0), s.get("err_le1", 0), s.get("yaw_gyro", 0), s.get("yaw_enc", 0)),
+               s.get("err_mean", 0), s.get("err_le1", 0), s.get("yaw_gyro", 0), s.get("yaw_enc", 0),
+               ("%d 条" % us["n"]) if us["n"] else "⚠️ 0 条（逐帧距离没进日志）",
+               shared_log.fmt_mm(us["l_min"]), shared_log.fmt_mm(us["r_min"])),
             encoding="utf-8")
     except Exception as e:                                       # noqa: BLE001
         return None, "导出失败：%s" % e
@@ -713,8 +718,11 @@ class Handler(BaseHTTPRequestHandler):
             hub.push("status", hub.snapshot())
             self._json({"ok": True})
         elif p == "/api/stop":
+            us_n = hub.n_us                            # ⭐ 停前记一下收了多少 $U（下面要提醒 ✓）
             out = stop_record(hub)
-            self._json({"ok": True, "share": str(out or "")})
+            self._json({"ok": True, "share": str(out or ""), "us_n": us_n,
+                        "warn": "" if us_n else "⚠️ 本次一条超声波（$U）都没收到 —— 逐帧距离不会进日志；"
+                                       "检查 `AUTO` 是否被关 / 接线 / 固件是不是 10-01 晚之前的版本"})
         elif p == "/api/mark":
             n = int(d.get("n") or hub.n_recv)
             hub.markers.append({"n": n, "name": (d.get("name") or "").strip()})

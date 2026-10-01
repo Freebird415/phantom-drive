@@ -1003,6 +1003,8 @@ $("btn-stop").onclick = () => {
   //   （旧版调 /api/stopall = 停记录 + 断连接 ✗ —— 在新设计下会把自动连接踢掉 ✗）
   fetch("/api/stop", { method: "POST" }).then(r => r.json()).then(j => {
     logLine("已停止记录" + (j.share ? "；共享摘要：" + j.share : "") + "（蓝牙仍连着 ✓）", "ok");
+    // ⭐ 2026-10-02：日志里必须能看出“有没有超声” ⇒ 一条 $U 都没收到就明说 ✗
+    if (j.warn) logLine(j.warn, "warn");
   }).catch(() => logLine("停止失败", "err"));
 };
 $("btn-discard").onclick = () => {

@@ -269,7 +269,9 @@ CAR_WR_MM   = 140.0    # 车尾宽
 
 DERIVED_COLS = ["idx", "t_s", "gray", "err", "pwm_l", "pwm_r", "state", "dl", "dr",
                 "mm_l", "mm_r", "speed_mm_s", "yaw_enc_dps", "gyro_dps",
-                "turn", "turn_src", "moving"]
+                "turn", "turn_src", "moving",
+                # ⭐ 超声波（2026-10-02 加）：该帧时刻【最近一次】$U 读数（mm；空 = 当时还没测到）
+                "us_l_mm", "us_r_mm"]
 
 
 def _f(v, d=0.0):
@@ -288,7 +290,25 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
     """
     rows = []
     tidx = 0
+    us_l = us_r = None                    # ⭐ 超声波：向后填充（$U 比 $T 慢，保持上个值才对）
+    n_us = 0
+    us_l_min = us_r_min = None
     for r in csv.DictReader(io.open(src, encoding="utf-8")):
+        if r.get("kind") == "U":          # ⭐ 超声波行：只记值，不当帧数 ✓
+            try:
+                l0, r0 = int(_f(r.get("l_mm"), -2)), int(_f(r.get("r_mm"), -2))
+            except (TypeError, ValueError):
+                continue
+            n_us += 1
+            if l0 not in (-6, -3):
+                us_l = l0
+                if l0 > 0:
+                    us_l_min = l0 if us_l_min is None else min(us_l_min, l0)
+            if r0 not in (-6, -3):
+                us_r = r0
+                if r0 > 0:
+                    us_r_min = r0 if us_r_min is None else min(us_r_min, r0)
+            continue
         if r.get("kind") != "T":
             continue
         tidx += 1
@@ -299,7 +319,8 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
 
     st = {"frames": len(rows), "moving": 0, "left": 0, "right": 0, "straight": 0,
           "dist_mm": 0.0, "yaw_enc": 0.0, "yaw_gyro": 0.0, "vmax": 0.0, "vsum": 0.0,
-          "dur_s": 0.0, "n_gyro_nonzero": 0}
+          "dur_s": 0.0, "n_gyro_nonzero": 0,
+          "us_n": n_us, "us_l_min": us_l_min, "us_r_min": us_r_min}
     # ⚠️ 帧间隔不能写死（固件 BLE 分频可调：分频3 ⇒ 30ms、分频2 ⇒ 20ms；快照 ⇒ 10ms）
     #    2026-10-01 实踩：btlog 曾写死 40ms、又改分频 ⇒ 车速会静默偏 1.5 倍 ✗
     mult, dt_ms = shared_log.frame_timing(rows)        # 两者同源，保证互相一致
@@ -328,7 +349,9 @@ def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
             w.writerow([i, "%.3f" % ((i - a) * dt), gray, "%.1f" % err,
                         "%d" % pl, "%d" % pr, stt, "%d" % dl, "%d" % dr,
                         "%.2f" % mm_l, "%.2f" % mm_r, "%.1f" % speed,
-                        "%.1f" % yaw_enc, "%.1f" % gz_dps, turn, src_, moving])
+                        "%.1f" % yaw_enc, "%.1f" % gz_dps, turn, src_, moving,
+                        "" if us_l is None else "%d" % us_l,
+                        "" if us_r is None else "%d" % us_r])
             # ⚠️ 每帧的 dl/dr 只是【10ms】的增量，而帧与帧相隔 mult×10ms
             #    ⇒ 按帧累加要 ×mult（BLE = 分频数；快照 = 1）
             #    2026-10-01 实踩：整段“全程”算出 1865mm，乘 3 才对得上真实里程

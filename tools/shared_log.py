@@ -105,11 +105,48 @@ def load(dirpath: Path):
     return rows
 
 
+def us_stats(dirpath: Path):
+    """⭐ 超声波（$U）统计（2026-10-02 加）—— 日志逻辑里“必须能看出有没有超声” ✓
+
+    返回 dict(n, l_last, r_last, l_min, r_min)；n=0 即“这份日志没有超声数据” ✗
+    （老固件（10-01 晚之前）没有 $U 上行；也可能是 `AUTO` 被关掉了 ⇒ 要看一眼 ✓）
+    """
+    p = Path(dirpath) / "telemetry.csv"
+    out = {"n": 0, "l_last": None, "r_last": None, "l_min": None, "r_min": None}
+    if not p.exists():
+        return out
+    for r in csv.DictReader(io.open(p, encoding="utf-8")):
+        if r.get("kind") != "U":
+            continue
+        out["n"] += 1
+        l0, r0 = int(f(r.get("l_mm"), -2)), int(f(r.get("r_mm"), -2))
+        if l0 not in (-6, -3):                      # -6/-3 = 驱动拦下重复触发 ⇒ 保留上个值 ✓
+            out["l_last"] = l0
+            if l0 > 0:
+                out["l_min"] = l0 if out["l_min"] is None else min(out["l_min"], l0)
+        if r0 not in (-6, -3):
+            out["r_last"] = r0
+            if r0 > 0:
+                out["r_min"] = r0 if out["r_min"] is None else min(out["r_min"], r0)
+    return out
+
+
 def f(v, d=0.0):
     try:
         return float(v)
     except (TypeError, ValueError):
         return d
+
+
+def fmt_mm(v):
+    """超声波值格式化：None = 当时还没测到；-1 = 真故障；-2/-6/-3 = 空旷或被拦下 ✓"""
+    if v is None:
+        return "—"
+    if v == -1:
+        return "故障(-1)"
+    if v < 0:
+        return "空旷(%d)" % v
+    return "%d" % v
 
 
 def summarize(rows):
@@ -206,6 +243,14 @@ def build_md(dirpath: Path, name: str, who: str, commit: str, note: str,
       % (s["err_mean"], s["err_max"], s["err_le1"]))
     A("| 累计转角：陀螺仪 / 编码器差速 | %+.1f° / %+.1f° |" % (s["yaw_gyro"], s["yaw_enc"]))
     A("| gz 非零帧（陀螺仪有没有在报数） | %d / %d |" % (s["gyro_nz"], s["frames"]))
+    us = us_stats(dirpath)
+    if us["n"]:
+        A("| 超声波（$U）：收到 / 最近一次 | %d 条 / 左 %s · 右 %s mm |"
+          % (us["n"], fmt_mm(us["l_last"]), fmt_mm(us["r_last"])))
+        A("| 超声波：两侧最近障碍 | 左 %s · 右 %s mm |"
+          % (fmt_mm(us["l_min"]), fmt_mm(us["r_min"])))
+    else:
+        A("| 超声波（$U） | ⚠️ **这次一条都没收到** —— 逐帧距离没进日志 ✗ |")
     A("| state 分布 | %s |" % states)
     A("")
     A("## 三、曲线速览（每格 ≈ %d 帧，纵轴各自归一化）" % max(1, s["frames"] // 96))
