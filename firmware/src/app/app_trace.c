@@ -23,14 +23,15 @@
 
 #include <stdio.h>
 
-#define TR_BASE_DEFAULT   20     /* v5 提速：与 s_p.base_speed 默认值保持一致 */
+#define TR_BASE_DEFAULT   30     /* v5 提速：与 s_p.base_speed 默认值保持一致 */
 #define TR_REV_MIN        10     /* 反转落入低占空比死区时的最小幅度 */
 #define TR_POS_CENTER     3.5f    /* 8 路灰度的中心：0..7 的中点是 3.5 */
 /* ⭐ v5：宽黑区判据。20mm 的黑线正常只压到 1~2 路；出现 ≥5 路同时黑
    ⇒ 那是【横向黑条】（起点/终点的 T 头、赛道标识等），此时“黑点质心”毫无意义 ——
    实测到这里会因为半黑白黑的怪图案算出假 err，车先往一边猛拐一下
    （用户反馈：“终点 T 头被当成左拐”✗）⇒ 一律当【居中】走直线通过 ✓ */
-#define TR_WIDE_BLACK_N   5u
+#define TR_WIDE_BLACK_N   3u     /* v6：3 路及以上算宽黑（实测巡线时 3 路黑只占 0.1%，安全 ✓）*/
+#define TR_WIDE_HOLD_MS 300u    /* v6：黑区内及离开后的 300ms 内一律直行（不要急着找线）*/
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
@@ -107,6 +108,8 @@ static uint32_t s_fin_t0;         /* 未标定时退化成按时间 */
 static uint8_t  s_seek;           /* 1 = 起步找线阶段（发车后还没看到线）*/
 static uint32_t s_seek_t0;        /* 起步找线开始时刻 */
 static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（终点线武装用）*/
+static uint8_t  s_fin_armed;      /* ⭐ 锁存：一旦在线上跑够时间就置 1（不再被黑条清零）*/
+static uint16_t s_wide_hold;      /* ⭐ 穿过宽黑区后的“保持直行”倒计时(ms) */
 static uint32_t s_startt_t0;      /* 上一次报“经过起始线 T 头”的时刻（限流：2s 最多一条）*/
 /* 每计数多少 mm。**出厂推定值 0.115**（2026-10-01 实测反推：
    100% 占空比 = 10506 计数/s；按 JGB37-520 12V 330RPM + ⌀70mm 轮 ⇒ 理论满速 1210mm/s
@@ -276,6 +279,8 @@ void Trace_StartRun(void)
     s_seek = 1u;
     s_seek_t0 = HAL_GetTick();
     s_track_ms = 0u;
+    s_fin_armed = 0u;                 /* v6：新一趟重新武装（锁存清 0）*/
+    s_wide_hold = 0u;
     s_last_line_err = 0.0f;
     s_risk = 0u; s_clear_frames = 0u;
 }
@@ -395,19 +400,31 @@ void Trace_Step(uint8_t allow_drive)
               而旧的“全白⇒丢线⇒停车”会把这个阶段打断 ⇒ 精停走了 0mm 就停下 ✗
               （日志证据：第 4194 帧全黑触发，第 4202 帧全白被丢线逻辑接管）*/
 
-        /* ①-1 “终点线武装”：刚过完起始 T 头后要等一会儿，才允许把全黑当终点，
-                否则**起点的 T 头也会被当成终点** ✗（这是当天第二个致命问题）*/
-        if (cnt >= 8) {
-            s_track_ms = 0u;                       /* 全黑期间不计数 */
-        } else if (cnt > 0 && s_track_ms < (TR_FIN_ARM_MS + 200u)) {
-            s_track_ms += 10u;                     /* 本函数 100Hz ⇒ 每拍 10ms */
-        }
+/* ⭐⭐ 2026-10-01 晚【v6 关键修复】：武装必须【锁存】
+   踩的坑（自找的 ✗）：①-1 里“遇到全黑就 s_track_ms = 0”，而 ①-2 紧接着用 s_track_ms 判断是否已武装
+   ⇒ **全黑的同一拍里先清零、再拿它判断** ⇒ 判断永远为假 ⇒ **精停永远不会触发** ✗✗
+   证据：场地那趟 8 路全黑持续 8 秒（268 帧）也毫无反应，整趟 state 里没有 4 ✓
+   修法：用【锁存标志】s_fin_armed（跑够时间置 1，只有新一趟开始时才清 ✓）*/
+#define TR_FIN_ARM_TICKS 150u   /* 在线上连续跑 150 拍（1.5s）即武装 */
+
+/* ①-1 “终点线武装”（锁存式）：
+      黑条期间不累计；但只要累计够过，就把锁存置 1 —— **不可被后续黑条清掉** ✓ */
+if (cnt >= 8) {
+    /* 黑条期间不累计（但已锁存的武装保持 ✓）*/
+} else if (cnt > 0 && !s_fin_armed) {
+    if ((s_track_ms += 10u) >= TR_FIN_ARM_TICKS) { s_fin_armed = 1u; }
+}
+
+/* ①-1b 宽黑区“保持直行”倒计时（见 ② 的宽黑区判据）*/
+if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_hold = TR_WIDE_HOLD_MS; }
+else if (s_wide_hold >= 10u)     { s_wide_hold -= 10u; }
+else                             { s_wide_hold = 0u; }
 
         /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且已武装 */
         if (cnt >= 8) {
             if (s_fin_need < 250u) { s_fin_need++; }
             if (s_fin_need >= TR_FIN_NEED && s_fin == 0u) {
-                if (s_track_ms >= TR_FIN_ARM_MS) {
+                if (s_fin_armed) {                       /* ⭐ v6：看锁存标志，不再看会被清零的 s_track_ms ✓ */
                     s_fin = 1u;                              /* 进入"走最后一段" */
                     s_fin_l0 = En_Count(ENC_L);
                     s_fin_r0 = En_Count(ENC_R);
@@ -541,8 +558,10 @@ void Trace_Step(uint8_t allow_drive)
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
         err = (float)sum / (float)cnt - TR_POS_CENTER;
         if (s_analog && s_ana_ok) { err = s_ana_err; }   /* v3 ②：模拟量优先 */
-        /* ⭐ v5：宽黑区（T 头 / 标识）不当线看 —— 直接走直线通过，避免假 err 把车带偏 ✓ */
-        if (cnt >= (int)TR_WIDE_BLACK_N) { err = 0.0f; }
+        /* ⭐ v5/v6：宽黑区（T 头 / 标识 / 大黑块）不当线看 —— 走直线，且【出来后继续直行一小段】
+           为什么还要“保持”：实测过完 T 头时车常是斜着的，退出黑区那几帧会出现“只剩最边上一路黑”
+           ⇒ 被当成 err=±3.5 而猛拐一下 ✗（场地日志 2656~2659 帧：4→3→1 路黑，pwm 一路打到 65/−43）*/
+        if (cnt >= (int)TR_WIDE_BLACK_N || s_wide_hold > 0u) { err = 0.0f; }
     } else {
         /* ---- 灰度不在线：只做链路自检，**绝不驱动电机** --------------------
            [!][!] 2026-10-01 实踩（当天"车完全不听灰度、左右乱打舵"的真因）：
@@ -605,6 +624,18 @@ void Trace_Step(uint8_t allow_drive)
     uint8_t outer = s[0] || s[7];
     uint8_t risk = (ae >= 2.0f || outer || ad >= 65.0f) ? 2u :
                    (ae >= 1.0f || ad >= 25.0f) ? 1u : 0u;
+    /* ⭐⭐ v7（2026-10-01 晚，日志挖出来的关键缺陷）：
+       err 在【正常过弯】时会长期为 0（车跟着线转 ✓），于是曲率风险永远判“直道”⇒ 不降速 ✗
+       实例：1838 那趟第 1980~1986 帧，err=0、pwm=20/20，而陀螺仪 gz 已经 14→34→44→60 °/s
+             ⇒ 车以满速冲进急弯 ⇒ 第 1987 帧直接全白丢线 ✗
+       ⇒ 用【陀螺仪偏航率】当弯道信号（它是唯一能看出“正在转弯”的量 ✓）提前降速 ✓ */
+    {
+        int16_t gz_raw = Log_GetGz();
+        float gz_dps = (float)gz_raw / 131.0f;      /* ±250°/s 量程 ⇒ 131 LSB/(°/s) */
+        float agz = (gz_dps < 0.0f) ? -gz_dps : gz_dps;
+        if (agz >= 100.0f)                    { risk = 2u; }
+        else if (agz >= 55.0f && risk < 1u)   { risk = 1u; }
+    }
     if (risk > s_risk) { s_risk = risk; s_clear_frames = 0u; }
     else if (risk < s_risk) {
         if (++s_clear_frames >= 8u) { s_risk = risk; s_clear_frames = 0u; }

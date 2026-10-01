@@ -18,7 +18,9 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 14.00f, 0.05f, 0.45f, 20 };
+static Params s_p = { 21.00f, 0.05f, 0.68f, 30 };
+/* ↑ 2026-10-01 晚【v6 再提速】：20→30（实测 v5 均速已到 ~120mm/s，但用户仍觉慢）
+   kp/kd 按 30/20 同步放大；太快就 SET base_speed 24（kp/kd 相应降）*/
 /* ↑ 2026-10-01 晚【v5 提速档】：base 12→20（约 1.7 倍），kp 9→14、kd 0.30→0.45 同步放大
    （舵量是叠加在 base 上的，base 提了就得把转向灵敏度跟着提，否则弯里欠修正）
    现场觉得快就 `SET base_speed 16`（kp/kd 相应降）✓ */
