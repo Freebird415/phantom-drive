@@ -24,5 +24,7 @@ void    Mpu_Init(void);
 uint8_t Mpu_WhoAmI(void);                       /* 正常应回 0x68（0 = 读失败/不在线） */
 uint8_t Mpu_Read(int16_t raw[7]);               /* raw: ax ay az temp gx gy gz（原始值） */
 void    Mpu_PrintDebug(void);                   /* WHO_AM_I + 加速度(g) + 角速度(°/s) + 温度(℃) */
+uint16_t Mpu_ReinitCount(void);                 /* 因“六轴全 0”而自动重新初始化的次数（诊断用）*/
+void    Mpu_DebugReset(void);                   /* 调试：复位回上电默认（模拟断电），用来验证自愈 `MPURESET` */
 
 #endif /* DRV_MPU6050_H */

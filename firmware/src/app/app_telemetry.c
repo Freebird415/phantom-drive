@@ -203,6 +203,9 @@ static void handle_command(char *line)
 
     /* ---- MPU6050（诊断用） ---- */
     if (strcmp(line, "MPU") == 0) { Mpu_PrintDebug(); return; }
+    /* ⭐ 手动重新初始化 MPU6050（芯片断电/上电后可能回到睡眠态；固件也会自动重试）*/
+    if (strcmp(line, "MPUINIT") == 0) { Mpu_Init(); Tlm_SendEvent(94, "MPU REINIT"); return; }
+    if (strcmp(line, "MPURESET") == 0) { Mpu_DebugReset(); return; }   /* 调试：模拟断电复位，验证自愈 */
 
     /* ---- BLE 波特率扫描：BTBAUD <n> 改速率；BTAT 发 AT 看回什么 ---- */
     if (strncmp(line, "BTBAUD ", 7) == 0) {
