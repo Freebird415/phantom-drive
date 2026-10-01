@@ -720,6 +720,9 @@ class Handler(BaseHTTPRequestHandler):
             ok = False
             if d0 and d0.exists():
                 try:
+                    # ⭐ 先把它下面的子片段【抬到上一层】再删（btview 同款护拦 ✓）
+                    #    否则母日志一删，里面导出的片段全跟着没 ✗（《说明书》§4.4 写的就是这个行为 ✓）
+                    btview.promote_children(d0)
                     btview._rmtree_force(d0)
                     ok = True
                 except Exception as e:                            # noqa: BLE001
