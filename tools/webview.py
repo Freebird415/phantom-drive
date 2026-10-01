@@ -129,13 +129,15 @@ class Hub:
     def load_csv_frames(self, path, limit: int = 4000) -> int:
         import csv as _csv
         rows = []
+        total = 0
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 for r in _csv.DictReader(f):
                     if r.get("kind") != "T":
                         continue
+                    total += 1
                     rows.append({
-                        "i": int(float(r.get("ms") or 0)) // max(1, int(self.frame_ms)),
+                        "i": 0,                     # 下面统一编号 ✓
                         "ms": int(float(r.get("ms") or 0)),
                         "gray": "".join(str(int(float(r.get("s%d" % k) or 0))) for k in range(8)),
                         "err": float(r.get("err") or 0),
@@ -148,7 +150,21 @@ class Hub:
                     })
         except OSError:
             return 0
+
+        # ⭐ 帧间隔要按【这份文件自己】的 ms 差分算（2026-10-01 实踩）：
+        #    以前用 self.frame_ms（还留着实时流的值，实测=24ms ✗）去除 ms
+        #    ⇒ 序号出现重复（335/335、340/340…）且与导出片段的“第几帧”口径对不上 ✗
+        deltas = [rows[i]["ms"] - rows[i - 1]["ms"] for i in range(1, len(rows))]
+        deltas = sorted(x for x in deltas if 0 < x <= 200)
+        if deltas:
+            self.frame_ms = float(deltas[len(deltas) // 2])    # 中位数 = 抗丢帧 ✓
+
         rows = rows[-limit:]
+        # ⭐ 序号 = “第几帧”（1 起，**绝对口径**：与 export_clip 数 T 行的口径完全一致 ✓）
+        #    超出 limit 被截掉的前段也要计数，否则大日志（>4000 帧）导出会偏 ✗
+        base = total - len(rows)
+        for k, r in enumerate(rows, 1):
+            r["i"] = base + k
         for i in range(0, len(rows), 200):
             self.push("frames", rows[i:i + 200])
         return len(rows)
@@ -182,6 +198,10 @@ class Hub:
             "viewing": self.viewing,                # 打开的是哪份历史日志（空=实时）✓
             "monitoring": self.monitoring,          # 监测中（只显示不写文件）✓
             "note": self.note, "markers": self.markers[-80:],
+            # ⭐ 导入进来的那份（目录名带 _import_）⇒ 允许直接删 ✗
+            #    （2026-10-01 实踩：刚导入完想删掉，却发现按钮是灰的 ✗
+            #      —— “浏览历史时禁止删”那条规则本意是保护从磁盘打开的真日志 ✓）
+            "imported": bool(self.session_dir and "_import_" in self.session_dir.name),
             "us": self.last_us, "us_age": (time.time() - self.last_us_t) if self.last_us_t else None,
             "params": self.last_params, "events": self.events[-40:],
             "frame_ms": self.frame_ms, "us_dropped": self.drop_us, "us_bad": self.n_bad_us,
@@ -326,7 +346,11 @@ class BleWorker(threading.Thread):
                     def on_notify(_ch, data: bytes, de=de):
                         for line in de.feed(bytes(data)):
                             hub.on_line(line)
-                        hub.frame_ms = de.frame_ms
+                        # ⚠️ 正在【浏览历史日志/导入的文件】时不要让实时流改写帧间隔 ✗
+                        #    （2026-10-01 实踩：导入一份 40ms/帧 的旧日志，实时流的 23.4ms
+                        #      把它盖掉 ⇒ 界面按 20ms 算速度 ⇒ 历史日志的速度/转角全错 ✗）
+                        if not hub.viewing:
+                            hub.frame_ms = de.frame_ms
 
                     await cl.start_notify(btlog.NOTIFY, on_notify)
                     hub.state = "live"
@@ -531,10 +555,18 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
-    def _body_json(self) -> dict:
+    def _read_body(self) -> bytes:
+        """只读一次请求体（⚠️ rfile 是流，读过就没了 ✗）"""
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            return json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            return self.rfile.read(n) if n else b""
+        except Exception:
+            return b""
+
+    def _body_json(self, raw: bytes | None = None) -> dict:
+        try:
+            raw = self._read_body() if raw is None else raw
+            return json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:
             return {}
 
@@ -582,7 +614,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
-        d = self._body_json()
+        # ⚠️ 2026-10-01 实踩（用户报“导入一直卡在正在导入”✗）：
+        #    这里原先是 d = self._body_json()，它【把请求体读走了】
+        #    ⇒ 后面 /api/import 再 self.rfile.read() 只能读到空 ✗
+        #    ⇒ 修：请求体只读一次，既给 JSON 解析、也给上传分支用 ✓
+        raw = self._read_body()
+        d = self._body_json(raw)
         hub = self.hub
         if p == "/api/start":
             hub.note = (d.get("note") or "").strip()      # 备注已取消 ✓（目录名只用时间戳）
@@ -661,6 +698,21 @@ class Handler(BaseHTTPRequestHandler):
             out, msg = export_clip(hub, d.get("a") or 1, d.get("b") or 0,
                                    d.get("name") or "片段", d.get("who") or "")
             self._json({"ok": out is not None, "msg": msg, "dir": str(out or "")})
+        elif p == "/api/clear":
+            # ⭐ 「清空日志」= 清界面 + 退出浏览态（2026-10-01 用户要求：
+            #    清空/删除后事件不再记录、超声图不显示、探头数字不显示，全部回初始态 ✓）
+            #    只清 hub.viewing / 计数/读点，**磁盘上的 CSV 不动** ✓
+            if hub.rec is not None or hub.monitoring:
+                self._json({"ok": False, "msg": "记录/监测中不能清空"})
+                return
+            hub.viewing = ""                 # 退出“浏览历史/导入” ⇒ 实时帧不再推给界面 ✓
+            hub.frames = []
+            hub.events = []
+            hub.markers = []
+            hub.last_us = [None, None]
+            hub.n_recv = hub.n_us = hub.n_rec = 0
+            hub.push("status", hub.snapshot())
+            self._json({"ok": True, "msg": "已清空日志显示（磁盘上的 CSV 不受影响 ✓）"})
         elif p == "/api/discard":
             if hub.rec is not None:
                 stop_record(hub, make_share=False)
@@ -676,6 +728,9 @@ class Handler(BaseHTTPRequestHandler):
             hub.session_dir = None
             hub.markers = []                    # ⭐ 日志删了 ⇒ 打点也一并清掉 ✓
             hub.n_recv = 0
+            hub.events = []                     # ⭐ 事件/读数也归零（用户 2026-10-01 要求 ✓）
+            hub.last_us = [None, None]
+            hub.viewing = ""
             hub.push("status", hub.snapshot())
             self._json({"ok": ok, "msg": "已删除本次日志" if ok else "没有可删的日志"})
         elif p == "/api/quit":
@@ -701,15 +756,10 @@ class Handler(BaseHTTPRequestHandler):
             if hub.monitoring:
                 self._json({"ok": False, "msg": "监测中 —— 先「停止监测」再导入"})
                 return
-            try:
-                ln = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(ln) if ln else b""
-            except Exception:
-                raw = b""
-            if not raw:
-                self._json({"ok": False, "msg": "上传内容为空"})
-                return
             fn = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("name", ["log.csv"])[0]
+            if not raw:
+                self._json({"ok": False, "msg": "上传内容为空（没接到文件数据）"})
+                return
             safe = "".join(c for c in fn if c not in '\\/:*?"<>|')[:24] or "log.csv"
             d0 = telemetry.new_experiment_dir("import_" + safe.replace(".csv", ""))
             (d0 / "telemetry.csv").write_bytes(raw)
