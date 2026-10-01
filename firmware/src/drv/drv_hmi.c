@@ -41,9 +41,11 @@ void Hmi_BeepOff(void) { HAL_GPIO_WritePin(BEEP_PORT, BEEP_PIN, GPIO_PIN_RESET);
 
 /* 静音开关（命令 `MUTE 0|1`）—— 台面调试/旁边有人休息时用。
    ⚠️ 只拦 Hmi_Beep()；Hmi_BeepOn() 是手动的，不受影响 */
-/* ⚠️ 默认【静音】：蜂鸣器是焊死的，烧录/复位后突然响会吵到旁边的人。
-   要它响就发 `MUTE 0`（或者改这里的初值）。*/
-static uint8_t s_mute = 1u;
+/* ⚠️ 2026-10-01 场地实踩：这里原本默认 `1u`（静音）⇒ 每次烧录/复位后又变哑，
+   而“发车 1 声、到终点 2 声”恰恰是场地里判断状态的关键反馈 ⇒ 反复出现
+   “测试时能响、上车又不响”的错觉 ✗
+   ⇒ 改为默认【不静音】；想安静就发 `MUTE 1`（台面调试时用）✓ */
+static uint8_t s_mute = 0u;
 void    Hmi_SetMute(uint8_t on) { s_mute = on ? 1u : 0u; if (s_mute) { Hmi_BeepOff(); } }
 uint8_t Hmi_Mute(void) { return s_mute; }
 
