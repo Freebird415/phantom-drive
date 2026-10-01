@@ -74,3 +74,4 @@ void     Log_FlashInfo(void);                     /* SNAPFLASH：直读 Flash �
 void     Log_Dump(void);                         /* DUMP：以 $T 帧格式吐出所有数据 */
 
 #endif /* APP_LOG_H */
+int16_t Log_GetGz(void);        /* v3：最近一次缓存的陀螺仪原始值 */

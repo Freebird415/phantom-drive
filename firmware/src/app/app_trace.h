@@ -34,7 +34,11 @@ void    Trace_Step(uint8_t allow_drive);
 
 void    Trace_SetDrive(uint8_t on);     /* 命令 `TRACE 0|1` 用 */
 void    Trace_StartRun(void);           /* ⭐ 发车统一入口：复位精停 + 开启起步找线 */
-void    Trace_SetSeek(uint8_t on);      /* 命令 `SEEK 0|1`：手动开关起步找线（调试用）*/
+void    Trace_SetSeek(uint8_t on);
+void    Trace_SetAnalog(uint8_t on);    /* 命令 `ANALOG 0|1`：用灰度模拟量求连续误差（v3）*/
+uint8_t Trace_GetAnalog(void);
+void    Trace_SetGyroD(uint8_t on);     /* 命令 `GYROD 0|1`：陀螺仪阻尼（v3，默认关、未验证）*/
+uint8_t Trace_GetGyroD(void);      /* 命令 `SEEK 0|1`：手动开关起步找线（调试用）*/
 uint8_t Trace_Online(void);             /* 灰度是否在线（1=真实读数；0=模拟数据且不驱动）*/
 uint8_t Trace_GetDrive(void);
 

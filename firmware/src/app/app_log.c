@@ -86,6 +86,8 @@ void Log_Stop(void)
     if (was) { Log_SaveFlash(); }
 }
 uint8_t Log_IsRecording(void) { return s_rec; }
+/* v3：把缓存的陀螺仪原始值给算法层用（不要让算法再单开 I2C 读，省总线时间）*/
+int16_t Log_GetGz(void) { return s_gz; }
 uint16_t Log_Count(void)  { return s_n; }
 
 /* 组一帧（不论录不录都要组：录进 RAM、也用于 BLE 实时回传）*/

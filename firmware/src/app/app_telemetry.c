@@ -18,7 +18,10 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 9.00f, 0.00f, 0.30f, 12 };
+static Params s_p = { 9.00f, 0.05f, 0.30f, 12 };
+/* ↑ 2026-10-01 晚【v3】：ki 0 -> 0.05（长弧道自然差速，对抗“半秒踹一脚”）。
+   只先给很小一点；现场 SET ki 0 可立刻回到纯 PD 做对比。
+   另两个开关：ANALOG 0|1（灰度模拟量求连续误差，推荐试）、GYROD 0|1（陀螺仪阻尼，默认关）*/
 /* ↑ 2026-10-01【1.5× 档】：把慢速档（kp6/kd0.2/base8）整体 ×1.5 ⇒ kp9/kd0.3/base12。
    为什么连 kp/kd 一起乘：修正量是叠加在 base 上的舵量，base 提了 1.5 倍，
    转向灵敏度得跟着提，否则同样的弯会欠修正。
@@ -180,6 +183,8 @@ static void handle_command(char *line)
     }
     if (strcmp(line, "FINSTAT") == 0)       { Trace_FinStatus(); return; }
     if (strcmp(line, "FINRESET") == 0)      { Trace_FinReset(); return; }
+    if (strncmp(line, "ANALOG ", 7) == 0) { Trace_SetAnalog(line[7] == '1'); Tlm_SendEvent(96, line[7]=='1' ? "ANALOG ON" : "ANALOG OFF"); return; }   /* v3：模拟量求误差 */
+    if (strncmp(line, "GYROD ", 6) == 0)  { Trace_SetGyroD(line[6] == '1'); Tlm_SendEvent(97, line[6]=='1' ? "GYROD ON" : "GYROD OFF"); return; }      /* v3：陀螺仪阻尼（未验证）*/
     if (strncmp(line, "SEEK ", 5) == 0)   { Trace_SetSeek(line[5] == '1'); Tlm_SendEvent(95, line[5]=='1' ? "SEEK ON" : "SEEK OFF"); return; }   /* 调试：起步找线 */
 
     /* ---- 超声波 ---- */

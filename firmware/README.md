@@ -86,6 +86,7 @@ firmware/
     ├── main.c              唯一的 main：初始化 + 主循环（只写“流程”，不写器件细节）
     ├── bsp/                板级资源（芯片外设：时钟 / 计时 / 串口 / 指示灯…）  bsp_xxx.{c,h}
     ├── drv/                器件驱动（车上每个模块一个文件）                drv_xxx.{c,h}
+    算法版本/                各版 app_trace.c 存档 + 说明（对比/回退用，编译不看它）
     └── app/                应用层（遥测帧、参数、命令解析、算法入口、板载快照）app_xxx.{c,h}
                             — A01: app_trace.c ｜ A02: app_avoid.c ｜ 快照: app_log.c
 ```

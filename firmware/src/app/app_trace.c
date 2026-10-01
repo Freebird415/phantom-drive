@@ -75,6 +75,25 @@ static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常�
       （用时间而不用里程：mm/计数 尺度还没定死，时间与尺度无关 ✓）*/
 #define TR_FIN_ARM_MS 1500u
 
+/* ==================== v3 试验项（2026-10-01 晚）====================
+   背景：同一趟日志量出“段落感”——err 中位 **0.48 秒才变一次**，
+        一变就是 ~10 个 duty 单位 ⇒ 车是“每半秒踹一脚”，不是平滑修正。
+   下面四项针对这个现象（前三项默认开，第四项默认关、需显式打开）：
+
+   ① 舵量斜坡限速：把“跳 10 单位”摊成平滑爬升；|err| 越大允许越快
+   ② 模拟量求误差：数字灰度只能给 0.125 的台阶 ⇒ 改用模块模拟量做连续质心
+      （自标定：拿数字位当“老师”学黑/白基线；范围不够时**自动退回数字量** ✓）
+   ③ 小积分 ki：长弧道上 err 持续偏一侧 ⇒ 舵量缓慢累积 ⇒ 车轮自动维持差速
+      （对抗“又直一下、又拽一下”，即用户说的“自然差速走出弯道”）
+   ④ 陀螺仪阻尼（默认关、标为未验证）：拿偏航率抵消一部分舵量，抑制摆动；
+      它也可能抵抗掉“需要持续转向”的弯道 ⇒ 必须实车对比后再决定 ✓ */
+#define TR_STEER_SLEW   2.0f   /* 每拍最大舵量变化（基准；实际 = 本值×(1+|err|)）*/
+#define TR_I_MAX       25.0f   /* 积分项最大贡献（duty）—— 防饱和 */
+#define TR_I_START_MS  300u    /* 起步头 0.3s 不积分 */
+#define TR_ANA_DIV      2u     /* 模拟量每 N 拍读一次（100Hz/2 = 50Hz，省 I2C 时间）*/
+#define TR_ANA_SPAN_MIN 30.0f  /* 黑/白基线差小于此值 ⇒ 自标定没就绪，退回数字量 */
+#define TR_GYROD_K      0.12f  /* 陀螺仪阻尼系数（duty per °/s），仅 GYROD 1 生效 */
+
 static uint8_t  s_fin;            /* 0=巡线 1=走最后一段 2=已停 */
 static uint8_t  s_fin_need;       /* 全黑连续帧计数 */
 static int32_t  s_fin_mm;         /* 最后一段已走 mm */
@@ -101,11 +120,60 @@ static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
 #define TR_LOST_TIMEOUT_MS 180u
 #define TR_D_ALPHA 0.20f         /* 10ms 时约 45ms 时间常数；真实 dt 仍参与差分 */
 
-static void tr_reset_d(void)
+/* ---- v3 新增状态（接管“段落感”：斜坡限速 + 小积分 + 可选的模拟量/陀螺仪）---- */
+static float    s_ierr;           /* 积分累加器（err·s）*/
+static float    s_steer_out;      /* 斜坡限速后已施加的舵量 */
+static uint8_t  s_analog;         /* ANALOG 0|1：用模拟量求误差 */
+static uint8_t  s_gyrod;          /* GYROD 0|1：陀螺仪阻尼（默认关、未验证）*/
+static uint8_t  s_ana_div;
+static uint8_t  s_ana_w[8];       /* 每路“白”基线（自标定）*/
+static uint8_t  s_ana_b[8];       /* 每路“黑”基线（自标定）*/
+static uint8_t  s_ana_ok;         /* 本次 err 是否来自模拟量 */
+static float    s_ana_err;        /* 模拟量误差缓存 */
+
+void    Trace_SetAnalog(uint8_t on) { s_analog = on ? 1u : 0u; }
+uint8_t Trace_GetAnalog(void)       { return s_analog; }
+void    Trace_SetGyroD(uint8_t on)  { s_gyrod = on ? 1u : 0u; }
+uint8_t Trace_GetGyroD(void)        { return s_gyrod; }
+
+/* 模拟量 → 连续位置误差（−3.5 ~ +3.5）
+   自标定：拿数字位当“老师”——数字说“黑”就把该路模拟值往黑基线拉（反之向白）
+   ⇒ 不需人工标定，也不依赖传感器极性（用 |a−白|/|白−黑| 取幅值）；
+   基线差点不够（TR_ANA_SPAN_MIN）时**自动退回数字量** ✓*/
+static float tr_err_from_analog(const uint8_t a[8], const int s[8])
+{
+    const float alpha = 0.10f;
+    float sum = 0.0f, wsum = 0.0f;
+    for (int i = 0; i < 8; i++) {
+        if (s[i]) {
+            s_ana_b[i] = (uint8_t)((float)s_ana_b[i] * (1.0f - alpha) + (float)a[i] * alpha);
+        } else {
+            s_ana_w[i] = (uint8_t)((float)s_ana_w[i] * (1.0f - alpha) + (float)a[i] * alpha);
+        }
+        float span = (float)s_ana_w[i] - (float)s_ana_b[i];
+        if (span < 0.0f) { span = -span; }
+        float black = 0.0f;
+        if (span >= TR_ANA_SPAN_MIN) {
+            black = (float)a[i] - (float)s_ana_w[i];
+            if (black < 0.0f) { black = -black; }
+            black /= span;
+            if (black > 1.0f) { black = 1.0f; }
+            black = black * black;          /* 平方：压低噪声、突出真正压线的那几路 */
+        }
+        if (black > 0.05f) { sum += black * (float)i; wsum += black; }
+    }
+    if (wsum < 0.15f) { s_ana_ok = 0u; return 0.0f; }
+    s_ana_ok = 1u;
+    return sum / wsum - TR_POS_CENTER;
+}
+
+static void tr_reset_ctrl(void)
 {
     s_d_valid = 0u;
     s_d_filt = 0.0f;
     s_ms_prev = 0u;
+    s_ierr = 0.0f;            /* v3：积分与斜坡状态也清（防上一段带到下一段）*/
+    s_steer_out = 0.0f;
 }
 
 /* 保留差速：先限制舵量，再让共同速度给舵量让位。 */
@@ -154,7 +222,7 @@ void Trace_SetStopDist(int mm)
 void Trace_FinReset(void)
 {
     s_fin = 0; s_fin_need = 0; s_fin_mm = 0;
-    tr_reset_d();
+    tr_reset_ctrl();
     s_lost = 0u;
     s_base_actual = 0;
     printf("# FINRESET ok\r\n");
@@ -274,7 +342,7 @@ void Trace_Step(uint8_t allow_drive)
               $T 帧的约定是 1 = 黑 —— 在这里统一，算法只认 s[] 这个约定。 */
         uint8_t d = 0;
         if (!Gr_ReadDigital(&d)) {           /* I2C 读失败：绝不能拿旧数据瞎跑 */
-            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
+            tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
             for (int i = 0; i < 8; i++) { s[i] = 0; }
             if (s_drive && allow_drive) { Mo_Stop(); }
             Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
@@ -286,6 +354,25 @@ void Trace_Step(uint8_t allow_drive)
         for (int i = 0; i < 8; i++) {
             s[i] = ((d >> i) & 1u) ? 0 : 1;  /* 1 = 黑 */
             if (s[i]) { sum += i; cnt++; }   /* 只统计「看到黑」的那几路 */
+        }
+
+        /* ---- v3 ② 模拟量求连续误差（ANALOG 1 时；50Hz 读一次，其余拍用缓存）----
+           数字灰度只能给 0.125 的台阶（实测 err 中位 0.48 秒才变一次 ✗）；
+           模拟量是连续值 ⇒ err 每拍都在动 ⇒ 舵量不再“半秒踹一脚” ✓
+           自标定没就绪 / 读失败 ⇒ 自动退回数字量（见 tr_err_from_analog 里的 TR_ANA_SPAN_MIN）*/
+        if (s_analog) {
+            if ((s_ana_div++ % TR_ANA_DIV) == 0u) {
+                uint8_t a[8];
+                if (Gr_ReadAnalog(a)) {
+                    float e2 = tr_err_from_analog(a, s);
+                    if (s_ana_ok) { s_ana_err = e2; }   /* 只覆盖“有效”的（没就绪就不用）*/
+                } else {
+                    s_ana_ok = 0u;                       /* 读失败：退回数字量 */
+                }
+            }
+            /* 不是采样拍：保留上一次的 s_ana_ok / s_ana_err（缓存）*/
+        } else {
+            s_ana_ok = 0u;
         }
 
         /* ============ ① 终点线检测 + 精停状态机（**必须先于“丢线”判断**）============
@@ -323,7 +410,7 @@ void Trace_Step(uint8_t allow_drive)
         /* ①-3 精停状态机（驱动/超时/刹车都在这收口，并直接 return，
               不让下面的“丢线停车 / 循迹 PID”插手）*/
         if (s_fin != 0u) {
-            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
+            tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
             int spd = p->base_speed;
             if (spd <= 0) { spd = TR_BASE_DEFAULT; }
             if (TR_FIN_SPEED_PCT > 0) { spd = TR_FIN_SPEED_PCT; }
@@ -372,7 +459,7 @@ void Trace_Step(uint8_t allow_drive)
                   超时还没找到才停车（安全兜底）。*/
             if (s_drive && allow_drive) {
                 if (s_seek && (ms - s_seek_t0) < TR_SEEK_TIMEOUT_MS) {
-                    tr_reset_d(); s_base_actual = 0;
+                    tr_reset_ctrl(); s_base_actual = 0;
                     int sp = p->base_speed;
                     if (sp <= 0) { sp = TR_BASE_DEFAULT; }
                     Mo_Set(sp, sp);                      /* 慢速直行去找线 */
@@ -382,7 +469,7 @@ void Trace_Step(uint8_t allow_drive)
                     return;
                 }
                 if (!s_seek && (s_state == 1 || s_lost)) {
-                    if (!s_lost) { s_lost = 1u; s_lost_t0 = ms; tr_reset_d(); s_base_actual = 0; }
+                    if (!s_lost) { s_lost = 1u; s_lost_t0 = ms; tr_reset_ctrl(); s_base_actual = 0; }
                     if ((ms - s_lost_t0) < TR_LOST_TIMEOUT_MS) {
                         int sp = p->base_speed;
                         if (sp <= 0) { sp = TR_BASE_DEFAULT; }
@@ -403,20 +490,21 @@ void Trace_Step(uint8_t allow_drive)
                 Mo_Stop();                               /* 找线超时 / 平时丢线 ⇒ 停车等待 */
                 s_seek = 0u;
             }
-            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
+            tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
             Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
             Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
             s_state = 0;
             return;
         }
         if ((s_seek && cnt < 8) || s_lost || (s_state != 1 && !s_seek)) {
-            tr_reset_d(); s_base_actual = 0;
+            tr_reset_ctrl(); s_base_actual = 0;
             s_risk = 2u; s_clear_frames = 0u;
         }
         if (cnt < 8) { s_seek = 0u; } /* 起点全黑 T 头不代表已找到窄线 */
         s_lost = 0u;                 /* 找回线后重新起速 */
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
         err = (float)sum / (float)cnt - TR_POS_CENTER;
+        if (s_analog && s_ana_ok) { err = s_ana_err; }   /* v3 ②：模拟量优先 */
     } else {
         /* ---- 灰度不在线：只做链路自检，**绝不驱动电机** --------------------
            [!][!] 2026-10-01 实踩（当天"车完全不听灰度、左右乱打舵"的真因）：
@@ -430,7 +518,7 @@ void Trace_Step(uint8_t allow_drive)
             s_online_t0 = ms;
             if (Gr_Ping()) {
                 s_online = 1u;
-                tr_reset_d(); s_lost = 0u; s_base_actual = 0;
+                tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
                 s_offline_warn = 0u;
                 Tlm_SendEvent(92, "GRAY_ONLINE");
                 printf("# 灰度上线了 ok，切回真实读数（之前一直是模拟数据）\r\n");
@@ -443,7 +531,7 @@ void Trace_Step(uint8_t allow_drive)
             s_offline_warn = (uint8_t)(s_offline_warn + 1u);
         }
         allow_drive = 0u;                     /* 假数据永远不许开车 */
-        tr_reset_d(); s_lost = 0u; s_base_actual = 0;
+        tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
         if (s_drive) { Mo_Stop(); }           /* 顺手把电机停掉 */
 
         /* ---- 模拟数据（仅用于验证链路）---- */
@@ -493,8 +581,42 @@ void Trace_Step(uint8_t allow_drive)
     float d_term = p->kd * s_d_filt;
     if (d_term >  30.0f) { d_term =  30.0f; }  /* ⚠️ 钳位：D 项最多贡献 ±30 */
     if (d_term < -30.0f) { d_term = -30.0f; }
-    float steer_f = p->kp * err + d_term;
-    int   steer   = (int)(steer_f + (steer_f >= 0.0f ? 0.5f : -0.5f));
+
+    /* ================= v3 ③ 小积分（长弧道自动维持差速）=================
+       用户诉求：“大弧线不要一段段直线，而是自然差速走出弯” ——
+       本质就是 err 持续偏一侧时，舵量应该**稳定维持一个值**，而不是“拽一下、又直一下”。
+       ⇒ 加小积分；带抗饱和（|ki·I| 不超过 TR_I_MAX），且起步头 0.3s 不积（防起步瞬间累积）*/
+
+    if (p->ki > 0.0001f && s_track_ms > TR_I_START_MS) {
+        s_ierr += err * (float)(dt_ms ? dt_ms : 10u) * 0.001f;   /* err*秒（ki=0 时根本不积）*/
+    }
+    float i_term = p->ki * s_ierr;
+    if (i_term >  TR_I_MAX) { i_term =  TR_I_MAX; if (p->ki > 0.0001f) { s_ierr = TR_I_MAX / p->ki; } }
+    if (i_term < -TR_I_MAX) { i_term = -TR_I_MAX; if (p->ki > 0.0001f) { s_ierr = -TR_I_MAX / p->ki; } }
+
+    float steer_f = p->kp * err + i_term + d_term;
+
+    /* ================= v3 ④ 陀螺仪阻尼（GYROD 1 时才生效）=================
+       拿偏航率抵消一部分舵量，抑制摆动；⚠️ 它也可能抵抗掉“需要持续转向”的弯道，
+       所以**默认关**、且标为未验证 —— 实车对比后再决定开不开 ✓*/
+    if (s_gyrod) {
+        float gz_dps = (float)Log_GetGz() / 131.0f;     /* 原始值 → °/s */
+        steer_f -= TR_GYROD_K * gz_dps;
+    }
+
+    /* ================= v3 ① 舵量斜坡限速 =================
+       实测：err 中位 0.48 秒才变一次，一变就是 ~10 个 duty ⇒ “每半秒踹一脚” ✗
+       把目标舵量摊成平滑爬升；|err| 越大允许越快（真遇急弯不迟顿）：
+           每拍最大变化 = TR_STEER_SLEW × (1 + |err|)     → 2~9 个 duty / 10ms
+       注：限的是“舵量”而不是“轮速”，共同速度（含曲率降速）不受影响 ✓*/
+    {
+        float slew = TR_STEER_SLEW * (1.0f + ae);
+        float dstep = steer_f - s_steer_out;
+        if (dstep >  slew) { dstep =  slew; }
+        if (dstep < -slew) { dstep = -slew; }
+        s_steer_out += dstep;
+    }
+    int   steer   = (int)(s_steer_out + (s_steer_out >= 0.0f ? 0.5f : -0.5f));
 
     int l, r;
     tr_mix(s_base_actual, steer, &l, &r); /* 线偏左 → 左轮慢、右轮快 */
