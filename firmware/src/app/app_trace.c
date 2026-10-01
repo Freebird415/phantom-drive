@@ -1,12 +1,8 @@
 /* =============================================================================
- *  app_trace.c —— 循迹算法骨架（A01 熊雅琦）
+ *  app_trace.c —— A01 循迹控制（熊雅琦）
  *
- *  ★ 你只改这个文件。下面是"能跑起来的起点"，不是最终方案。
- *  ★ 骨架已经做了三件你会用到的事：
- *      1) 读灰度 → 算位置误差 err（−3.5 ~ +3.5，负=线在左边）
- *      2) 单 P 控制 → 算出左右占空比
- *      3) 上报 $T 帧（电脑/曲线图看的就是它）
- *  ★ 你要做的是把它变成"能跑完全赛道"的策略：加 I/D、处理丢线、过弯减速…
+ *  数字灰度 → 位置误差 → P+D → 分档速度/差速混控；独立处理起步找线、
+ *  普通短时丢线和终点精停，并上报 $T/板载快照。
  *
  *  参数不用重烧就能改（串口，回车结尾）：
  *      SET kp 8        改比例
@@ -27,12 +23,8 @@
 
 #include <stdio.h>
 
-#define TR_BASE_DEFAULT   12     /* 基准速度的兜底值。
-           ⚠️ 2026-10-01 实测：**15% 占空比时电机卡在死区附近挣扎** ——
-              左右轮真实增量只有 2.5/3.8 counts/帧 ⇒ 仅 ~24mm/s（满速 1210mm/s 的 2%）。
-              ⇒ base_speed 必须抬到 30 以上，差速才有"劲"可用。 */
-#define TR_REV_MIN        10      /* ⭐ 急弯时内侧轮若反转，至少给 25% ——
-              否则 −5%~−10% 也在死区里，等于没转（实测 9% 的帧就栽在这）*/
+#define TR_BASE_DEFAULT   12     /* 与当前 1.5× 默认巡航参数一致的兜底值 */
+#define TR_REV_MIN        10     /* 反转落入低占空比死区时的最小幅度 */
 #define TR_POS_CENTER     3.5f    /* 8 路灰度的中心：0..7 的中点是 3.5 */
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
@@ -101,6 +93,32 @@ static uint32_t s_online_t0;      /* 上次重探灰度的时刻（离线时每 
 static uint8_t  s_offline_warn;   /* 离线警告计数（降噪：只在第 1 次和每 5 秒提醒）*/
 static float    s_err_prev;       /* 上一拍 err（算 D 项用）*/
 static uint32_t s_ms_prev;        /* 上一拍时刻（D 项要用真实 dt，不能用假设的 10ms）*/
+static float    s_d_filt;         /* 数字灰度量化跳变的一阶低通，单位 err/s */
+static float    s_last_line_err;  /* 正常丢线前最后看到线的方向 */
+static int      s_base_actual;    /* 有斜率限制的共同速度 */
+static uint32_t s_lost_t0;
+static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
+#define TR_LOST_TIMEOUT_MS 180u
+#define TR_D_ALPHA 0.20f         /* 10ms 时约 45ms 时间常数；真实 dt 仍参与差分 */
+
+static void tr_reset_d(void)
+{
+    s_d_valid = 0u;
+    s_d_filt = 0.0f;
+    s_ms_prev = 0u;
+}
+
+/* 保留差速：先限制舵量，再让共同速度给舵量让位。 */
+static void tr_mix(int base, int steer, int *l, int *r)
+{
+    if (steer > 100) { steer = 100; }
+    if (steer < -100) { steer = -100; }
+    int room = 100 - (steer < 0 ? -steer : steer);
+    if (base > room) { base = room; }
+    if (base < 0) { base = 0; }
+    *l = base + steer;
+    *r = base - steer;
+}
 
 
 static int      s_fin_dist = TR_FIN_MM_DEF;
@@ -136,6 +154,9 @@ void Trace_SetStopDist(int mm)
 void Trace_FinReset(void)
 {
     s_fin = 0; s_fin_need = 0; s_fin_mm = 0;
+    tr_reset_d();
+    s_lost = 0u;
+    s_base_actual = 0;
     printf("# FINRESET ok\r\n");
 }
 
@@ -172,6 +193,8 @@ void Trace_StartRun(void)
     s_seek = 1u;
     s_seek_t0 = HAL_GetTick();
     s_track_ms = 0u;
+    s_last_line_err = 0.0f;
+    s_risk = 0u; s_clear_frames = 0u;
 }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
 uint8_t Trace_Online(void)         { return s_online; }
@@ -251,6 +274,7 @@ void Trace_Step(uint8_t allow_drive)
               $T 帧的约定是 1 = 黑 —— 在这里统一，算法只认 s[] 这个约定。 */
         uint8_t d = 0;
         if (!Gr_ReadDigital(&d)) {           /* I2C 读失败：绝不能拿旧数据瞎跑 */
+            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
             for (int i = 0; i < 8; i++) { s[i] = 0; }
             if (s_drive && allow_drive) { Mo_Stop(); }
             Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
@@ -299,6 +323,7 @@ void Trace_Step(uint8_t allow_drive)
         /* ①-3 精停状态机（驱动/超时/刹车都在这收口，并直接 return，
               不让下面的“丢线停车 / 循迹 PID”插手）*/
         if (s_fin != 0u) {
+            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
             int spd = p->base_speed;
             if (spd <= 0) { spd = TR_BASE_DEFAULT; }
             if (TR_FIN_SPEED_PCT > 0) { spd = TR_FIN_SPEED_PCT; }
@@ -347,6 +372,7 @@ void Trace_Step(uint8_t allow_drive)
                   超时还没找到才停车（安全兜底）。*/
             if (s_drive && allow_drive) {
                 if (s_seek && (ms - s_seek_t0) < TR_SEEK_TIMEOUT_MS) {
+                    tr_reset_d(); s_base_actual = 0;
                     int sp = p->base_speed;
                     if (sp <= 0) { sp = TR_BASE_DEFAULT; }
                     Mo_Set(sp, sp);                      /* 慢速直行去找线 */
@@ -355,15 +381,40 @@ void Trace_Step(uint8_t allow_drive)
                     s_state = 5;                         /* 5 = 起步找线（新状态码）*/
                     return;
                 }
+                if (!s_seek && (s_state == 1 || s_lost)) {
+                    if (!s_lost) { s_lost = 1u; s_lost_t0 = ms; tr_reset_d(); s_base_actual = 0; }
+                    if ((ms - s_lost_t0) < TR_LOST_TIMEOUT_MS) {
+                        int sp = p->base_speed;
+                        if (sp <= 0) { sp = TR_BASE_DEFAULT; }
+                        sp = sp / 2;
+                        if (sp < 8) { sp = 8; }
+                        if (sp > 16) { sp = 16; }
+                        int turn = (s_last_line_err < -0.25f) ? -8 :
+                                   (s_last_line_err > 0.25f) ? 8 : 0;
+                        int l, r;
+                        tr_mix(sp, turn, &l, &r);
+                        Mo_Set(l, r);
+                        Log_Note(tr_pack(s), 0.0f, l, r, 0);
+                        Tlm_SendT(ms, s, 0.0f, l, r, 0);
+                        s_state = 0; /* 现有 0=丢线；PWM 非零表示限时恢复 */
+                        return;
+                    }
+                }
                 Mo_Stop();                               /* 找线超时 / 平时丢线 ⇒ 停车等待 */
                 s_seek = 0u;
             }
+            tr_reset_d(); s_lost = 0u; s_base_actual = 0;
             Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
             Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
             s_state = 0;
             return;
         }
-        s_seek = 0u;   /* 看到线了：退出“起步找线” */
+        if ((s_seek && cnt < 8) || s_lost || (s_state != 1 && !s_seek)) {
+            tr_reset_d(); s_base_actual = 0;
+            s_risk = 2u; s_clear_frames = 0u;
+        }
+        if (cnt < 8) { s_seek = 0u; } /* 起点全黑 T 头不代表已找到窄线 */
+        s_lost = 0u;                 /* 找回线后重新起速 */
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
         err = (float)sum / (float)cnt - TR_POS_CENTER;
     } else {
@@ -379,6 +430,7 @@ void Trace_Step(uint8_t allow_drive)
             s_online_t0 = ms;
             if (Gr_Ping()) {
                 s_online = 1u;
+                tr_reset_d(); s_lost = 0u; s_base_actual = 0;
                 s_offline_warn = 0u;
                 Tlm_SendEvent(92, "GRAY_ONLINE");
                 printf("# 灰度上线了 ok，切回真实读数（之前一直是模拟数据）\r\n");
@@ -391,6 +443,7 @@ void Trace_Step(uint8_t allow_drive)
             s_offline_warn = (uint8_t)(s_offline_warn + 1u);
         }
         allow_drive = 0u;                     /* 假数据永远不许开车 */
+        tr_reset_d(); s_lost = 0u; s_base_actual = 0;
         if (s_drive) { Mo_Stop(); }           /* 顺手把电机停掉 */
 
         /* ---- 模拟数据（仅用于验证链路）---- */
@@ -403,27 +456,48 @@ void Trace_Step(uint8_t allow_drive)
         err = (float)e10 / 10.0f;
     }
 
-    /* ---- 控制器：现在只有单 P ---- */
+    /* ---- 巡航上限 + 曲率风险：量化误差需连续稳定才升速 ---- */
     int base = p->base_speed;
     if (base <= 0) { base = TR_BASE_DEFAULT; }
+    if (base > 100) { base = 100; }
 
     /* ---- P + D（⚠️ D 项必须用【真实 dt】+ 钳位）----
        用假设的固定 10ms 会在“主循环被拖慢”时算出虚假的巨大变化率 ⇒ 车猛打舵 ✗
        （2026-10-01 实踩：OLED 400k 超时把节奏打乱 ⇒ D 项爆表 ⇒ 左右猛一下猛一下）*/
     uint32_t dt_ms = ms - s_ms_prev;
-    if (dt_ms == 0u)  { dt_ms = 10u; }
-    if (dt_ms > 50u)  { dt_ms = 50u; }        /* 拖慢时钳住，等价于“忽略这一拍” */
     s_ms_prev = ms;
-    float d_rate = (err - s_err_prev) * 1000.0f / (float)dt_ms;   /* err / 秒 */
+    if (!s_d_valid || dt_ms == 0u || dt_ms > 50u) {
+        s_d_filt = 0.0f;
+        s_d_valid = 1u;
+        dt_ms = 0u;             /* 重新上线或阻塞太久：这一拍不计算 D */
+    }
+    float d_rate = dt_ms ? (err - s_err_prev) * 1000.0f / (float)dt_ms : 0.0f;
     s_err_prev = err;
-    float d_term = p->kd * d_rate;
+    s_d_filt += TR_D_ALPHA * (d_rate - s_d_filt);
+    float ae = err < 0.0f ? -err : err;
+    float ad = s_d_filt < 0.0f ? -s_d_filt : s_d_filt;
+    uint8_t outer = s[0] || s[7];
+    uint8_t risk = (ae >= 2.0f || outer || ad >= 65.0f) ? 2u :
+                   (ae >= 1.0f || ad >= 25.0f) ? 1u : 0u;
+    if (risk > s_risk) { s_risk = risk; s_clear_frames = 0u; }
+    else if (risk < s_risk) {
+        if (++s_clear_frames >= 8u) { s_risk = risk; s_clear_frames = 0u; }
+    } else { s_clear_frames = 0u; }
+    int target = base;
+    if (s_risk == 1u) { target = base * 3 / 4; }
+    if (s_risk == 2u) { target = base * 11 / 20; }
+    if (target < 8) { target = 8; }
+    if (s_base_actual < target) { s_base_actual += 1; if (s_base_actual > target) { s_base_actual = target; } }
+    if (s_base_actual > target) { s_base_actual -= 3; if (s_base_actual < target) { s_base_actual = target; } }
+    s_last_line_err = err;
+    float d_term = p->kd * s_d_filt;
     if (d_term >  30.0f) { d_term =  30.0f; }  /* ⚠️ 钳位：D 项最多贡献 ±30 */
     if (d_term < -30.0f) { d_term = -30.0f; }
     float steer_f = p->kp * err + d_term;
     int   steer   = (int)(steer_f + (steer_f >= 0.0f ? 0.5f : -0.5f));
 
-    int l = base + steer;     /* 线偏左 → 往左修：左轮慢、右轮快 */
-    int r = base - steer;
+    int l, r;
+    tr_mix(s_base_actual, steer, &l, &r); /* 线偏左 → 左轮慢、右轮快 */
 
     /* ⭐ 急弯：内侧轮若被压到“轻微反转”，补足到 TR_REV_MIN ——
        否则 −5%~−10% 也在电机死区里，等于没转（急弯就转不过来）*/
