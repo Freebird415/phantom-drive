@@ -41,6 +41,7 @@
 | **上场跑车** | 读 `项目记录/比赛日操作卡.md`（发车动作 / 终点 / 合规红线，按比赛规则原文整理）|
 | 写文档 | 我做了 XXX，按 `docs/文档维护.md` 的规则更新项目记录 |
 | **写算法**（A01/A02）| 我是 A01 熊雅琦（或 A02 毕烨恺），读 `firmware/驱动接口说明.md`，帮我改 `firmware/src/app/app_trace.c`（或 `app_avoid.c`）|
+| **算法版本管理** | 读 `firmware/算法版本/README.md`；`python tools/algo_version.py list/use/save/diff` —— 每版存一个文件夹 + 说明 + 实测日志链接 |
 
 ### 1.3 三条纪律（用智能体的组员请记住）
 
