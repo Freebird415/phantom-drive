@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""BLE 日志实时查看器 —— 自己开、自己看、自动存盘（图形界面）
+"""BLE 日志实时查看器 —— 自己开、自己看、**按片段导出**（图形界面）
 
 为什么有这个工具（2026-10-01 用户的意见）：
     `btlog.py` 是命令行版：跑起来只有几行中文提示，**看不见数据长什么样**，
@@ -8,20 +8,26 @@
     显示帧率/累计帧数、自动写 CSV，随时可以自己取走原始数据。
 
 窗口里能看到什么（每收到一帧显示一行）：
-    序号  时刻        灰度(8位)   err    pwm(L/R)  state  dL  dR   说明
-    1234  12:03:45.123  00011000  +0.5    8/ 8      1    +3  +2
+    序号  时刻          灰度        err   pwm L/R    st   dL   dR    gz
+    1234  12:03:45.123  00011000  +0.5    8/ 8      1    +3   +2    12
+    ↑ 序号 = **CSV 里的第几帧**（即使勾了"只看动帧"让某些行不显示，序号也不变）
+
+录制与保存（2026-10-01 用户提的第二个意见：一次全程录制噪音太多）：
+    ① 点「开始接收」→ 全量写进 logs/<时间>_<备注>/telemetry.csv（原始的，先不筛）
+    ② 想标出"有意思的那一段"：看到关键处按「打点A」/「打点B」（记下帧号+时刻）
+    ③ 点「保存日志…」→ 选 [全部] 或 [从第几帧到第几帧] → 导出成一个**独立目录**，
+       里面是标准 telemetry.csv（plot.py / 分析脚本直接能用）+ meta.json + note.md
+    ④ 导出后**原始日志不动**，可以反复导出多个片段
+    ⑤ 关窗口时若还没保存过，会问一句：[保存…] [删除本次] [保留不动] [取消]
+       —— 选了"删除"才会真删（防止手一滑丢掉一整趟数据）
 
 用法：
     双击仓库根目录的「蓝牙日志.bat」，或在仓库根目录执行  python tools\\btview.py
-    ① 备注填一句"这轮在做什么"（会进日志目录名和 note.md）
-    ② 点「开始接收」→ 状态栏出现"已连接/帧率"后才算真的在收
-    ③ 车随便怎么动都行；要打点就把鼠标点到车旁边的某个时刻按「打点」
-    ④ 点「停止」→ 自动写 meta.json / note.md，点「打开日志目录」取数据
 
-数据落盘（与 btlog.py / snapshot.py 完全同一套格式，plot.py 直接能画）：
-    logs/<时间>_<备注>/telemetry.csv     ← 所有帧（不因界面过滤而丢）
-    logs/<时间>_<备注>/markers.txt       ← 你按「打点」的时刻（如果有）
-    logs/<时间>_<备注>/meta.json         ← 传输方式/帧数/设备等
+数据落盘（与 btlog.py / snapshot.py 同一套格式）：
+    logs/<时间>_<备注>/telemetry.csv     ← 本次全部帧
+    logs/<时间>_<备注>/markers.txt       ← 打点记录
+    logs/<时间>_<备注>_导出NN/telemetry.csv ← 你导出的片段（可直接出图/发人）
 
 [!] 界面上的"只看动帧"只是**显示过滤**，CSV 里始终是全部帧 ✓
 """
@@ -29,7 +35,10 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import csv
+import io
 import queue
+import shutil
 import sys
 import threading
 import time
@@ -80,6 +89,249 @@ def frame_fields(line: str):
     return ("".join(p[2:10]), p[10], p[11], p[12], p[13], p[14], p[15], p[16])
 
 
+def next_clip_dir(session_dir: Path) -> Path:
+    """母日志下面的第一个空片段目录：`<母日志>/片段_导出01`、`片段_导出02` …（嵌套式）"""
+    for i in range(1, 100):
+        d = session_dir / ("片段_导出%02d" % i)
+        if not d.exists():
+            return d
+    return session_dir / "片段_导出99"
+
+
+def safe_dir_name(s: str) -> str:
+    """把用户起的片段名变成合法目录名（去掉路径非法字符）。"""
+    name = "".join(c for c in s.strip() if c not in '\\/:*?"<>|')
+    return name[:30].strip()
+
+
+def unique_dir(base: Path) -> Path:
+    """base 被占用就加 -2、-3 …"""
+    if not base.exists():
+        return base
+    for i in range(2, 100):
+        d = base.with_name(base.name + "-%d" % i)
+        if not d.exists():
+            return d
+    return base
+
+
+def count_rows(csv_path: Path) -> int:
+    """数一个 telemetry.csv 里有多少个 `T` 帧（用来得知某份日志多长）。"""
+    try:
+        return sum(1 for r in csv.DictReader(io.open(csv_path, encoding="utf-8"))
+                   if r.get("kind") == "T")
+    except Exception:
+        return 0
+
+
+def dir_size(p: Path, include_children: bool = False) -> int:
+    """目录下的字节数（默认不含子目录 —— 子日志单独算，避免重复计）。"""
+    total = 0
+    try:
+        for f in p.rglob("*"):
+            if f.is_file():
+                if not include_children and f.parent != p:
+                    continue
+                total += f.stat().st_size
+    except Exception:
+        pass
+    return total
+
+
+def human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.0f %s" % (n, unit) if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024.0
+    return "%d B" % n
+
+
+def scan_logs(logs_root: Path) -> list:
+    """递归扫 logs/ 下的日志树（母日志 → 子片段 → 孙片段…），返回顶层列表。
+
+    判定：① `meta.json` 里有 `clip` 字段 ⇒ 片段；② 目录名以 `片段_` 开头或含 `_导出` ⇒ 片段；
+    否则当原始录制。层级：谁的目录路径包含了它、且它自己也是一份日志 ⇒ 就是它的子片段。
+    """
+    def info(d: Path) -> dict:
+        meta = {}
+        mp = d / "meta.json"
+        if mp.exists():
+            try:
+                import json
+                meta = json.loads(mp.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+        is_clip = bool(meta.get("clip")) or d.name.startswith("片段_") or "_导出" in d.name
+        return {"path": d, "kind": "clip" if is_clip else "session",
+                "name": meta.get("clip", {}).get("name") or d.name,
+                "note": meta.get("note") or "",
+                "frames": count_rows(d / "telemetry.csv"),
+                "size": dir_size(d), "mtime": d.stat().st_mtime, "children": []}
+
+    dirs = ([p for p in logs_root.rglob("*") if p.is_dir() and (p / "telemetry.csv").exists()]
+            if logs_root.exists() else [])
+    items = {d: info(d) for d in dirs}
+    tops = []
+    for d in sorted(dirs, key=lambda p: len(p.parts)):      # 从浅到深，保证母日志先生成
+        parent, p = None, d.parent
+        while p != logs_root.parent and len(p.parts) >= len(logs_root.parts):
+            if p in items and p != d:
+                parent = p
+                break
+            if p == logs_root:
+                break
+            p = p.parent
+        if parent is None:
+            tops.append(items[d])
+        else:
+            items[parent]["children"].append(items[d])
+    tops.sort(key=lambda x: x["mtime"], reverse=True)
+    for t in tops:
+        t["children"].sort(key=lambda x: x["mtime"], reverse=True)
+    return tops
+
+
+def promote_children(d: Path, keep_prefix: bool = True) -> list:
+    """删除母日志前，把它的子片段**移到上一层**（否则会被一起删掉）。
+
+    提升后的名字带上母日志名（如 `2026-10-01_1500_第二轮_片段_第3个弯道`），
+    这样丢掉母目录后仍然看得出它从哪来。
+    """
+    moved = []
+    for ch in list(d.iterdir()):
+        if ch.is_dir():
+            name = (d.name + "_" + ch.name) if keep_prefix else ch.name
+            new = d.parent / name
+            try:
+                if new.exists():
+                    new = unique_dir(new)
+                shutil.move(str(ch), str(new))
+                moved.append(new)
+            except Exception as e:
+                print("  提升子片段失败：%s (%s)" % (ch, e))
+    return moved
+
+
+# ==================== 数据分析预处理（每帧派生量）====================
+# ⚠️ 尺度常数是**名义值**：mm/计数的精确值仍有争议（见 项目记录/经验与踩坑.md ㊸），
+#    所以下面带 mm 的量当“数量级/趋势”用可靠，当绝对尺用要留个心眼。
+MM_PER_COUNT = 0.115        # 名义：⌀70mm 轮、1910 计数/转
+WB_MM = 150.0               # 两轮中心距（车宽方向）
+DT_S = 1.0 / 33.3           # BLE 每帧名义 30ms（每 3 个 10ms 采样发 1 帧）
+
+DERIVED_COLS = ["idx", "t_s", "gray", "err", "pwm_l", "pwm_r", "state", "dl", "dr",
+                "mm_l", "mm_r", "speed_mm_s", "yaw_enc_dps", "gyro_dps",
+                "turn", "turn_src", "moving"]
+
+
+def _f(v, d=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def write_derived(src: Path, dst: Path, a: int, b: int) -> dict:
+    """把 src 的第 a~b 个 `T` 行写成“已经算好”的 derived.csv，并返回汇总统计。
+
+    为什么要这个：AI（或人）拿到 telemetry.csv 还得自己算速度/转向/里程；
+    这里直接把它算好、写成一行一帧的表格 ⇒ 分析更快、也省 token。
+    字段定义写在同一目录的 note.md 里（CSV 没法写注释）。
+    """
+    rows = []
+    tidx = 0
+    for r in csv.DictReader(io.open(src, encoding="utf-8")):
+        if r.get("kind") != "T":
+            continue
+        tidx += 1
+        if tidx > b:
+            break
+        if tidx >= a:
+            rows.append(r)
+
+    st = {"frames": len(rows), "moving": 0, "left": 0, "right": 0, "straight": 0,
+          "dist_mm": 0.0, "yaw_enc": 0.0, "yaw_gyro": 0.0, "vmax": 0.0, "vsum": 0.0,
+          "dur_s": len(rows) * DT_S, "n_gyro_nonzero": 0}
+    with dst.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(DERIVED_COLS)
+        for i, r in enumerate(rows, start=a):
+            gray = "".join(str(int(_f(r.get("s%d" % k)))) for k in range(8))
+            err, pl, pr = _f(r.get("err")), _f(r.get("pwm_l")), _f(r.get("pwm_r"))
+            stt = int(_f(r.get("state")))
+            dl, dr = _f(r.get("dl")), _f(r.get("dr"))
+            gz_dps = _f(r.get("gz"))                    # telemetry 已换算成 °/s
+            mm_l, mm_r = dl * MM_PER_COUNT, dr * MM_PER_COUNT
+            speed = (mm_l + mm_r) / 2.0 / DT_S
+            # 差速积出来的偏航角速度（正 = 左转/逆时针，与陀螺仪同号）
+            yaw_enc = ((mm_r - mm_l) / WB_MM) * 57.2958 / DT_S if WB_MM else 0.0
+            if abs(gz_dps) >= 5.0:
+                turn, src_ = ("L" if gz_dps > 0 else "R"), "gyro"
+            elif abs(yaw_enc) >= 8.0:
+                turn, src_ = ("L" if yaw_enc > 0 else "R"), "enc"
+            else:
+                turn, src_ = "-", "-"
+            moving = 1 if (abs(dl) + abs(dr) > 0 or pl or pr) else 0
+            w.writerow([i, "%.3f" % ((i - a) * DT_S), gray, "%.1f" % err,
+                        "%d" % pl, "%d" % pr, stt, "%d" % dl, "%d" % dr,
+                        "%.2f" % mm_l, "%.2f" % mm_r, "%.1f" % speed,
+                        "%.1f" % yaw_enc, "%.1f" % gz_dps, turn, src_, moving])
+            st["dist_mm"] += (mm_l + mm_r) / 2.0
+            st["yaw_enc"] += yaw_enc * DT_S
+            st["yaw_gyro"] += gz_dps * DT_S
+            st["vsum"] += speed
+            st["vmax"] = max(st["vmax"], abs(speed))
+            st["moving"] += moving
+            st[{"L": "left", "R": "right"}.get(turn, "straight")] += 1
+            if gz_dps:
+                st["n_gyro_nonzero"] += 1
+    st["vmean"] = st["vsum"] / max(1, st["frames"])
+    return st
+
+
+def session_activity(src: Path) -> tuple:
+    """扫一遍日志，找出车子真正“在动/在给电”的第一帧和最后一帧（自动跳掉头尾静止段）。
+
+    用户场景（2026-10-01）：把车放地上后不确定多久才开跑，
+    又不想存开头一大堆 0；所以默认就用这个区间，不用自己数帧号。
+    """
+    first, last, tidx = None, 0, 0
+    for r in csv.DictReader(io.open(src, encoding="utf-8")):
+        if r.get("kind") != "T":
+            continue
+        tidx += 1
+        active = (abs(_f(r.get("dl"))) + abs(_f(r.get("dr"))) > 0
+                  or _f(r.get("pwm_l")) or _f(r.get("pwm_r"))
+                  or any(_f(r.get("s%d" % k)) for k in range(8)))
+        if active:
+            if first is None:
+                first = tidx
+            last = tidx
+    return (first or 1, last or tidx)
+
+
+def slice_session_csv(src: Path, a: int, b: int, dst: Path) -> int:
+    """把 src 里第 a~b 个 `T` 行（含期间的事件行）写成 dst；返回导出的帧数。"""
+    rows = list(csv.DictReader(io.open(src, encoding="utf-8")))
+    fields = list(rows[0].keys()) if rows else ["kind"] + list(telemetry.CSV_COLUMNS)
+    out, tidx, kept = [], 0, 0
+    for r in rows:
+        if r.get("kind") == "T":
+            tidx += 1
+            if tidx > b:
+                break
+            if tidx >= a:
+                out.append(r)
+                kept += 1
+        elif a - 1 <= tidx <= b:            # 事件/参数行：跟着它前面的那几帧一起带走
+            out.append(r)
+    with dst.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(out)
+    return kept
+
+
 class BleWorker(threading.Thread):
     """在后台线程里跑 asyncio + BLE，把消息投进 queue 给界面。"""
 
@@ -97,6 +349,11 @@ class BleWorker(threading.Thread):
     def _log(self, text: str):
         self.q.put(("log", text))
 
+    def flush_rec(self):
+        """把 CSV 缓冲区刷到磁盘（录制中也能安全导出）。"""
+        if self.rec is not None:
+            self.rec.flush()
+
     # ---- 主流程（后台线程）----
     def run(self):
         try:
@@ -111,6 +368,7 @@ class BleWorker(threading.Thread):
         self.out_dir = telemetry.new_experiment_dir(self.note or "BLE日志")
         self.rec = telemetry.Recorder(self.out_dir, self.note or "BLE日志",
                                       port="BLE:待连接", baud=0, seconds=0)
+        self.q.put(("session", str(self.out_dir)))
         de = DeFramer()
 
         def on_notify(_ch, data: bytes):
@@ -210,24 +468,296 @@ class BleWorker(threading.Thread):
             self.rec.close()
         except Exception as e:
             self._log("[!] 写盘出错：%s" % e)
-        self._log("[i] 已存档：%s" % self.out_dir)
-        self._log("[i] 共 %d 帧 → telemetry.csv" % self.n)
+        self._log("[i] 本次共 %d 帧 → %s" % (self.n, self.out_dir))
+        self._log("[i] 可用「保存日志…」导出全部/片段；关窗口前不保存的话会问你要不要删")
+
+
+class ClipDialog(tk.Toplevel):
+    """保存对话框：选「全部」或「按帧号范围」导出成独立目录，并可自定义片段名。"""
+
+    def __init__(self, master, session_dir: Path, note: str, n_total: int,
+                 keys: list, act: tuple):
+        super().__init__(master)
+        self.title("保存日志（导出片段）")
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        self.result = None                    # (a, b, out_dir)
+        self.session_dir, self.note, self.n = session_dir, note, n_total
+        self.keys, self.act = list(keys), act
+
+        pad = {"padx": 8, "pady": 4}
+        frm = ttk.Frame(self)
+        frm.pack(fill="both", expand=True, **pad)
+
+        ttk.Label(frm, text="本次录制：%d 帧" % n_total, font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(frm, text="原始文件：%s" % session_dir, foreground="#666").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+        # ---- 关键帧列表（比赛时一条赛道可能打十几个点）----
+        ttk.Label(frm, text="关键帧（按空格/按钮打点）").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.lb = tk.Listbox(frm, height=6, width=52, font=("Consolas", 9),
+                             activestyle="dotbox", exportselection=False)
+        self.lb.grid(row=3, column=0, columnspan=2, sticky="w")
+        for k in self.keys:
+            self.lb.insert("end", k["text"])
+        if not self.keys:
+            self.lb.insert("end", "（本次没有打点）")
+            self.lb.configure(state="disabled")
+        kb = ttk.Frame(frm)
+        kb.grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 6))
+        ttk.Button(kb, text="设为起点", width=10, command=lambda: self._use_key("a")).pack(side="left", padx=2)
+        ttk.Button(kb, text="设为终点", width=10, command=lambda: self._use_key("b")).pack(side="left", padx=2)
+
+        # ---- 帧号范围 ----
+        rng = ttk.Frame(frm)
+        rng.grid(row=2, column=2, columnspan=2, sticky="w")
+        ttk.Label(rng, text="起始帧").pack(side="left")
+        self.v_a = tk.StringVar(value=str(act[0]))
+        ttk.Entry(rng, textvariable=self.v_a, width=8).pack(side="left", padx=2)
+        ttk.Label(rng, text="结束帧").pack(side="left", padx=(8, 0))
+        self.v_b = tk.StringVar(value=str(act[1]))
+        ttk.Entry(rng, textvariable=self.v_b, width=8).pack(side="left", padx=2)
+
+        q = ttk.Frame(frm)
+        q.grid(row=3, column=2, columnspan=2, sticky="nw")
+        ttk.Button(q, text="自动定位有效段", width=14,
+                   command=self._auto).pack(anchor="w", pady=1)
+        ttk.Button(q, text="全部", width=14, command=self._all).pack(anchor="w", pady=1)
+        ttk.Label(q, text="（自动=跳掉头尾静止段\n第一次动第%d帧 ~ 最后动第%d帧）" % (act[0], act[1]),
+                  foreground="#0a7", font=("", 8)).pack(anchor="w", pady=(4, 0))
+
+        # ---- 片段名称（给 AI 看的）----
+        ttk.Label(frm, text="片段名称").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        self.v_name = tk.StringVar(value="")
+        e_name = ttk.Entry(frm, textvariable=self.v_name, width=30)
+        e_name.grid(row=5, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(frm, text="（例：第3个弯道 / 精停那一下；会进目录名和 note.md）",
+                  foreground="#666", font=("", 8)).grid(row=5, column=3, sticky="w", pady=(4, 0))
+
+        # ---- 输出目录 ----
+        ttk.Label(frm, text="导出到").grid(row=6, column=0, sticky="w", pady=(6, 0))
+        self.v_out = tk.StringVar(value=str(next_clip_dir(session_dir)))
+        ttk.Entry(frm, textvariable=self.v_out, width=52).grid(
+            row=6, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Button(frm, text="选择…", command=self._pick).grid(row=6, column=3, sticky="w", pady=(6, 0))
+
+        self.v_info = tk.StringVar()
+        ttk.Label(frm, textvariable=self.v_info, foreground="#06c").grid(
+            row=7, column=0, columnspan=4, sticky="w", pady=(6, 2))
+
+        bt = ttk.Frame(frm)
+        bt.grid(row=8, column=0, columnspan=4, sticky="e", pady=(6, 0))
+        ttk.Button(bt, text="导出", command=self._ok).pack(side="right", padx=4)
+        ttk.Button(bt, text="取消", command=self.destroy).pack(side="right")
+
+        for v in (self.v_a, self.v_b, self.v_name):
+            v.trace_add("write", lambda *_: self._update())
+        self._update()
+        self.lb.bind("<Double-1>", lambda e: self._use_key("a"))   # 双击 = 设为起点
+        e_name.focus_set()
+
+    def _use_key(self, which: str):
+        if not self.keys:
+            return
+        sel = self.lb.curselection()
+        if not sel:
+            return
+        fr = self.keys[sel[0]]["frame"]
+        (self.v_a if which == "a" else self.v_b).set(str(fr))
+
+    def _auto(self):
+        self.v_a.set(str(self.act[0]))
+        self.v_b.set(str(self.act[1]))
+
+    def _all(self):
+        self.v_a.set("1")
+        self.v_b.set(str(self.n))
+
+    def _pick(self):
+        d = filedialog.askdirectory(title="导出到哪个目录（会自动建）")
+        if d:
+            self.v_out.set(str(Path(d) / Path(self.v_out.get()).name))
+
+    def _range(self):
+        try:
+            a = max(1, int(self.v_a.get()))
+            b = min(self.n, int(self.v_b.get()))
+        except (TypeError, ValueError):
+            return None
+        if a > b:
+            return None
+        return a, b
+
+    def _update(self):
+        r = self._range()
+        nm = safe_dir_name(self.v_name.get())
+        base = self.session_dir / ("片段_" + nm) if nm else next_clip_dir(self.session_dir)
+        self.v_out.set(str(base))
+        if r is None:
+            self.v_info.set("帧号要填数字，且 起始 ≤ 结束")
+        else:
+            a, b = r
+            extra = ""
+            if b - a + 1 >= self.n:
+                extra = "   ← 这已经是整份日志，其实可以不用导出（直接用原始日志）"
+            elif not nm:
+                extra = "   ← 可在「片段名称」里起个名字"
+            self.v_info.set("将导出第 %d ~ %d 帧，共 %d 帧（约 %.0f KB）%s"
+                            % (a, b, b - a + 1, (b - a + 1) * 0.11, extra))
+
+    def _ok(self):
+        r = self._range()
+        if r is None:
+            messagebox.showwarning("帧号不对", "请检查起始/结束帧号（数字、起始≤结束）", parent=self)
+            return
+        out = Path(self.v_out.get().strip())
+        if not self.v_out.get().strip():
+            messagebox.showwarning("没有输出目录", "请填写导出到哪个目录", parent=self)
+            return
+        self.result = (r[0], r[1], unique_dir(out))
+        self.destroy()
+
+
+class LogBrowser(tk.Toplevel):
+    """日志浏览器：树形展示 logs/（母日志 → 子片段），可重开、可清理。"""
+
+    def __init__(self, master, logs_root: Path, current):
+        super().__init__(master)
+        self.title("打开日志（可继续截取 / 清理）")
+        self.geometry("860x460")
+        self.transient(master)
+        self.logs_root = logs_root
+        self.current = Path(current) if current else None
+        self.result = None
+        self._rows = {}                       # treeview item -> path
+
+        top = ttk.Frame(self)
+        top.pack(fill="both", expand=True, padx=8, pady=6)
+        cols = ("kind", "frames", "size", "time")
+        self.tv = ttk.Treeview(top, columns=cols, show="tree headings", height=14)
+        self.tv.heading("#0", text="名称（母日志 → 子片段）")
+        self.tv.column("#0", width=420)
+        for c, t, w in (("kind", "类型", 70), ("frames", "帧数", 70),
+                        ("size", "大小", 80), ("time", "时间", 140)):
+            self.tv.heading(c, text=t)
+            self.tv.column(c, width=w, anchor="w")
+        self.tv.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(top, orient="vertical", command=self.tv.yview)
+        sb.pack(side="right", fill="y")
+        self.tv.configure(yscrollcommand=sb.set)
+        self.tv.bind("<Double-1>", lambda e: self._open())
+
+        self.v_sum = tk.StringVar()
+        ttk.Label(self, textvariable=self.v_sum, foreground="#06c").pack(
+            anchor="w", padx=8)
+        bt = ttk.Frame(self)
+        bt.pack(fill="x", padx=8, pady=6)
+        ttk.Button(bt, text="打开为当前日志（可继续截）", command=self._open).pack(side="left", padx=2)
+        ttk.Button(bt, text="打开文件夹", command=self._folder).pack(side="left", padx=2)
+        ttk.Button(bt, text="删除（保留片段）", command=self._delete).pack(side="left", padx=2)
+        ttk.Button(bt, text="刷新", command=self._refresh).pack(side="left", padx=8)
+        ttk.Button(bt, text="关闭", command=self.destroy).pack(side="right")
+        self._refresh()
+
+    def _refresh(self):
+        self.tv.delete(*self.tv.get_children())
+        self._rows.clear()
+        tops = scan_logs(self.logs_root)
+        tot_s = tot_c = n_s = n_c = 0
+        for it in tops:
+            tot_s += it["size"]
+            n_s += 1
+            mark = "  ←当前" if self.current and it["path"] == self.current else ""
+            node = self.tv.insert("", "end", text="📁 " + it["path"].name + mark,
+                                  values=("原始", it["frames"], human_size(it["size"]),
+                                          datetime.fromtimestamp(it["mtime"]).strftime("%m-%d %H:%M")))
+            self._rows[node] = it["path"]
+            for ch in it["children"]:
+                tot_c += ch["size"]
+                n_c += 1
+                mk = "  ←当前" if self.current and ch["path"] == self.current else ""
+                cn = self.tv.insert(node, "end", text="└ " + ch["path"].name + mk,
+                                    values=("片段", ch["frames"], human_size(ch["size"]),
+                                            datetime.fromtimestamp(ch["mtime"]).strftime("%m-%d %H:%M")))
+                self._rows[cn] = ch["path"]
+            self.tv.item(node, open=True)
+        self.v_sum.set("logs/ 共 %s：原始 %d 份（%s）+ 片段 %d 份（%s）"
+                       % (human_size(tot_s + tot_c), n_s, human_size(tot_s), n_c, human_size(tot_c)))
+
+    def _sel(self):
+        sel = self.tv.selection()
+        return self._rows.get(sel[0]) if sel else None
+
+    def _open(self):
+        p = self._sel()
+        if p is None:
+            messagebox.showinfo("先选一个", "在上面的列表里点一下要打开的日志。", parent=self)
+            return
+        self.result = ("open", str(p))
+        self.destroy()
+
+    def _folder(self):
+        p = self._sel()
+        if p:
+            import subprocess
+            subprocess.Popen(["explorer", str(p)])
+
+    def _delete(self):
+        p = self._sel()
+        if p is None:
+            messagebox.showinfo("先选一个", "在上面的列表里点一下要删的日志。", parent=self)
+            return
+        kids = [c for c in p.iterdir() if c.is_dir()]
+        msg = ("将删除目录：\n%s\n（%s，含 %d 个子片段）\n\n"
+               % (p, human_size(dir_size(p, True)), len(kids)))
+        if kids:
+            msg += "其中 %d 个子片段会被**移到上一层**保留下来：\n%s\n\n" % (
+                len(kids), "\n".join("  · " + k.name for k in kids))
+        msg += "删了就不能再从它截取别的区间了。确定删？"
+        if not messagebox.askyesno("删除日志", msg, parent=self):
+            return
+        moved = promote_children(p)
+        try:
+            shutil.rmtree(p)
+        except Exception as e:
+            messagebox.showerror("删除失败", str(e), parent=self)
+            return
+        if moved:
+            messagebox.showinfo("已删除", "已删除原始日志；\n%d 个片段已提到上一层：\n%s"
+                                % (len(moved), "\n".join(m.name for m in moved)), parent=self)
+        self._refresh()
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("工创小车 · 蓝牙日志实时接收")
-        self.geometry("980x620")
+        self.geometry("1060x660")
         self.q: "queue.Queue" = queue.Queue()
+        self.LOGS = HERE.parent / "logs"
         self.worker: BleWorker | None = None
-        self.markers: list[str] = []
-        self.n_disp = 0                     # 屏幕上显示到第几帧（与真实帧号解耦）
+        self.markers: list[str] = []          # 写进 markers.txt
+        self.keys: list[dict] = []             # 关键帧（可打很多个）
+        self.last_fields = None                # 最近一帧的解析结果（打点时记状态用）
+        self.n_recv = 0                       # 收到的帧数 = CSV 第几行（显示的"序号"就是它）
+        self.session_dir: Path | None = None
+        self.exports: list[tuple] = []        # 已导出的片段
+        self.recorded: Path | None = None     # **本轮录制**的目录（未保存就提醒用）
+        self.nag_ok = False                   # 用户已说过“保留不动”
         self.gyro_hist = collections.deque(maxlen=400)
-        self.gyro_sum = 0.0                 # 累计转角（度，按每帧 30ms 估算）
+        self.gyro_sum = 0.0                    # 陀螺仪累计转角（度）
+        self.yaw_enc_sum = 0.0                 # 编码器差速累计转角（度）
+        self.spd_hist = collections.deque(maxlen=15)   # 最近 ~0.45s 车速，用于平滑
+        self.gray_now = "00000000"
+        self.err_now = "0.0"
         self.gyro_last_nonzero = time.time()
         self._gyro_t = datetime.now()
         self._build()
+        self.bind("<space>", self._on_space)      # 按空格 = 打一个关键帧
+        self.txt.bind("<space>", self._on_space)  # 焦点在数据区时也算（并拦下插入空格）
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(120, self._pump)
 
     # ---------- 界面 ----------
@@ -237,48 +767,71 @@ class App(tk.Tk):
         top.pack(fill="x", **pad)
 
         ttk.Label(top, text="设备").grid(row=0, column=0, sticky="w")
-        self.dev = ttk.Combobox(top, width=22, values=KNOWN)
+        self.dev = ttk.Combobox(top, width=20, values=KNOWN)
         self.dev.set(KNOWN[0])
         self.dev.grid(row=0, column=1, sticky="w", padx=4)
 
-        ttk.Label(top, text="备注").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        self.note = ttk.Entry(top, width=34)
+        ttk.Label(top, text="备注").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.note = ttk.Entry(top, width=28)
         self.note.insert(0, "BLE实时")
         self.note.grid(row=0, column=3, sticky="w", padx=4)
 
+        ttk.Separator(top, orient="vertical").grid(row=0, column=4, sticky="ns", padx=6)
         self.btn_start = ttk.Button(top, text="开始接收", command=self.start)
-        self.btn_start.grid(row=0, column=4, padx=4)
+        self.btn_start.grid(row=0, column=5, padx=2)
         self.btn_stop = ttk.Button(top, text="停止", command=self.stop, state="disabled")
-        self.btn_stop.grid(row=0, column=5, padx=4)
-        ttk.Button(top, text="打开日志目录", command=self.open_dir).grid(row=0, column=6, padx=4)
+        self.btn_stop.grid(row=0, column=6, padx=2)
 
-        opt = ttk.Frame(self)
-        opt.pack(fill="x", **pad)
+        ttk.Separator(top, orient="vertical").grid(row=0, column=7, sticky="ns", padx=6)
+        self.btn_save = ttk.Button(top, text="保存日志…", command=self.save_dialog, state="disabled")
+        self.btn_save.grid(row=0, column=8, padx=2)
+        self.btn_open = ttk.Button(top, text="打开日志…", command=self.open_log_dialog)
+        self.btn_open.grid(row=0, column=9, padx=2)
+        ttk.Button(top, text="打开目录", command=self.open_dir).grid(row=0, column=10, padx=2)
+
+        opt2 = ttk.Frame(self)
+        opt2.pack(fill="x", **pad)
         self.only_move = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opt, text="只看动帧（灰度有黑 或 轮子在动 或 电机有命令；只是显示过滤，CSV 仍存全部）",
-                        variable=self.only_move).pack(side="left")
+        ttk.Checkbutton(opt2, text="只看动帧", variable=self.only_move).pack(side="left")
+        ttk.Label(opt2, text="（只影响显示；CSV 始终存全部帧，序号 = CSV 行号）",
+                  foreground="#777", font=("", 8)).pack(side="left", padx=(2, 10))
         self.autoscroll = tk.BooleanVar(value=True)
-        ttk.Checkbutton(opt, text="自动滚动", variable=self.autoscroll).pack(side="left", padx=10)
-        ttk.Button(opt, text="打点（记下当前时刻）", command=self.mark).pack(side="left", padx=10)
-        ttk.Button(opt, text="清屏", command=lambda: self.txt.delete("1.0", "end")).pack(side="left")
+        ttk.Checkbutton(opt2, text="自动滚动", variable=self.autoscroll).pack(side="left")
+        ttk.Separator(opt2, orient="vertical").pack(side="left", fill="y", padx=8)
+        self.btn_key = ttk.Button(opt2, text="打关键帧（空格）", command=self.mark_key)
+        self.btn_key.pack(side="left", padx=2)
+        ttk.Button(opt2, text="清屏", command=self._clear_view).pack(side="left", padx=6)
+        ttk.Button(opt2, text="丢弃本次日志", command=self.discard_session).pack(side="left", padx=2)
 
         head = "序号  时刻          灰度        err   pwm L/R    st   dL   dR    gz"
 
-        # ---- 底部：状态栏 + 陀螺仪实时面板（先 pack 底部，再用 Text 占满剩余空间）----
+        # ---- 底部：状态栏（带状态灯）+ 仪表盘卡片 ----
+        bar = tk.Frame(self)
+        bar.pack(fill="x", side="bottom")
+        self.lamp = tk.Label(bar, text="●", fg="#8a97a3", bg=self.cget("bg"), font=("", 11))
+        self.lamp.pack(side="left", padx=(6, 0))
         self.status = tk.StringVar(value="就绪 —— 点「开始接收」；状态栏出现帧率后才算真的在收")
-        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(
-            fill="x", side="bottom")
+        tk.Label(bar, textvariable=self.status, anchor="w", bg=self.cget("bg")).pack(
+            side="left", fill="x", expand=True, padx=(2, 6), pady=2)
 
-        gp = tk.Frame(self, bg="#141b22")
-        gp.pack(fill="x", side="bottom")
-        self.gyro_txt = tk.StringVar(value="陀螺仪 gz = ---   （陀螺仪每 4 拍读一次、±254°/s、2°/s 每格）")
-        tk.Label(gp, textvariable=self.gyro_txt, bg="#141b22", fg="#8ce99a",
-                 font=("Consolas", 10), anchor="w", padx=8, pady=4).pack(side="left")
-        self.canvas = tk.Canvas(gp, width=240, height=32, bg="#0d1216",
-                                highlightthickness=0, bd=0)
-        self.canvas.pack(side="right", padx=8, pady=4)
-        tk.Label(gp, text="正=逆时针/左\n负=顺时针/右", bg="#141b22", fg="#6b7c8c",
-                 font=("Consolas", 8), justify="left").pack(side="right")
+        dash = tk.Frame(self, bg="#0d1216")
+        dash.pack(fill="x", side="bottom", padx=6, pady=(4, 2))
+        self.v_spd, self.s_spd, self.l_spd = self._card(dash, "车速 · 名义尺度")
+        self.v_turn, self.s_turn, self.l_turn = self._card(dash, "转向")
+        self.v_yaw, self.s_yaw, self.l_yaw = self._card(dash, "角速度 / 累计")
+        gf = self._card_frame(dash, "灰度（● = 黑/压线）")
+        self.gray_cv = tk.Canvas(gf, width=104, height=19, bg="#141b22", highlightthickness=0, bd=0)
+        self.gray_cv.pack(anchor="w", padx=6)
+        self.s_gray = tk.StringVar(value="偏差 err = —")
+        tk.Label(gf, textvariable=self.s_gray, bg="#141b22", fg="#7f93a6", font=("", 8),
+                 anchor="w").pack(anchor="w", padx=6, pady=(1, 4))
+        tf_ = self._card_frame(dash, "陀螺仪趋势 · 最近 3.6 秒")
+        self.canvas = tk.Canvas(tf_, width=176, height=26, bg="#0d1216", highlightthickness=0, bd=0)
+        self.canvas.pack(anchor="w", padx=6)
+        self.s_gyro = tk.StringVar(value="")
+        self.l_gyro = tk.Label(tf_, textvariable=self.s_gyro, bg="#141b22", fg="#7f93a6",
+                               font=("", 8), anchor="w")
+        self.l_gyro.pack(anchor="w", padx=6, pady=(1, 4))
 
         # ---- 固定表头（独立控件，不随数据滚动消失）----
         tk.Label(self, text=head, bg="#1b2530", fg="#9fb3c8", font=("Consolas", 10),
@@ -297,16 +850,43 @@ class App(tk.Tk):
                          ("mark", "#8ce99a")):
             self.txt.tag_configure(tag, foreground=col)
 
+    # ---------- 仪表盘小卡片 ----------
+    def _card_frame(self, parent, title):
+        f = tk.Frame(parent, bg="#141b22", highlightbackground="#243040", highlightthickness=1)
+        f.pack(side="left", padx=4, pady=2, fill="y")
+        tk.Label(f, text=title, bg="#141b22", fg="#6b7c8c", font=("", 8),
+                 anchor="w").pack(anchor="w", padx=6, pady=(3, 0))
+        return f
+
+    def _card(self, parent, title):
+        f = self._card_frame(parent, title)
+        v = tk.StringVar(value="—")
+        lbl = tk.Label(f, textvariable=v, bg="#141b22", fg="#d0d8e0",
+                       font=("Consolas", 12, "bold"), anchor="w")
+        lbl.pack(anchor="w", padx=6)
+        sub = tk.StringVar(value="")
+        tk.Label(f, textvariable=sub, bg="#141b22", fg="#7f93a6", font=("", 8),
+                 anchor="w").pack(anchor="w", padx=6, pady=(0, 4))
+        return v, sub, lbl
+
     # ---------- 动作 ----------
     def start(self):
         if self.worker and self.worker.is_alive():
             return
+        if self.n_recv and self.recorded and not self.nag_ok and self.session_dir == self.recorded:
+            if not self._ask_unsaved("要开始新的一次录制"):
+                return
+        self.n_recv, self.keys, self.markers = 0, [], []
+        self.last_fields = None
+        self.recorded, self.nag_ok = None, False
+        self.exports, self.session_dir = [], None
+        self.gyro_hist.clear()
+        self.gyro_sum = 0.0
         self.worker = BleWorker(self.q, self.dev.get().strip(),
-                                use_addr=":" in self.dev.get(),  # 填 MAC 时按地址连（更稳）
+                                use_addr=":" in self.dev.get(),
                                 note=self.note.get().strip(),
                                 min_fps=3.0)
         self.worker.start()
-        self.markers = []
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.status.set("正在连接…（连上后会自动试测 6 秒帧率）")
@@ -316,20 +896,281 @@ class App(tk.Tk):
             self.worker.stop_flag.set()
             self.status.set("正在停止并写盘…")
 
-    def mark(self):
-        t = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-        self.markers.append(t)
-        self._append("[打点] %s   ← %s" % (t, self.note.get().strip()), "mark")
+    def _clear_view(self):
+        self.txt.delete("1.0", "end")
+        self._append("[i] 只是清屏，日志文件没动（要删请用「丢弃本次日志」）")
+
+    def _on_space(self, _e=None):
+        self.mark_key()
+        return "break"                           # 不让空格插进文本区
+
+    def mark_key(self):
+        """按一下 = 记一个关键帧（比赛时一条赛道可能打十几个）。"""
+        if not self.n_recv:
+            return
+        t = datetime.now().strftime("%H:%M:%S")
+        gz = self.gyro_hist[-1] * 2.0 if self.gyro_hist else 0.0
+        how = "静止" if abs(gz) < 3 else ("左转" if gz > 0 else "右转")
+        d = ""
+        if self.last_fields:
+            gray, err = self.last_fields[0], self.last_fields[1]
+            d = "  灰度%s err=%s" % (gray, err)
+        text = "#%d 第 %d 帧 %s  gz=%+.0f°/s %s%s" % (
+            len(self.keys) + 1, self.n_recv, t, gz, how, d)
+        self.keys.append({"n": len(self.keys) + 1, "frame": self.n_recv,
+                          "time": t, "gz": gz, "turn": how, "text": text})
+        self.markers.append(text)
+        self._append("[关键帧] " + text, "mark")
+        self.btn_key.configure(text="打关键帧（空格）· 已打 %d 个" % len(self.keys))
 
     def open_dir(self):
-        d = self.worker.out_dir if self.worker and self.worker.out_dir else None
+        d = self.session_dir
         if d and Path(d).exists():
             import subprocess
             subprocess.Popen(["explorer", str(d)])
         else:
             messagebox.showinfo("还没有日志", "先点「开始接收」，日志目录会在那时创建。")
 
-    # ---------- 界面刷新（只在这里碰控件，线程安全）----------
+    # ---------- 保存 / 删除 ----------
+    def open_log_dialog(self):
+        """打开历史的原始日志或片段，把它作为“当前日志”继续截取。"""
+        d = LogBrowser(self, self.LOGS, self.session_dir)
+        self.wait_window(d)
+        if d.result and d.result[0] == "open":
+            self._open_log_as_current(Path(d.result[1]))
+
+    def _open_log_as_current(self, path: Path):
+        n = count_rows(path / "telemetry.csv")
+        if not n:
+            messagebox.showerror("打不开", "%s\n里没有可用的 telemetry.csv（或没有数据帧）。" % path)
+            return
+        self.session_dir = path
+        self.n_recv = n
+        self.exports, self.keys, self.markers, self.recorded = [], [], [], None
+        self.nag_ok = True                     # 打开旧日志不算“本轮录制”，不再唠叨
+        self.btn_save.configure(state="normal")
+        self.btn_key.configure(text="打关键帧（空格）")
+        mk = path / "markers.txt"
+        if mk.exists():                        # 尽量把当年的关键帧读回来
+            import re
+            for line in mk.read_text(encoding="utf-8").splitlines():
+                m = re.search(r"第\s*(\d+)\s*帧", line)
+                if m:
+                    self.keys.append({"n": len(self.keys) + 1, "frame": int(m.group(1)),
+                                      "text": line, "time": "", "gz": 0.0, "turn": ""})
+            if self.keys:
+                self.btn_key.configure(text="打关键帧（空格）· 旧日志里有 %d 个" % len(self.keys))
+        self._append("[i] 已打开为当前日志：%s（%d 帧%s）⇒ 可用「保存日志…」从它继续截取"
+                     % (path.name, n, "，含 %d 个关键帧" % len(self.keys) if self.keys else ""), "mark")
+        self.status.set("当前日志：%s（%d 帧）—— 点「保存日志…」截取子片段" % (path.name, n))
+
+    def save_dialog(self):
+        if not (self.worker and self.session_dir and self.session_dir.exists()):
+            messagebox.showinfo("还没有日志", "先点「开始接收」录一段，再来保存。")
+            return None
+        try:
+            self.worker.flush_rec()          # 录制中也要保证磁盘上有完整数据
+        except Exception:
+            pass
+        try:                                 # 自动定位“车子真正在动”的第一/最后一帧
+            act = session_activity(self.session_dir / "telemetry.csv")
+        except Exception:
+            act = (1, max(1, self.n_recv))
+        d = ClipDialog(self, self.session_dir, self.note.get().strip(),
+                       self.n_recv, self.keys, act)
+        self.wait_window(d)
+        if d.result is None:
+            return None
+        a, b, out = d.result
+        if (a, b) == (1, self.n_recv):
+            if not messagebox.askyesno(
+                    "不用导出副本",
+                    "你选的是**整份日志**（第 1 ~ %d 帧），导出来只是复制一份。\n\n"
+                    "直接用这份就行：\n%s\n\n仍然要另存一份吗？" % (self.n_recv, self.session_dir)):
+                self._append("[i] 整份日志，未重复导出；直接用 %s" % self.session_dir, "mark")
+                return None
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+            src = self.session_dir / "telemetry.csv"
+            n = slice_session_csv(src, a, b, out / "telemetry.csv")
+            st = write_derived(src, out / "derived.csv", a, b)
+            (out / "meta.json").write_text(
+                '{\n  "note": %s,\n  "kind": "clip",\n  "name": %s,\n  "transport": "BLE",\n'
+                '  "clip": {"from": %d, "to": %d, "frames": %d, "src": %s},\n'
+                '  "chain": %s,\n  "saved": "%s"\n}\n'
+                % (_json_str(self.note.get().strip()),
+                   _json_str(safe_dir_name(d.v_name.get())),
+                   a, b, n, _json_str(str(self.session_dir)),
+                   _json_str(self._chain(out)),
+                   datetime.now().isoformat(timespec="seconds")),
+                encoding="utf-8")
+            self._write_clip_note(out, a, b, n, st, d.v_name.get().strip())
+        except Exception as e:
+            messagebox.showerror("导出失败", "写文件出错：\n%s" % e)
+            return None
+        self.exports.append((a, b, str(out)))
+        if self.session_dir == self.recorded:
+            self.nag_ok = True                            # 本轮已保存过，不再唠叨
+        self._append("[保存] 第 %d~%d 帧（共 %d 帧）→ %s" % (a, b, n, out), "mark")
+        self.status.set("已导出：%s" % out)
+        if messagebox.askyesno("导出完成",
+                               "已导出第 %d~%d 帧（共 %d 帧）\n\n%s\n\n"
+                               "现在打开这个目录吗？" % (a, b, n, out)):
+            import subprocess
+            subprocess.Popen(["explorer", str(out)])
+        return out
+
+    def _chain(self, out: Path) -> list:
+        """记录“这份片段是从哪一路截出来的”，便于日后追溯多层嵌套。"""
+        chain, d = [], self.session_dir
+        while d and str(d).startswith(str(self.LOGS)):
+            chain.append(d.name)
+            if d == self.LOGS:
+                break
+            d = d.parent
+        return list(reversed(chain)) + [out.name]
+
+    def _write_clip_note(self, out: Path, a: int, b: int, n: int, st: dict, name: str):
+        keys_in = [k for k in self.keys if a <= k["frame"] <= b]
+        lines = [
+            "# 日志片段 · %s" % (name or (self.note.get().strip() or "未命名")),
+            "",
+            "- 片段名称：**%s**" % (name or "（未命名）"),
+            "- 来源：`%s`" % self.session_dir,
+            "- 上级日志：%s" % (self.session_dir.name if self.session_dir else "（无）"),
+            "- 范围：第 **%d ~ %d** 帧（本次录制共 %d 帧）" % (a, b, self.n_recv),
+            "- 片段帧数：%d，名义时长：%.1f s（BLE 每帧名义 30ms）" % (n, st.get("dur_s", 0)),
+            "- 导出时间：%s" % datetime.now().isoformat(timespec="seconds"),
+            "",
+            "## 一、已经算好的汇总（不用再自己算）",
+            "",
+            "| 指标 | 值 |",
+            "|---|---|",
+            "| 帧数 / 其中“在动或给电” | %d / %d |" % (st.get("frames", 0), st.get("moving", 0)),
+            "| 里程（差速推算，名义值） | %.0f mm |" % st.get("dist_mm", 0.0),
+            "| 平均速度 / 最大 | %.1f / %.1f mm/s |" % (st.get("vmean", 0.0), st.get("vmax", 0.0)),
+            "| 左转 / 右转 / 直行帧数 | %d / %d / %d |" % (st.get("left", 0), st.get("right", 0), st.get("straight", 0)),
+            "| 累计转角·陀螺仪 | %+.1f° |" % st.get("yaw_gyro", 0.0),
+            "| 累计转角·编码器差速 | %+.1f° |" % st.get("yaw_enc", 0.0),
+            "| gz 非零帧（陀螺仪有没有在报数）| %d |" % st.get("n_gyro_nonzero", 0),
+            "",
+            "> 两个“累计转角”对不上时，常见原因：轮子打滑（编码器多）/ 陀螺仪零偏漂移（陀螺仪多）。",
+            "> mm、mm/s 用的是**名义尺度** `%.3f mm/计数`（精确值仍有争议，见 项目记录/经验与踩坑.md ㊸）——" % MM_PER_COUNT,
+            "> 拿来比趋势/形状可靠，当绝对尺要小心。",
+            "",
+            "## 二、文件说明",
+            "",
+            "- `telemetry.csv`：原始逐帧遥测（与其它脚本同一格式，`plot.py` 直接能画）",
+            "- `derived.csv`：**已算好派生量**的逐帧表（列义见下），序号 `idx` 与 `telemetry.csv` 的序号一一对应",
+            "",
+            "| derived.csv 列 | 含义 |",
+            "|---|---|",
+            "| idx / t_s | 帧号 / 名义时间（秒，从片段开头算）|",
+            "| gray | 八路灰度，1=黑（压线），按第1~8路顺序 |",
+            "| err | 循迹偏差（−8~+8，正=线偏右）|",
+            "| pwm_l / pwm_r | 左右轮 PWM 命令（−100~100）|",
+            "| state | 0=丢线停车 1=巡线 4=精停 |",
+            "| dl / dr | 左右轮编码器增量（计数，已翻正）|",
+            "| mm_l / mm_r | 增量换算成 mm（名义尺度）|",
+            "| speed_mm_s | 车身速度 = (mm_l+mm_r)/2 ÷ 30ms |",
+            "| yaw_enc_dps | 差速推算的偏航角速度（°/s，正=左转）|",
+            "| gyro_dps | 陀螺仪偏航角速度（°/s，正=左转）|",
+            "| turn / turn_src | 转向判定 L/R/- 及其来源（gyro=陀螺仪优先，enc=退而用编码器）|",
+            "| moving | 1 = 轮子在动 或 电机有命令 |",
+            "",
+            "## 三、关键帧（打点）",
+            "",
+        ]
+        lines += ["- " + k["text"] for k in keys_in] if keys_in else ["- （本片段范围内没有关键帧）"]
+        allk = self.keys
+        if allk:
+            lines += ["", "（本次录制全部关键帧：%d 个）" % len(allk)]
+        lines += [
+            "",
+            "## 四、这个片段对应什么",
+            "（写一句：比如“第 3 个弯道，车在这里右转后回线”）",
+            "",
+        ]
+        (out / "note.md").write_text("\n".join(lines), encoding="utf-8")
+
+    def discard_session(self):
+        if self.recorded is None or self.session_dir != self.recorded:
+            messagebox.showinfo("不是本轮录制",
+                                "当前显示的是打开的历史日志，不能在这里删。\n"
+                                "请用「打开日志…」里的「删除（保留片段）」。")
+            return
+        if not (self.session_dir and self.session_dir.exists()):
+            messagebox.showinfo("没有日志", "这一轮还没有录制日志。")
+            return
+        n = self.n_recv
+        kept = "\n".join("  · %s" % e[2] for e in self.exports) or "  （本次还没有导出过片段）"
+        if not messagebox.askyesno("删除本次原始日志",
+                                   "将【删除】原始日志目录：\n%s\n（共 %d 帧、打点 %d 个）\n\n"
+                                   "已经导出的片段【不受影响】：\n%s\n\n"
+                                   "删了就不能再从它导别的区间了。确定删？"
+                                   % (self.session_dir, n, len(self.keys), kept)):
+            return
+        try:
+            moved = promote_children(self.session_dir)   # 先保住子片段，再删母目录
+            shutil.rmtree(self.session_dir)
+            self._append("[i] 已删除 %s%s" % (self.session_dir,
+                                          "；%d 个片段已提到上一层" % len(moved) if moved else ""), "warn")
+        except Exception as e:
+            messagebox.showerror("删除失败", str(e))
+            return
+        self.n_recv = 0
+        self.session_dir = None
+        self.recorded = None
+        self.exports = []
+        self.keys, self.markers = [], []
+        self.btn_key.configure(text="打关键帧（空格）")
+        self.btn_save.configure(state="disabled")
+
+    def _ask_unsaved(self, what: str) -> bool:
+        """有未保存的**本轮录制**时问一句。返回 True = 可以继续（已保存/已删/保留）"""
+        if self.recorded is None or self.session_dir != self.recorded:
+            return True
+        if not (self.session_dir and self.session_dir.exists() and self.n_recv):
+            return True
+        ans = messagebox.askyesnocancel(
+            "还没保存",
+            "%s\n\n本轮录制了 %d 帧（%s），还没保存。\n\n"
+            "是 = 先保存片段（也可以稍后在「打开日志…」里重开再截）\n"
+            "否 = 删除本次日志\n取消 = 保留不动（之后可在「打开日志…」里找到）"
+            % (what, self.n_recv, self.session_dir.name))
+        if ans is True:                       # 先保存
+            self.save_dialog()
+            return True
+        if ans is False:                      # 删除
+            self.discard_session()
+            return True
+        self.nag_ok = True                    # 取消 = 保留，不再唠叨
+        return True
+
+    def on_close(self):
+        if self.worker and self.worker.is_alive():
+            self.worker.stop_flag.set()
+            time.sleep(0.4)
+        if (self.recorded and self.session_dir == self.recorded and not self.nag_ok
+                and self.session_dir.exists() and self.n_recv):
+            ans = messagebox.askyesnocancel(
+                "关闭前",
+                "本轮录制了 %d 帧，还没保存。\n\n"
+                "是 = 先保存片段\n否 = 删除本次日志\n取消 = 保留日志并关闭\n\n"
+                "（保留的话，下次用「打开日志…」能找到它再截）" % self.n_recv)
+            if ans is True:
+                if self.save_dialog() is None:
+                    return                     # 没导出成功就别关，回去重来
+            elif ans is False:
+                try:
+                    promote_children(self.session_dir)
+                    shutil.rmtree(self.session_dir)
+                    self._append("[i] 已删除 %s" % self.session_dir, "warn")
+                except Exception:
+                    pass
+        self.destroy()
+
+    # ---------- 界面刷新 ----------
     def _append(self, text: str, tag: str = "ev"):
         self.txt.insert("end", text + "\n", tag)
         if self.autoscroll.get():
@@ -341,75 +1182,136 @@ class App(tk.Tk):
                 kind, payload = self.q.get_nowait()
                 if kind == "log":
                     self._append(payload, "warn" if payload.startswith("[!]") else "ev")
+                elif kind == "session":
+                    self.session_dir = Path(payload)
+                    self.recorded = self.session_dir          # 本轮录制的母日志
+                    self.nag_ok = False
+                    self.btn_save.configure(state="normal")
                 elif kind == "frame":
                     f = frame_fields(payload)
                     if f is None:
                         continue
                     gray, err, pl, pr, st, dl, dr, gz = f
-                    if self.only_move.get():                       # 仅显示过滤；CSV 仍是全部帧
-                        idle = (gray.strip("0") == ""                    # 灰度全无
-                                and lstrip_num(dl) == 0 and lstrip_num(dr) == 0   # 轮子没动
-                                and lstrip_num(pl) == 0 and lstrip_num(pr) == 0)  # 也没给电机发命令
-                        if idle:
-                            continue
-                    self.n_disp += 1
-                    self._append(fmt_frame(self.n_disp, payload), "frame")
-                    # ---- 陀螺仪统计（gz 单位 = 2°/s 每格；每帧名义 30ms）----
+                    self.last_fields = f                       # 打关键帧时记状态用
+                    self.n_recv += 1                          # 序号 = CSV 第几帧（与显示过滤无关）
+                    show = True
+                    if self.only_move.get():
+                        show = not (gray.strip("0") == ""
+                                    and lstrip_num(dl) == 0 and lstrip_num(dr) == 0
+                                    and lstrip_num(pl) == 0 and lstrip_num(pr) == 0)
+                    if show:
+                        self._append(fmt_frame(self.n_recv, payload), "frame")
+                    # ---- 仪表盘累加量（gz 单位 = 2°/s 每格；每帧名义 30ms）----
                     g = lstrip_num(gz)
                     self.gyro_hist.append(g)
-                    self.gyro_sum += g * 2.0 * (1.0 / 33.3)
+                    self.gyro_sum += g * 2.0 * DT_S
                     if g:
                         self.gyro_last_nonzero = time.time()
+                    dl_n, dr_n = lstrip_num(dl), lstrip_num(dr)
+                    self.spd_hist.append((dl_n + dr_n) / 2.0 * MM_PER_COUNT / DT_S)
+                    self.yaw_enc_sum += ((dr_n - dl_n) * MM_PER_COUNT / WB_MM) * 57.2958
+                    self.gray_now, self.err_now = gray, err
                 elif kind == "stat":
                     s = payload
-                    self.status.set("状态：%s   累计 %d 帧   当前 %.1f 帧/s   已运行 %.0f s"
-                                    % (s.get("state", ""), s.get("n", 0),
+                    state = s.get("state", "")
+                    self.lamp.configure(fg="#8ce99a" if "接收中" in state else "#ffd43b")
+                    self.status.set("状态：%s   本次 %d 帧（已导出 %d 段）   %.1f 帧/s   已运行 %.0f s"
+                                    % (s.get("state", ""), self.n_recv, len(self.exports),
                                        s.get("fps", 0.0), s.get("sec", 0.0)))
                 elif kind == "done":
                     self.btn_start.configure(state="normal")
                     self.btn_stop.configure(state="disabled")
-                    self.status.set("已停止（%s）—— 数据已写入 telemetry.csv" % payload)
-                    if self.markers and self.worker and self.worker.out_dir:
-                        p = Path(self.worker.out_dir) / "markers.txt"
-                        p.write_text("\n".join(self.markers), encoding="utf-8")
-                        self._append("[i] 打点已写入 %s" % p.name, "mark")
+                    self.status.set("已停止（%s）—— 点「保存日志…」导出全部或片段" % payload)
+                    if self.markers and self.session_dir:
+                        try:
+                            (self.session_dir / "markers.txt").write_text(
+                                "\n".join(self.markers), encoding="utf-8")
+                            self._append("[i] 打点已写入 markers.txt", "mark")
+                        except Exception:
+                            pass
         except queue.Empty:
             pass
         now = datetime.now()
-        if (now - self._gyro_t).total_seconds() >= 0.2:      # 陀螺仪面板每秒刷 5 次就够
+        if (now - self._gyro_t).total_seconds() >= 0.2:      # 仪表盘每秒刷 5 次够用
             self._gyro_t = now
-            self._refresh_gyro()
+            self._refresh_dash()
         self.after(80, self._pump)
 
-    def _refresh_gyro(self):
-        if not self.gyro_hist:
-            return
-        g = self.gyro_hist[-1]
-        rate = g * 2.0                                        # gz8 的单位是 2°/s
-        if abs(rate) < 3.0:
-            how = "静止/直行"
-        elif rate > 0:
-            how = "左转（逆时针）"
+    def _yaw_enc_dps(self) -> float:
+        """用最近一帧的左右轮增量算偏航角速度（°/s，正 = 左转）—— 与 derived.csv 同一套公式。"""
+        if not self.last_fields:
+            return 0.0
+        dl, dr = lstrip_num(self.last_fields[5]), lstrip_num(self.last_fields[6])
+        return ((dr - dl) * MM_PER_COUNT / WB_MM) * 57.2958 / DT_S
+
+    def _refresh_dash(self):
+        # ---------- 车速 ----------
+        spd = (sum(self.spd_hist) / len(self.spd_hist)) if self.spd_hist else 0.0
+        moving = abs(spd) > 3.0
+        self.v_spd.set("%+6.1f mm/s" % spd if moving else "   0.0 mm/s")
+        self.l_spd.configure(fg="#8ce99a" if moving else "#7f93a6")
+        self.s_spd.set(("≈ %.1f cm/s" % (spd / 10.0)) if moving else "静止")
+
+        # ---------- 转向（陀螺仪优先，没数据就看编码器差速）----------
+        gz = self.gyro_hist[-1] * 2.0 if self.gyro_hist else 0.0
+        yaw_enc = self._yaw_enc_dps()
+        if abs(gz) >= 3.0:
+            turn, src, rate = ("左转", "陀螺仪", gz) if gz > 0 else ("右转", "陀螺仪", gz)
+        elif abs(yaw_enc) >= 15.0:
+            turn, src, rate = ("左转", "编码器差速", yaw_enc) if yaw_enc > 0 else ("右转", "编码器差速", yaw_enc)
         else:
-            how = "右转（顺时针）"
-        stale = (time.time() - self.gyro_last_nonzero) > 15.0
-        hint = "   [!] 一直是 0：MPU6050 可能没接好/初始化失败" if stale else ""
-        self.gyro_txt.set("陀螺仪 gz = %+6.1f °/s   %-10s  累计转角 %+7.1f°   (每帧 30ms 估算)%s"
-                          % (rate, how, self.gyro_sum, hint))
-        # 趋势条：最近 ~120 帧（约 3.6 秒），±60°/s 满量程
-        c = self.canvas
+            turn, src, rate = "直行", "—", 0.0
+        arrow = {"左转": "◀", "右转": "▶", "直行": "▲"}[turn]
+        self.v_turn.set("%s %s" % (arrow, turn))
+        self.l_turn.configure(fg="#8ce99a" if turn == "直行" else ("#4dabf7" if turn == "左转" else "#ffa94d"))
+        self.s_turn.set("依据：%s" % src)
+
+        # ---------- 角速度 / 累计转角（两条通道互验）----------
+        self.v_yaw.set("%+6.1f °/s" % rate)
+        self.s_yaw.set("陀螺 %+.0f°  编码 %+.0f°" % (self.gyro_sum, self.yaw_enc_sum))
+
+        # ---------- 灰度 ----------
+        self.s_gray.set("偏差 err = %-5s  %s" % (self.err_now, self.gray_now))
+        c = self.gray_cv
         c.delete("all")
-        w, h = 240, 32
-        c.create_line(0, h // 2, w, h // 2, fill="#33465a")
+        for i, ch in enumerate((self.gray_now + "00000000")[:8]):
+            x = 3 + i * 12.5
+            on = (ch == "1")
+            c.create_rectangle(x, 3, x + 10, 16,
+                               fill=("#8ce99a" if on else "#242f3a"),
+                               outline="#3a4a5a")
+
+        # ---------- 陀螺仪健康提示（静默失效以前很隐蔽：至少它现在会喊一声）----------
+        stale = (time.time() - self.gyro_last_nonzero) > 15.0
+        if self.gyro_hist and stale:
+            self.s_gyro.set("! gz 一直是 0：查 MPU6050（固件会自己重试唤醒；也可发 MPUINIT）")
+            self.l_gyro.configure(fg="#ffb86b")
+        else:
+            self.s_gyro.set("正=左转(蓝) / 负=右转(橙)")
+            self.l_gyro.configure(fg="#7f93a6")
+
+        # ---------- 陀螺仪趋势条 ----------
+        c2 = self.canvas
+        c2.delete("all")
+        w, h = 176, 26
+        c2.create_line(0, h // 2, w, h // 2, fill="#33465a")
         vals = list(self.gyro_hist)[-120:]
-        if not vals:
-            return
-        step = w / float(max(1, len(vals)))
-        for i, v in enumerate(vals):
-            vv = max(-60.0, min(60.0, v * 2.0))
-            x = i * step + step / 2.0
-            y = h / 2.0 - (vv / 60.0) * (h / 2.0 - 2.0)
-            c.create_line(x, h / 2.0, x, y, fill=("#4dabf7" if vv >= 0 else "#ffa94d"))
+        if vals:
+            step = w / float(max(1, len(vals)))
+            for i, v in enumerate(vals):
+                vv = max(-60.0, min(60.0, v * 2.0))
+                x = i * step + step / 2.0
+                y = h / 2.0 - (vv / 60.0) * (h / 2.0 - 1.5)
+                c2.create_line(x, h / 2.0, x, y, fill=("#4dabf7" if vv >= 0 else "#ffa94d"))
+
+    def _refresh_gyro(self):
+        """（保留旧名字，转发到仪表盘刷新；早期测试脚本用得到）"""
+        self._refresh_dash()
+
+
+def _json_str(s: str) -> str:
+    import json
+    return json.dumps(s, ensure_ascii=False)
 
 
 def main() -> int:

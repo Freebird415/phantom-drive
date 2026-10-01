@@ -140,6 +140,13 @@ class Recorder:
             self.params.append(data)
         return True
 
+    def flush(self):
+        """把缓冲区刷到磁盘（录制中也能安全拿去读/导出片段）"""
+        try:
+            self._csv.flush()
+        except Exception:
+            pass
+
     def close(self):
         self._csv.close()
         self.meta["counts"] = self.counts
