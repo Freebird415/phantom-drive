@@ -28,9 +28,11 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -51,14 +53,31 @@ import telemetry                                     # noqa: E402
 from btlog import KNOWN, NOTIFY, DeFramer            # noqa: E402  复用同一套解帧（格式一致才能复用分析脚本）
 
 
+def lstrip_num(s: str) -> int:
+    """把 '+3' / '-12' / '0' 这类字段安全转成 int。"""
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return 0
+
+
 def fmt_frame(idx: int, line: str) -> str:
-    """把解帧得到的 `$T,...` 行排成对齐的人类可读一行。"""
+    """把解帧得到的 `$T,...` 行排成对齐的人类可读一行（含陀螺仪 gz）。"""
     p = line.split(",")
     if len(p) < 17:
         return line
-    gray, err, pl, pr, st, dl, dr = "".join(p[2:10]), p[10], p[11], p[12], p[13], p[14], p[15]
-    return "%6d  %-12s  %s  %5s  %4s/%-4s  %2s  %+4s %+4s" % (
-        idx, datetime.now().strftime("%H:%M:%S.%f")[:-3], gray, err, pl, pr, st, dl, dr)
+    gray, err, pl, pr, st, dl, dr, gz = (
+        "".join(p[2:10]), p[10], p[11], p[12], p[13], p[14], p[15], p[16])
+    return "%6d  %-12s  %s  %5s  %4s/%-4s  %2s  %+4s %+4s  %+4s" % (
+        idx, datetime.now().strftime("%H:%M:%S.%f")[:-3], gray, err, pl, pr, st, dl, dr, gz)
+
+
+def frame_fields(line: str):
+    """返回 (gray, err, pl, pr, st, dl, dr, gz)；解析不出来就返回 None。"""
+    p = line.split(",")
+    if len(p) < 17:
+        return None
+    return ("".join(p[2:10]), p[10], p[11], p[12], p[13], p[14], p[15], p[16])
 
 
 class BleWorker(threading.Thread):
@@ -98,7 +117,7 @@ class BleWorker(threading.Thread):
             for line in de.feed(bytes(data)):
                 self.n += 1
                 self.rec.feed(line)                     # CSV 永远收全部帧
-                self._log("F|" + fmt_frame(self.n, line))
+                self.q.put(("frame", line))             # 排版/过滤都在界面线程做
 
         # ---- 找设备 ----
         if self.use_addr:
@@ -203,6 +222,11 @@ class App(tk.Tk):
         self.q: "queue.Queue" = queue.Queue()
         self.worker: BleWorker | None = None
         self.markers: list[str] = []
+        self.n_disp = 0                     # 屏幕上显示到第几帧（与真实帧号解耦）
+        self.gyro_hist = collections.deque(maxlen=400)
+        self.gyro_sum = 0.0                 # 累计转角（度，按每帧 30ms 估算）
+        self.gyro_last_nonzero = time.time()
+        self._gyro_t = datetime.now()
         self._build()
         self.after(120, self._pump)
 
@@ -231,30 +255,47 @@ class App(tk.Tk):
         opt = ttk.Frame(self)
         opt.pack(fill="x", **pad)
         self.only_move = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opt, text="只看动帧（只是显示过滤，CSV 仍存全部）",
+        ttk.Checkbutton(opt, text="只看动帧（灰度有黑 或 轮子在动 或 电机有命令；只是显示过滤，CSV 仍存全部）",
                         variable=self.only_move).pack(side="left")
         self.autoscroll = tk.BooleanVar(value=True)
         ttk.Checkbutton(opt, text="自动滚动", variable=self.autoscroll).pack(side="left", padx=10)
         ttk.Button(opt, text="打点（记下当前时刻）", command=self.mark).pack(side="left", padx=10)
         ttk.Button(opt, text="清屏", command=lambda: self.txt.delete("1.0", "end")).pack(side="left")
 
-        head = ("序号  时刻          灰度        err   pwm L/R    st   dL   dR")
+        head = "序号  时刻          灰度        err   pwm L/R    st   dL   dR    gz"
+
+        # ---- 底部：状态栏 + 陀螺仪实时面板（先 pack 底部，再用 Text 占满剩余空间）----
+        self.status = tk.StringVar(value="就绪 —— 点「开始接收」；状态栏出现帧率后才算真的在收")
+        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(
+            fill="x", side="bottom")
+
+        gp = tk.Frame(self, bg="#141b22")
+        gp.pack(fill="x", side="bottom")
+        self.gyro_txt = tk.StringVar(value="陀螺仪 gz = ---   （陀螺仪每 4 拍读一次、±254°/s、2°/s 每格）")
+        tk.Label(gp, textvariable=self.gyro_txt, bg="#141b22", fg="#8ce99a",
+                 font=("Consolas", 10), anchor="w", padx=8, pady=4).pack(side="left")
+        self.canvas = tk.Canvas(gp, width=240, height=32, bg="#0d1216",
+                                highlightthickness=0, bd=0)
+        self.canvas.pack(side="right", padx=8, pady=4)
+        tk.Label(gp, text="正=逆时针/左\n负=顺时针/右", bg="#141b22", fg="#6b7c8c",
+                 font=("Consolas", 8), justify="left").pack(side="right")
+
+        # ---- 固定表头（独立控件，不随数据滚动消失）----
+        tk.Label(self, text=head, bg="#1b2530", fg="#9fb3c8", font=("Consolas", 10),
+                 anchor="w", padx=6, pady=3).pack(fill="x", padx=6, pady=(4, 0))
+
         box = ttk.Frame(self)
-        box.pack(fill="both", expand=True, padx=6)
+        box.pack(fill="both", expand=True, padx=6, pady=(0, 2))
         self.txt = tk.Text(box, wrap="none", bg="#101418", fg="#d0d8e0",
-                           insertbackground="#d0d8e0", font=("Consolas", 10))
+                           insertbackground="#d0d8e0", font=("Consolas", 10),
+                           bd=0, highlightthickness=0, padx=6, pady=2)
         self.txt.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(box, orient="vertical", command=self.txt.yview)
         sb.pack(side="right", fill="y")
         self.txt.configure(yscrollcommand=sb.set)
-        self.txt.insert("end", head + "\n" + "-" * 74 + "\n")
         for tag, col in (("ev", "#7fb0ff"), ("warn", "#ffb86b"), ("frame", "#d0d8e0"),
                          ("mark", "#8ce99a")):
             self.txt.tag_configure(tag, foreground=col)
-
-        self.status = tk.StringVar(value="就绪 —— 点「开始接收」；状态栏出现帧率后才算真的在收")
-        ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(
-            fill="x", side="bottom")
 
     # ---------- 动作 ----------
     def start(self):
@@ -299,16 +340,26 @@ class App(tk.Tk):
             while True:
                 kind, payload = self.q.get_nowait()
                 if kind == "log":
-                    if payload.startswith("F|"):
-                        row = payload[2:]
-                        if self.only_move.get():
-                            p = row.split()
-                            moving = not (p[2].strip("0") == "" and p[6] == "+0" and p[7] == "+0")
-                            if not moving:
-                                continue
-                        self._append(row, "frame")
-                    else:
-                        self._append(payload, "warn" if payload.startswith("[!]") else "ev")
+                    self._append(payload, "warn" if payload.startswith("[!]") else "ev")
+                elif kind == "frame":
+                    f = frame_fields(payload)
+                    if f is None:
+                        continue
+                    gray, err, pl, pr, st, dl, dr, gz = f
+                    if self.only_move.get():                       # 仅显示过滤；CSV 仍是全部帧
+                        idle = (gray.strip("0") == ""                    # 灰度全无
+                                and lstrip_num(dl) == 0 and lstrip_num(dr) == 0   # 轮子没动
+                                and lstrip_num(pl) == 0 and lstrip_num(pr) == 0)  # 也没给电机发命令
+                        if idle:
+                            continue
+                    self.n_disp += 1
+                    self._append(fmt_frame(self.n_disp, payload), "frame")
+                    # ---- 陀螺仪统计（gz 单位 = 2°/s 每格；每帧名义 30ms）----
+                    g = lstrip_num(gz)
+                    self.gyro_hist.append(g)
+                    self.gyro_sum += g * 2.0 * (1.0 / 33.3)
+                    if g:
+                        self.gyro_last_nonzero = time.time()
                 elif kind == "stat":
                     s = payload
                     self.status.set("状态：%s   累计 %d 帧   当前 %.1f 帧/s   已运行 %.0f s"
@@ -324,7 +375,41 @@ class App(tk.Tk):
                         self._append("[i] 打点已写入 %s" % p.name, "mark")
         except queue.Empty:
             pass
-        self.after(120, self._pump)
+        now = datetime.now()
+        if (now - self._gyro_t).total_seconds() >= 0.2:      # 陀螺仪面板每秒刷 5 次就够
+            self._gyro_t = now
+            self._refresh_gyro()
+        self.after(80, self._pump)
+
+    def _refresh_gyro(self):
+        if not self.gyro_hist:
+            return
+        g = self.gyro_hist[-1]
+        rate = g * 2.0                                        # gz8 的单位是 2°/s
+        if abs(rate) < 3.0:
+            how = "静止/直行"
+        elif rate > 0:
+            how = "左转（逆时针）"
+        else:
+            how = "右转（顺时针）"
+        stale = (time.time() - self.gyro_last_nonzero) > 15.0
+        hint = "   [!] 一直是 0：MPU6050 可能没接好/初始化失败" if stale else ""
+        self.gyro_txt.set("陀螺仪 gz = %+6.1f °/s   %-10s  累计转角 %+7.1f°   (每帧 30ms 估算)%s"
+                          % (rate, how, self.gyro_sum, hint))
+        # 趋势条：最近 ~120 帧（约 3.6 秒），±60°/s 满量程
+        c = self.canvas
+        c.delete("all")
+        w, h = 240, 32
+        c.create_line(0, h // 2, w, h // 2, fill="#33465a")
+        vals = list(self.gyro_hist)[-120:]
+        if not vals:
+            return
+        step = w / float(max(1, len(vals)))
+        for i, v in enumerate(vals):
+            vv = max(-60.0, min(60.0, v * 2.0))
+            x = i * step + step / 2.0
+            y = h / 2.0 - (vv / 60.0) * (h / 2.0 - 2.0)
+            c.create_line(x, h / 2.0, x, y, fill=("#4dabf7" if vv >= 0 else "#ffa94d"))
 
 
 def main() -> int:
