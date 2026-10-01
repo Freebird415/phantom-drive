@@ -831,6 +831,11 @@ class App(tk.Tk):
         self.spd_hist = collections.deque(maxlen=15)   # 最近 ~0.45s 车速，用于平滑
         self.gray_now = "00000000"
         self.err_now = "0.0"
+        # ---- 超声波（2026-10-01：$U/$E 也走蓝牙了 ⇒ 这里能实时看两颗探头）----
+        self.us_l = None                 # 左探头 mm（None=还没收到；负数=状态码 -1/-2…）
+        self.us_r = None
+        self.us_t = 0.0                  # 最近一次收到 $U 的时刻
+        self.us_n = 0
         self.gyro_last_nonzero = time.time()
         self._gyro_t = datetime.now()
         self._build()
@@ -913,6 +918,17 @@ class App(tk.Tk):
         self.l_gyro = tk.Label(tf_, textvariable=self.s_gyro, bg="#141b22", fg="#7f93a6",
                                font=("", 8), anchor="w")
         self.l_gyro.pack(anchor="w", padx=6, pady=(1, 4))
+
+        # 超声波卡片：直接看两颗探头“现在测到多少”
+        # （2026-10-01 新增：$U 以前只走串口，跑车时插不了线 ✗ ⇒ 现在走蓝牙 ✓）
+        uf = self._card_frame(dash, "超声波（左 / 右）")
+        self.v_us = tk.StringVar(value="— / —")
+        self.l_us = tk.Label(uf, textvariable=self.v_us, bg="#141b22", fg="#5a6b7c",
+                             font=("Consolas", 11, "bold"), anchor="w")
+        self.l_us.pack(anchor="w", padx=6)
+        self.s_us = tk.StringVar(value="等 $U 帧（USB 2Hz）")
+        tk.Label(uf, textvariable=self.s_us, bg="#141b22", fg="#7f93a6", font=("", 8),
+                 anchor="w").pack(anchor="w", padx=6, pady=(0, 4))
 
         # ---- 固定表头（独立控件，不随数据滚动消失）----
         tk.Label(self, text=head, bg="#1b2530", fg="#9fb3c8", font=("Consolas", 10),
@@ -1344,6 +1360,21 @@ class App(tk.Tk):
                     self.nag_ok = False
                     self.btn_save.configure(state="normal")
                 elif kind == "frame":
+                    # ---- 超声波（$U）与事件（$E）：2026-10-01 起也走蓝牙 ----
+                    if payload.startswith("$U,"):
+                        p = payload.split(",")
+                        if len(p) >= 4:
+                            try:
+                                self.us_l, self.us_r = int(p[2]), int(p[3])
+                            except ValueError:
+                                pass
+                            else:
+                                self.us_t = time.time()
+                                self.us_n += 1
+                        continue                         # 别打到日志区（2Hz 会很吵 ✗）
+                    if payload.startswith("$E,"):
+                        self._append(payload, "ev")      # 事件很少，值得占行（和串口一致 ✓）
+                        continue
                     f = frame_fields(payload)
                     if f is None:
                         continue
@@ -1449,6 +1480,22 @@ class App(tk.Tk):
             c.create_rectangle(x, 3, x + 10, 16,
                                fill=("#8ce99a" if on else "#242f3a"),
                                outline="#3a4a5a")
+
+        # ---------- 超声波（$U）----------
+        if self.us_l is None:
+            self.v_us.set("— / —")
+            self.l_us.configure(fg="#5a6b7c")
+            self.s_us.set("等 $U 帧（开 AUTO 或发 US）")
+        else:
+            def _us(v):
+                return "%d mm" % v if v > 0 else "%d 没测到" % v
+            self.v_us.set("%s / %s" % (_us(self.us_l), _us(self.us_r)))
+            near = min([v for v in (self.us_l, self.us_r) if v > 0] or [9999])
+            # 30cm = A02 的 AV_NEAR_CM；进了就变色，提醒“这就是该避障的距离”
+            self.l_us.configure(fg="#ff9f43" if near < 300 else "#d0d8e0")
+            age = time.time() - self.us_t
+            self.s_us.set("%d 条 · 最近 %.1fs 前%s" %
+                          (self.us_n, age, "  ← 进入 30cm!" if near < 300 else ""))
 
         # ---------- 陀螺仪健康提示（静默失效以前很隐蔽：至少它现在会喊一声）----------
         stale = (time.time() - self.gyro_last_nonzero) > 15.0

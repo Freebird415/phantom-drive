@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import io
+import re
 import struct
 import subprocess
 import sys
@@ -59,11 +60,51 @@ class DeFramer:
         self.n = 0
         self.raw = bytearray()
         self.aligned = False      # 先找同步头再开始切帧
+        self._txt = bytearray()   # 半截文本行的缓存（文本行可能被拆到两条通知里）
+
+    # ------------------------ 文本行抽取（$U / $E）------------------------
+    # 2026-10-01 新增：固件把超声波（$U）与事件（$E）也走 BLE 了（见 app_log.c 的
+    # Log_BleUsFrame / Log_BleEvent）—— 它们是**纯文本行**，混在 8 字节二进制帧流里。
+    #
+    #   为什么可以安全混：接收端靠 `AA 55 AA 55` 同步头对齐，而 ASCII 字符不可能
+    #   产生 0xAA ⇒ 造不出“假同步头” ✓
+    #   为什么要先抽出来：不抽的话这些字节会被当成帧读 ⇒ 校验失败 ⇒ 回退重对齐，
+    #   白丢几帧 ✗（虽然能自愈，但白浪费带宽）
+    #
+    #   只认 `$X,` / `$XY,`（X 是大写字母）：二进制帧里偶然出现 0x24（'$'）时不会
+    #   误判成行首 ✓；认了行首但还没等到 \r\n 就暂存，下次拼上（带长度上限防卡死）✓
+    def _split_text(self, data: bytes):
+        buf = self._txt + data
+        self._txt = bytearray()
+        out = bytearray()
+        texts = []
+        i, n = 0, len(buf)
+        while i < n:
+            k = buf.find(b"$", i)
+            if k < 0:
+                out += buf[i:]
+                break
+            out += buf[i:k]
+            if re.match(rb"\$[A-Z]{1,2},", bytes(buf[k:k + 4])):
+                j = buf.find(b"\r\n", k)
+                if j < 0:
+                    self._txt = buf[k:]
+                    if len(self._txt) > 256:
+                        self._txt = self._txt[-64:]      # 太长就丢掉（防卡死）
+                    break
+                texts.append(buf[k:j].decode("ascii", "replace"))
+                i = j + 2
+            else:
+                out += buf[k:k + 1]                      # 是数据里恰好出现的 '$'
+                i = k + 1
+        return bytes(out), texts
 
     def feed(self, data: bytes) -> list[str]:
         self.raw += data
+        # ① 先把文本行（$U/$E）抽出来 —— 它们直接交给上层（telemetry.parse_line 支持）
+        data, texts = self._split_text(data)
         self.buf += data
-        lines = []
+        lines = list(texts)
 
         # ⚠️ 顺序很关键：**对齐状态下绝不能再"先找同步头"** —— 那会把突发中间的帧
         #    全部当垃圾丢掉（本项目踩过两次）。正确顺序：
@@ -90,7 +131,11 @@ class DeFramer:
             #     快照 DUMP 路径也按 `(int)(int8_t)f->gz8` 打印。
             #     小写 b = signed char，写成大写 B 会把负值变成 200 多（本项目踩过一次）。
             bits, err10, pl, pr, st, dl, dr, gz = struct.unpack("<BbbbBbbb", f)
-            if st not in (0, 1, 4) or abs(err10) > 100:
+            # ⚠️ 状态白名单：2026-10-01 之前这里写的是 `st not in (0, 1, 4)` ✗
+            #    —— 而 v4/v5 已经引入了 **state=5（起步找线）/ 6（丢线找线）**，
+            #    那两种帧会被当成“错位”丢掉、触发重对齐 ⇒ 日志被静默污染 ✗
+            #    现在改成 0~6 全收（同步头本身的判别力已经够，不靠状态来兜）✓
+            if not (0 <= st <= 6) or abs(err10) > 100:
                 self.aligned = False             # 错位：丢 1 字节，回到找同步头
                 del self.buf[:1]
                 continue
