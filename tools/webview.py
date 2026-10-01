@@ -130,9 +130,21 @@ class Hub:
         import csv as _csv
         rows = []
         total = 0
+        ul = ur = None                                   # 该帧之前最近一次的 $U 读数 ✓
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 for r in _csv.DictReader(f):
+                    if r.get("kind") == "U":            # ⭐ 超声波行：记下最近值（不单独成行）✓
+                        try:
+                            l0 = int(float(r.get("l_mm") or -2))
+                            r0 = int(float(r.get("r_mm") or -2))
+                            if l0 not in (-6, -3):
+                                ul = l0
+                            if r0 not in (-6, -3):
+                                ur = r0
+                        except (TypeError, ValueError):
+                            pass
+                        continue
                     if r.get("kind") != "T":
                         continue
                     total += 1
@@ -147,6 +159,7 @@ class Hub:
                         "dl": int(float(r.get("dl") or 0)),
                         "dr": int(float(r.get("dr") or 0)),
                         "gz": int(float(r.get("gz") or 0)),
+                        "ul": ul, "ur": ur,
                     })
         except OSError:
             return 0
@@ -208,12 +221,19 @@ class Hub:
         }
 
     # ---- 一帧 $T ⇒ 前端要的 dict（on_line 与“监测回溯”共用，避免两处写重复 ✓）----
-    def _frame_dict(self, data, i):
+    #    ⭐ ul/ur = 【该帧时刻最近一次的 $U 读数】（$U 约 4Hz，比 $T 慢很多 ⇒ “保留上一个值”
+    #       才是正确语义 ✓）；表里就显示这两个 ✓（2026-10-02 用户要求：日志里也要有超声波 ✗）
+    def _frame_dict(self, data, i, ul=None, ur=None):
+        if ul is None:
+            ul = self.last_us[0]
+        if ur is None:
+            ur = self.last_us[1]
         return {
             "i": i,
             "ms": data["ms"], "gray": "%d%d%d%d%d%d%d%d" % tuple(data["s%d" % k] for k in range(8)),
             "err": data["err"], "pl": data["pwm_l"], "pr": data["pwm_r"], "st": data["state"],
             "dl": data.get("dl", 0), "dr": data.get("dr", 0), "gz": data.get("gz", 0),
+            "ul": ul, "ur": ur,
         }
 
     # ---- 收到一行遥测 ----
@@ -413,15 +433,24 @@ def start_record(hub: Hub, note: str = "", prefill: bool = False):
     if prefill and hub.recent:
         lines = list(hub.recent)
         k, batch = 0, []
+        ul = ur = None                                  # 回溯段也要按“当时”的超声值走 ✓
         for ln in lines:
             try:
                 hub.rec.feed(ln)
             except Exception:
                 continue
             pr = telemetry.parse_line(ln)
-            if pr and pr[0] == "T":
+            if not pr:
+                continue
+            if pr[0] == "U":
+                l0, r0 = pr[1]["l_mm"], pr[1]["r_mm"]
+                if l0 not in (-6, -3):
+                    ul = l0
+                if r0 not in (-6, -3):
+                    ur = r0
+            elif pr[0] == "T":
                 k += 1
-                batch.append(hub._frame_dict(pr[1], k))
+                batch.append(hub._frame_dict(pr[1], k, ul, ur))
         hub.n_rec = k
         hub.n_recv = k
         for i in range(0, len(batch), 200):

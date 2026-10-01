@@ -154,6 +154,8 @@
   .tblwrap{flex:1; min-height:0; display:flex; flex-direction:column}
   /* ⭐ 监测中：按钮变黄，一眼就知道“现在不写文件”✓ */
   button.monon{background:#3a2c12 !important; border-color:#8a6a24 !important; color:#ffc861 !important}
+  td.usoff{color:var(--fg3)}          /* 超声波：未测到/被拦下（-2/-6/-3 或没数据）—— 淡显 */
+  td.usbad{color:#ff7b72}             /* 超声波：-1 = 真故障 —— 标红 */
   .tbl{overflow:auto; flex:1; min-width:0; border:1px solid var(--edge); border-radius:8px;
        background:var(--bg2); overflow-anchor:none}
   /* ⭐ 勾了「跟随最新」⇒ **直接禁用滚动**（用户 2026-10-01 要求）：
@@ -369,13 +371,16 @@
               <col style="width:66px"><col style="width:74px"><col style="width:104px"><col style="width:56px">
               <col style="width:86px"><col style="width:42px"><col style="width:54px"><col style="width:54px">
               <col style="width:52px">
+              <col style="width:58px"><col style="width:58px">
             </colgroup>
             <thead><tr>
               <th>序号</th><th>时刻</th><th>灰度</th><th>err</th>
               <th>pwm L/R</th><th>st</th><th>dL</th><th>dR</th><th>gz</th>
+              <th title="左超声波，mm（显示该时刻最近一次 $U 读数）">左mm</th>
+              <th title="右超声波，mm（显示该时刻最近一次 $U 读数）">右mm</th>
             </tr></thead>
             <tbody id="tb">
-              <tr id="empty"><td colspan="9" style="padding:30px;text-align:center;color:var(--fg3)">
+              <tr id="empty"><td colspan="11" style="padding:30px;text-align:center;color:var(--fg3)">
                 点「开始接收」—— 数据会实时滚在这里；按 <kbd>空格</kbd> 打关键帧
               </td></tr>
             </tbody>
@@ -397,6 +402,11 @@
           <dt>st</dt><dd>状态码，见下</dd>
           <dt>dL/dR</dt><dd>本帧左右轮编码器增量（×倍率才是实际路程）</dd>
           <dt>gz</dt><dd>陀螺仪偏航率（2°/s 每格；正 = 左转）</dd>
+          <dt>左mm / 右mm</dt><dd><b>超声波</b>（$U 约 4Hz，比帧慢 ⇒ 每行显示<b>该时刻最近一次</b>读数）<br>
+            单位 mm，两侧探头<b>各外掰 35°</b>（管偏左/偏右 20°~50°，<b>正前 ±20° 是盲区</b>）<br>
+            负值含义：<b>-2 = 前方空旷</b>（没回波，不是故障 ✓）· <span style="color:#ff7b72">-1 = 真故障</span>（查线）·
+            -6/-3 = 驱动拦下重复触发（保留上一个值 ✓）<br>
+            <span class="muted">老日志（2026-10-01 晚之前）没有 $U 上行 ⇒ 这两列全是 “—”，不是丢数据 ✓</span></dd>
         </dl>
         <h4>state 状态码</h4>
         <dl>
@@ -551,11 +561,20 @@ function addFrame(f) {
 function makeRow(f, spd) {
   const tr = document.createElement("tr");
   if (markers.some(m => Math.abs(m.n - f.i) <= 1)) tr.className = "mark";
+  // ⭐ 超声波两列（2026-10-02 用户要求：日志里也要有 ✗）
+  //    该行显示“那一刻最近一次的 $U 读数”（$U 慢 ~4Hz ⇒ 保留上个值是正确语义 ✓）
+  //    负数不隐藏：-2=前方空旷 / -1=真故障 / -6·-3=驱动拦下 ⇒ 按颜色区分，算法要用原始值 ✓
+  const usCell = v => {
+    if (v === null || v === undefined) return '<td class="usoff">—</td>';
+    if (v > 0) return `<td>${v}</td>`;
+    return `<td class="${v === -1 ? "usbad" : "usoff"}">${v}</td>`;
+  };
   tr.innerHTML =
     `<td class="muted">${f.i}</td><td class="muted">${(f.ms / 1000).toFixed(2)}</td>` +
     `<td>${f.gray}</td><td>${num(f.err).toFixed(1)}</td>` +
     `<td>${f.pl}/${f.pr}</td><td class="st${f.st}">${f.st}</td>` +
-    `<td>${f.dl}</td><td>${f.dr}</td><td>${num(f.gz).toFixed(0)}</td>`;
+    `<td>${f.dl}</td><td>${f.dr}</td><td>${num(f.gz).toFixed(0)}</td>` +
+    usCell(f.ul) + usCell(f.ur);
   return tr;
 }
 
