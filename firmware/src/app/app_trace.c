@@ -27,11 +27,11 @@
 
 #include <stdio.h>
 
-#define TR_BASE_DEFAULT   35      /* 基准速度的兜底值。
+#define TR_BASE_DEFAULT   8      /* 基准速度的兜底值。
            ⚠️ 2026-10-01 实测：**15% 占空比时电机卡在死区附近挣扎** ——
               左右轮真实增量只有 2.5/3.8 counts/帧 ⇒ 仅 ~24mm/s（满速 1210mm/s 的 2%）。
               ⇒ base_speed 必须抬到 30 以上，差速才有"劲"可用。 */
-#define TR_REV_MIN        25      /* ⭐ 急弯时内侧轮若反转，至少给 25% ——
+#define TR_REV_MIN        10      /* ⭐ 急弯时内侧轮若反转，至少给 25% ——
               否则 −5%~−10% 也在死区里，等于没转（实测 9% 的帧就栽在这）*/
 #define TR_POS_CENTER     3.5f    /* 8 路灰度的中心：0..7 的中点是 3.5 */
 
@@ -65,7 +65,14 @@ static uint8_t  s_fin_need;       /* 全黑连续帧计数 */
 static int32_t  s_fin_mm;         /* 最后一段已走 mm */
 static int16_t  s_fin_l0, s_fin_r0;   /* 进入最后一段时的编码器起点 */
 static uint32_t s_fin_t0;         /* 未标定时退化成按时间 */
-static float    s_mm_per_cnt;     /* 每计数多少 mm（0 = 未标定）*/
+/* 每计数多少 mm。**出厂推定值 0.115**（2026-10-01 实测反推：
+   100% 占空比 = 10506 计数/s；按 JGB37-520 12V 330RPM + ⌀70mm 轮 ⇒ 理论满速 1210mm/s
+   ⇒ 1210 / 10506 = 0.115）。误差约 ±10%，对最后一段 80mm 来说 ±8mm —— 安全窗口 (15,215) 完全够。
+   ⚠️ 这个值**与车速无关**（物理常数），所以慢速档也适用 ✓
+   想要更准：`ENCRESET` → 推车走 1.000m → `DISTCAL 1.0`（会覆盖此值，但**断电会丢**，见下方说明）*/
+static float    s_mm_per_cnt = 0.115f;
+static uint32_t s_online_t0;      /* 上次重探灰度的时刻（离线时每 500ms 探一次）*/
+static uint8_t  s_offline_warn;   /* 离线警告计数（降噪：只在第 1 次和每 5 秒提醒）*/
 static float    s_err_prev;       /* 上一拍 err（算 D 项用）*/
 static uint32_t s_ms_prev;        /* 上一拍时刻（D 项要用真实 dt，不能用假设的 10ms）*/
 
@@ -129,6 +136,7 @@ static uint8_t tr_pack(const int s[8])
 
 void    Trace_SetDrive(uint8_t on) { s_drive = on ? 1u : 0u; }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
+uint8_t Trace_Online(void)         { return s_online; }
 void    Trace_DashEnable(uint8_t on) { s_dash = on ? 1u : 0u; }
 
 void Trace_Init(void)
@@ -140,7 +148,7 @@ void Trace_Init(void)
     printf("# TRACE 灰度=%s 驱动=%s\r\n",
            s_online ? "在线" : "不在线", s_drive ? "开" : "关(只算不发)");
     if (!s_online) {
-        printf("#       灰度不在线 -> 先发模拟数据（保住 P01 链路自检）；接上就自动走真实读数\r\n");
+        printf("#       灰度不在线 -> 先发模拟数据（保住 P01 链路自检）；每 500ms 自动重探，插好会自己切回真实读数 ✓\r\n");
     }
 }
 
@@ -166,7 +174,8 @@ void Trace_Dash(void)
     Bsp_FmtFix(tt, sizeof tt, (float)d.n * 0.01f, 1, 0);   /* n/100 秒 */
 
     Ol_FbClear();                             /* 整屏清空 + 重画 + 一次刷完（简单=不出错）*/
-    const char *mode = (s_state == 4u) ? "STOP" :
+    const char *mode = (!s_online)     ? "NOGR" :   /* ⭐ 灰度不在线：一眼看出（此时绝不驱动）*/
+                       (s_state == 4u) ? "STOP" :
                        (s_fin   != 0u) ? "FIN " :
                        (e < -0.8f)     ? "LEFT" :
                        (e >  0.8f)     ? "RGHT" : "GO  ";
@@ -278,7 +287,33 @@ void Trace_Step(uint8_t allow_drive)
         /* 位置误差 = 黑点的平均位置 − 中心（负 = 线偏左，要往左修）*/
         err = (float)sum / (float)cnt - TR_POS_CENTER;
     } else {
-        /* ---- 灰度没接时的模拟数据（接上后这段永远走不到，可以删）---- */
+        /* ---- 灰度不在线：只做链路自检，**绝不驱动电机** --------------------
+           [!][!] 2026-10-01 实踩（当天"车完全不听灰度、左右乱打舵"的真因）：
+             ① 原本 `s_online` 只在 Trace_Init() 探一次 ⇒ 开机瞬间 5V 未稳/模块未就绪，
+                就【永久】判为离线（开机提示却写着"接上就自动走真实读数"，是假的）；
+             ② 更危险的是：模拟数据【照样驱动电机】⇒ 车会去追一条【假线】
+                （三角波在左右匀速扫、err 到 ±5.0）⇒ 表现为"不听灰度、左右乱来"。
+           现在：离线时每 500ms 重探一次（插好会自动切回真实读数）；
+                并把 allow_drive 置 0 ⇒ **假数据永远不许开车**。*/
+        if ((ms - s_online_t0) >= 500u) {
+            s_online_t0 = ms;
+            if (Gr_Ping()) {
+                s_online = 1u;
+                s_offline_warn = 0u;
+                Tlm_SendEvent(92, "GRAY_ONLINE");
+                printf("# 灰度上线了 ok，切回真实读数（之前一直是模拟数据）\r\n");
+                return;                       /* 下一拍就走真实读数 */
+            }
+            if (s_offline_warn == 0u || (s_offline_warn % 10u) == 0u) {
+                Tlm_SendEvent(93, "GRAY_OFFLINE");
+                printf("# [!] 灰度不在线：只发模拟数据、**电机绝不驱动**（查 5V 供电 / 排线 / 安装高度）\r\n");
+            }
+            s_offline_warn = (uint8_t)(s_offline_warn + 1u);
+        }
+        allow_drive = 0u;                     /* 假数据永远不许开车 */
+        if (s_drive) { Mo_Stop(); }           /* 顺手把电机停掉 */
+
+        /* ---- 模拟数据（仅用于验证链路）---- */
         int32_t k   = (int32_t)((ms / 10u) % 200u);
         int32_t e10 = (k < 100) ? (k - 50) : (150 - k);
         int center  = 3 + (int)(e10 / 25);

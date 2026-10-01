@@ -18,7 +18,11 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { 14.00f, 0.00f, 0.30f, 35 };
+static Params s_p = { 6.00f, 0.00f, 0.20f, 8 };
+/* ↑ 2026-10-01【慢速档】：base_speed 8（约 45mm/s）、kp 6、kd 0.2
+   —— 弯急，先用能转的最低速跑，目标是把黑线稳定压在中间。
+   跑车时插不了串口 ⇒ 参数必须做进默认值（`SET` 的值断电就丢）。
+   慢速时 steer/base 的比例要跟着降，否则同样 kp 在低速下会"甩头"。*/
 /* ↑ 2026-10-01：kp=14、kd=0.3（加 D 项提前预判急弯）、base_speed=35
    （15 太低：实测电机卡在死区，只跑 24mm/s ⇒ 差速没劲）。
    2026-09-30：默认 kp 1.2→10、base_speed 30→15。
@@ -130,7 +134,8 @@ static void handle_command(char *line)
        ⚠️ 两个都默认关（只算不发）。开之前先把车架起来、轮子悬空！ */
     if (strncmp(line, "TRACE ", 6) == 0) {
         Trace_SetDrive(line[6] == '1');
-        printf("# TRACE drive=%u\r\n", (unsigned)Trace_GetDrive());
+        printf("# TRACE drive=%u  灰度=%s\r\n", (unsigned)Trace_GetDrive(),
+               Trace_Online() ? "在线" : "**不在线(模拟数据/不驱动)**");
         return;
     }
     if (strncmp(line, "AVOID ", 6) == 0) {
