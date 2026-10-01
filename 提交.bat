@@ -130,19 +130,21 @@ chcp 936 >nul
 echo.
 
 rem ---- 2. 提醒页：先确认本次已拉取 ----
-echo [2/4] 提交前提醒：请确认本次开工前已经运行过「拉取.bat」。
+echo [2/4] 提交前提醒：本次开工前运行过「拉取.bat」吗？
 echo.
-echo     · 已经拉取过（本地就是最新版本） →  输入 Y 继续
-echo     · 还没拉取 / 不确定              →  输入 N 退出，先双击「拉取.bat」
+echo     · 拉取过（本地就是最新版本）  →  输入 Y 继续
+echo     · 没拉取，但手里有没提交的活   →  也输入 Y（脚本会自动合并云端，你的活不会丢）
+echo     · 只想同步云端、手里没有活     →  输入 N 退出，去双击「拉取.bat」
 echo.
 :ask_pulled
 set "pulled="
-set /p pulled="请确认已完成拉取 (Y/N)："
+set /p pulled="继续提交？(Y/N)："
 if /i "%pulled%"=="Y" goto :pulled_ok
 if /i "%pulled%"=="N" (
     echo.
     echo   已取消提交，什么都没有改动。
-    echo   请先双击「拉取.bat」同步云端最新版本，然后再运行本脚本。
+    echo   手里有没提交的活 → 重新双击本脚本、输入 Y（会自动合并，不会丢）；
+    echo   只想同步云端     → 双击「拉取.bat」（它用于开工前，会覆盖本地未提交的改动）。
     echo.
     pause
     exit /b 0
