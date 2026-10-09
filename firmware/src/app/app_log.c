@@ -317,19 +317,6 @@ void Log_Reset(void)
     __enable_irq();
 }
 
-void Log_GetDash(LogDash *d)
-{
-    d->n = s_n;
-    d->gz = (int)s_gz / 131;                    /* °/s */
-    if (s_n == 0u) { d->bits = 0; d->err10 = 0; d->pwm_l = 0; d->pwm_r = 0;
-                     d->state = 0; d->dl = 0; d->dr = 0; return; }
-    const LogFrame *f = &s_buf[s_n - 1u];
-    d->bits  = f->bits;  d->err10 = f->err10;
-    d->pwm_l = f->pwm_l; d->pwm_r = f->pwm_r; d->state = f->state;
-    d->dl = f->dl; d->dr = f->dr;
-    if (d->gz == 0) { d->gz = (int)(int8_t)f->gz8 * 2; }   /* 兜底：用帧里的 */
-}
-
 void Log_Status(void)
 {
     printf("# SNAP rec=%u full=%u n=%u/%u (~%u.%us @100Hz)  RAM=%uB  Flash=%uB @0x%08lX\r\n",

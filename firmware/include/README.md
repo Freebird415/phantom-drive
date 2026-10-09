@@ -18,7 +18,7 @@ PlatformIO 的默认工程结构约定有一个 `include/` 目录，VS Code 生�
 ```
 firmware/src/
   bsp/    板级        bsp_board.h
-  drv/    器件驱动    drv_ultrasonic.h / drv_grayscale.h / drv_oled.h /
+  drv/    器件驱动    drv_ultrasonic.h / drv_grayscale.h /
                      drv_motor.h / drv_encoder.h / drv_hmi.h / drv_mpu6050.h
   app/    应用层      app_telemetry.h / app_trace.h / app_avoid.h
 ```

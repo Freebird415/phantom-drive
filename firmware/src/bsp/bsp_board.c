@@ -148,7 +148,7 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef *hi2c)
         gpio.Pull = GPIO_NOPULL;
         gpio.Speed = GPIO_SPEED_FREQ_HIGH;
         HAL_GPIO_Init(GPIOB, &gpio);
-    } else if (hi2c->Instance == I2C2) {          /* OLED/MPU6050：PB10=SCL / PB11=SDA，上拉 3.3V */
+    } else if (hi2c->Instance == I2C2) {          /* I2C2：PB10=SCL / PB11=SDA（MPU6050），上拉 3.3V */
         __HAL_RCC_GPIOB_CLK_ENABLE();
         __HAL_RCC_I2C2_CLK_ENABLE();
         gpio.Pin = GPIO_PIN_10 | GPIO_PIN_11;

@@ -6,7 +6,7 @@
     python tools/自检.py --port COM9     # 指定串口
     python tools/自检.py --skip-motor    # 只测不动车的部分
 
-自动测（不需要人动手）：遥测连通 / OLED / 八路灰度 / MPU6050 / 板载快照
+自动测（不需要人动手）：遥测连通 / 八路灰度 / MPU6050 / 板载快照
 需要人配合（脚本会提示）：
     按键     —— 提示后连按几次
     蜂鸣器   —— 响一下，你回答听到没有
@@ -135,27 +135,12 @@ def main() -> int:
 
     # ---------------- 2. 不需要人动手的项 ----------------
     print("\n[2] I2C 器件 / 快照（自动）")
-    o = car.one("OLSCAN")
-    rec("OLED 地址", "0x3C" in o, o)
     g = car.one("GR")
     rec("灰度", "ping=OK" in g, g[:110])
     m = car.one("MPU")
     rec("MPU6050", "0x68" in m, m)
     s = car.one("SNAP?")
     rec("快照", "RAM=" in s, s)
-
-    # ---------------- 2.5 OLED 目视（先暂停仪表盘，否则测试页 0.5s 就被盖掉） ----------------
-    print("\n[2.5] OLED 目视")
-    print("  已在屏上刷四行测试页，请看一眼屏幕：")
-    print("      第1行 ABC abc 0123 !@#$%&*()")
-    print("      第2行 中文显示测试")
-    print("      第3行 状态速度偏差左右")
-    print("      第4行 SilkRoad-Car v3 ok?")
-    car.send("DASH 0", 0.8)          # 暂停车载仪表盘
-    car.send("OLEDTXT", 2.0)
-    ans = ask("  这四行都清楚、无缺字吗？(y/n，回车=y) ").lower()
-    rec("OLED 显示", ans in ("", "y", "yes"), "人眼确认字库与排版")
-    car.send("DASH 1", 0.8)          # 恢复仪表盘
 
     # ---------------- 3. 按键 ----------------
     print("\n[3] 按键（PA12）")

@@ -1,6 +1,7 @@
 {
   "_readme": "全车电气连接网络表（机器可读）。生成自 生成接线图.py，勿手改；改数据后重跑脚本。",
-  "_version": "v3.0",
+  "_version": "v3.2",
+  "_as_built": "2026-10-10 按实物原理图（SCH_Schematic1_1-P1_1_2026-10-10.svg / DXF）与 PCB v2.1 焊盘网络逐针核对校正：去掉 OLED/亚博座/16P 排母/保险丝/反接保护/12V LED/去耦电容/VBAT 分压；补齐超声波分压（2k+1k+2k=3.0V）、蜂鸣器模块 U20、BLE 4P、灰度 1×4P、MPU 8P、TTL 针序",
   "_authority": [
     "docs/引脚分配表.md",
     "hardware/电气设计/电气连接规范.md"
@@ -17,7 +18,7 @@
       "PA13/PA14": "保留给 SWD，不得作 GPIO"
     },
     "jtag": "关闭 JTAG 保留 SWD（__HAL_AFIO_REMAP_SWJ_NOJTAG）→ 释放 PA15/PB3/PB4 作预留；NRST 已引到 SWD 排针，可用「连接下复位」恢复",
-    "supply": "单电源 12V 锂电 → DC005/2P焊盘 → T3A 慢断保险丝 → AO4407A P-MOS 反接保护 → 总开关 → 12V_BUS；MP1584 → 5V_BUS；3V3_LOGIC 由核心板 RT9193 输出（≤300mA）",
+    "supply": "单电源 12V 锂电 → DC005 座 → 总开关（SS-12D10，3 脚中间位）→ +12V；MP1584 → 5V_BUS；3V3_LOGIC 由核心板 RT9193 输出（≤300mA）。⚠️ as-built（2026-10-10 核对原理图/PCB）：板上【没有】保险丝、反接保护、12V 指示灯、去耦电容 —— 电池反接会直通到 TB6612 VM 与 MP1584 输入",
     "power_buses": [
       "12V_BUS",
       "5V_BUS",
@@ -26,16 +27,17 @@
     ],
     "power_rules": [
       "核心板 5V 脚与 3V3 脚只能接一个（本项目接 5V）；本板不得自行产生 3.3V",
-      "I2C1（灰度）上拉 5V；I2C2（OLED+MPU6050）上拉 3.3V；两条总线绝不并联"
+      "I2C1（灰度）上拉 5V（板上无上拉电阻 ⇒ 感为模块板载 5V 跳帽必须插）；I2C2（MPU6050）上拉 3.3V（模块自带）；两条总线绝不并联",
+      "⚠️ 板上无保险丝/反接保护（与决策 E-10 不符，待组长/王政淋确认是否外部补）"
     ]
   },
   "pinmap": {
-    "PA0": "VBAT_SENSE · ADC1_IN0（100k/10k 分压 + 100nF）",
+    "PA0": "VBAT_SENSE · ADC1_IN0（⚠️ as-built：板上未装 100k/10k 分压，只有 PA0 网络名）",
     "PA1": "US_R_TRIG · 右超声波触发",
     "PA2": "USART2_TX · BLE 模块 RXD",
     "PA3": "USART2_RX · BLE 模块 TXD",
     "PA4": "US_L_TRIG · 左超声波触发",
-    "PA5": "US_L_ECHO · 左超声波回波（分压）",
+    "PA5": "US_L_ECHO · 左超声波回波（as-built 分压：R3=2k 串 + R5=1k + R1=2k 下臂 ⇒ 3.0V）",
     "PA6": "ENC_R_C1 · TIM3_CH1 编码器",
     "PA7": "ENC_R_C2 · TIM3_CH2 编码器",
     "PA8": "PWM_L · TIM1_CH1（20kHz）",
@@ -51,17 +53,17 @@
     "PB2": "保留勿接 · BOOT1（拉高会从 SRAM 启动）",
     "PB3": "预留 · 需关 JTAG",
     "PB4": "预留 · 需关 JTAG",
-    "PB5": "US_R_ECHO · 右超声波回波（分压；非 JTAG 脚，核心功能不依赖关 JTAG）",
+    "PB5": "US_R_ECHO · 右超声波回波（R4=2k 串 + R6=1k + R2=2k 下臂 ⇒ 3.0V；非 JTAG 脚，核心功能不依赖关 JTAG）",
     "PB6": "ENC_L_C1 · TIM4_CH1 编码器",
     "PB7": "ENC_L_C2 · TIM4_CH2 编码器",
-    "PB8": "I2C1_SCL（重映射）· 灰度总线，上拉 5V",
-    "PB9": "I2C1_SDA（重映射）· 灰度总线，上拉 5V",
-    "PB10": "I2C2_SCL · OLED + MPU6050，上拉 3.3V",
-    "PB11": "I2C2_SDA · OLED + MPU6050，上拉 3.3V",
+    "PB8": "I2C1_SCL（重映射）· 灰度总线，上拉 5V（板上无上拉电阻 ⇒ 用感为模块板载 5V 跳帽）",
+    "PB9": "I2C1_SDA（重映射）· 灰度总线，上拉 5V（同上）",
+    "PB10": "I2C2_SCL · MPU6050，上拉 3.3V（2026-10-10 起 OLED 已放弃，本总线只剩 MPU）",
+    "PB11": "I2C2_SDA · MPU6050，上拉 3.3V（同上）",
     "PB12": "BIN1 · TB6612 右方向",
     "PB13": "BIN2 · TB6612 右方向",
     "PB14": "STBY · TB6612 使能（10k 上拉 + 跳线）",
-    "PB15": "BUZZER · 蜂鸣器（1k → NPN）",
+    "PB15": "BUZZER · 有源蜂鸣器【模块 U20】的 I/O（模块 VCC=5V_BUS；板上无三极管/基极电阻）",
     "PC13": "状态 LED（核心板板载）"
   },
   "timers": {
@@ -90,7 +92,7 @@
         {
           "role": "src",
           "endpoint": "12V",
-          "note": "经保险丝+反接保护"
+          "note": "板上无保险丝/反接保护"
         },
         {
           "role": "dst",
@@ -121,7 +123,7 @@
         },
         {
           "role": "dst",
-          "block": "OLED 显示屏（XH2.54-4P）",
+          "block": "MPU6050 六轴（板载 1×8P 排针）",
           "pin": "1",
           "signal": "VCC"
         },
@@ -132,19 +134,8 @@
         },
         {
           "role": "dst",
-          "block": "MPU6050 六轴（XH2.54-4P）",
+          "block": "BLE 模块（板载 1×4P）",
           "pin": "1",
-          "signal": "VCC"
-        },
-        {
-          "role": "src",
-          "endpoint": "3V3",
-          "note": "核心板 LDO"
-        },
-        {
-          "role": "dst",
-          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
-          "pin": "2",
           "signal": "VCC"
         },
         {
@@ -203,20 +194,9 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
+          "block": "灰度接口（板载 1×4P 排针/座）",
           "pin": "2",
           "signal": "+5V"
-        },
-        {
-          "role": "src",
-          "endpoint": "5V",
-          "note": "①电源"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "1",
-          "signal": "5V"
         },
         {
           "role": "src",
@@ -243,13 +223,24 @@
         {
           "role": "src",
           "endpoint": "5V",
-          "note": "TTL 电源脚可不接"
+          "note": "可不接（车自己供电）"
         },
         {
           "role": "dst",
           "block": "遥测串口 USB-TTL（XH2.54-4P）",
-          "pin": "1",
+          "pin": "4",
           "signal": "5V"
+        },
+        {
+          "role": "src",
+          "endpoint": "5V",
+          "note": "模块 VCC"
+        },
+        {
+          "role": "dst",
+          "block": "按键 / 蜂鸣器模块 U20 / 指示灯",
+          "pin": "1",
+          "signal": "U20 VCC"
         },
         {
           "role": "src",
@@ -338,8 +329,8 @@
         },
         {
           "role": "dst",
-          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
-          "pin": "5",
+          "block": "BLE 模块（板载 1×4P）",
+          "pin": "4",
           "signal": "RXD"
         }
       ]
@@ -354,8 +345,8 @@
         },
         {
           "role": "dst",
-          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
-          "pin": "4",
+          "block": "BLE 模块（板载 1×4P）",
+          "pin": "3",
           "signal": "TXD"
         }
       ]
@@ -366,13 +357,13 @@
         {
           "role": "src",
           "endpoint": "PB15",
-          "note": "1k 基极电阻"
+          "note": "模块 I/O（直连，无三极管）"
         },
         {
           "role": "dst",
-          "block": "按键 / 蜂鸣器 / 指示灯",
-          "pin": "—",
-          "signal": "NPN(S8050) → 有源蜂鸣器 → 5V，并联续流二极管"
+          "block": "按键 / 蜂鸣器模块 U20 / 指示灯",
+          "pin": "2",
+          "signal": "U20 I/O"
         }
       ]
     },
@@ -483,25 +474,14 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
+          "block": "灰度接口（板载 1×4P 排针/座）",
           "pin": "1",
           "signal": "GND"
         },
         {
           "role": "src",
-          "endpoint": "GND",
-          "note": "②接地"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "2",
-          "signal": "GND"
-        },
-        {
-          "role": "src",
-          "endpoint": "GND",
-          "note": ""
+          "endpoint": "下臂",
+          "note": "R5=1k + R1=2k = 3k → GND"
         },
         {
           "role": "dst",
@@ -511,8 +491,8 @@
         },
         {
           "role": "src",
-          "endpoint": "GND",
-          "note": ""
+          "endpoint": "下臂",
+          "note": "R6=1k + R2=2k = 3k → GND"
         },
         {
           "role": "dst",
@@ -527,9 +507,20 @@
         },
         {
           "role": "dst",
-          "block": "OLED 显示屏（XH2.54-4P）",
+          "block": "MPU6050 六轴（板载 1×8P 排针）",
           "pin": "2",
           "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": "接地 = 地址 0x68"
+        },
+        {
+          "role": "dst",
+          "block": "MPU6050 六轴（板载 1×8P 排针）",
+          "pin": "7",
+          "signal": "AD0"
         },
         {
           "role": "src",
@@ -538,19 +529,8 @@
         },
         {
           "role": "dst",
-          "block": "MPU6050 六轴（XH2.54-4P）",
+          "block": "BLE 模块（板载 1×4P）",
           "pin": "2",
-          "signal": "GND"
-        },
-        {
-          "role": "src",
-          "endpoint": "GND",
-          "note": ""
-        },
-        {
-          "role": "dst",
-          "block": "BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）",
-          "pin": "3",
           "signal": "GND"
         },
         {
@@ -561,7 +541,7 @@
         {
           "role": "dst",
           "block": "遥测串口 USB-TTL（XH2.54-4P）",
-          "pin": "4",
+          "pin": "3",
           "signal": "GND"
         },
         {
@@ -574,6 +554,17 @@
           "block": "SWD 调试排针（1×5）",
           "pin": "5",
           "signal": "GND"
+        },
+        {
+          "role": "src",
+          "endpoint": "GND",
+          "note": ""
+        },
+        {
+          "role": "dst",
+          "block": "按键 / 蜂鸣器模块 U20 / 指示灯",
+          "pin": "3",
+          "signal": "U20 GND"
         },
         {
           "role": "src",
@@ -600,67 +591,6 @@
       ]
     },
     {
-      "net": "GRAY_CLK",
-      "fanout": [
-        {
-          "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
-          "pin": "13",
-          "signal": "CLK"
-        }
-      ]
-    },
-    {
-      "net": "GRAY_DAT",
-      "fanout": [
-        {
-          "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
-          "pin": "14",
-          "signal": "DAT"
-        }
-      ]
-    },
-    {
-      "net": "GRAY_KEY",
-      "fanout": [
-        {
-          "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
-          "pin": "3",
-          "signal": "KEY"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "3",
-          "signal": "KEY"
-        }
-      ]
-    },
-    {
-      "net": "GRAY_RX",
-      "fanout": [
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "14",
-          "signal": "RX"
-        }
-      ]
-    },
-    {
-      "net": "GRAY_TX",
-      "fanout": [
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "13",
-          "signal": "TX"
-        }
-      ]
-    },
-    {
       "net": "I2C_AUX_SCL",
       "fanout": [
         {
@@ -670,18 +600,7 @@
         },
         {
           "role": "dst",
-          "block": "OLED 显示屏（XH2.54-4P）",
-          "pin": "3",
-          "signal": "SCL"
-        },
-        {
-          "role": "src",
-          "endpoint": "PB10",
-          "note": "I2C2_SCL"
-        },
-        {
-          "role": "dst",
-          "block": "MPU6050 六轴（XH2.54-4P）",
+          "block": "MPU6050 六轴（板载 1×8P 排针）",
           "pin": "3",
           "signal": "SCL"
         }
@@ -697,18 +616,7 @@
         },
         {
           "role": "dst",
-          "block": "OLED 显示屏（XH2.54-4P）",
-          "pin": "4",
-          "signal": "SDA"
-        },
-        {
-          "role": "src",
-          "endpoint": "PB11",
-          "note": "I2C2_SDA"
-        },
-        {
-          "role": "dst",
-          "block": "MPU6050 六轴（XH2.54-4P）",
+          "block": "MPU6050 六轴（板载 1×8P 排针）",
           "pin": "4",
           "signal": "SDA"
         }
@@ -724,19 +632,8 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
-          "pin": "15",
-          "signal": "SCL"
-        },
-        {
-          "role": "src",
-          "endpoint": "PB8",
-          "note": "I2C1_SCL 重映射"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "15",
+          "block": "灰度接口（板载 1×4P 排针/座）",
+          "pin": "3",
           "signal": "SCL"
         }
       ]
@@ -751,19 +648,8 @@
         },
         {
           "role": "dst",
-          "block": "感为八路灰度（16P 排母，★主方案）",
-          "pin": "16",
-          "signal": "SDA"
-        },
-        {
-          "role": "src",
-          "endpoint": "PB9",
-          "note": "I2C1_SDA 重映射"
-        },
-        {
-          "role": "dst",
-          "block": "亚博八路灰度 YB-MUX04（16P 排母，备用）",
-          "pin": "16",
+          "block": "灰度接口（板载 1×4P 排针/座）",
+          "pin": "4",
           "signal": "SDA"
         }
       ]
@@ -774,29 +660,13 @@
         {
           "role": "src",
           "endpoint": "PA12",
-          "note": "板上已有 1.5k 上拉"
+          "note": "核心板已有 1.5k 上拉"
         },
         {
           "role": "dst",
-          "block": "按键 / 蜂鸣器 / 指示灯",
+          "block": "按键 / 蜂鸣器模块 U20 / 指示灯",
           "pin": "—",
           "signal": "用户按键 → GND"
-        }
-      ]
-    },
-    {
-      "net": "LED_12V",
-      "fanout": [
-        {
-          "role": "src",
-          "endpoint": "12V",
-          "note": "1k 限流"
-        },
-        {
-          "role": "dst",
-          "block": "按键 / 蜂鸣器 / 指示灯",
-          "pin": "—",
-          "signal": "12V 电源指示灯 → GND"
         }
       ]
     },
@@ -1014,12 +884,12 @@
         {
           "role": "src",
           "endpoint": "PA10",
-          "note": "USART1_RX"
+          "note": "USART1_RX（电脑→车）"
         },
         {
           "role": "dst",
           "block": "遥测串口 USB-TTL（XH2.54-4P）",
-          "pin": "3",
+          "pin": "2",
           "signal": "TXD"
         }
       ]
@@ -1030,12 +900,12 @@
         {
           "role": "src",
           "endpoint": "PA9",
-          "note": "USART1_TX"
+          "note": "USART1_TX（车→电脑）"
         },
         {
           "role": "dst",
           "block": "遥测串口 USB-TTL（XH2.54-4P）",
-          "pin": "2",
+          "pin": "1",
           "signal": "RXD"
         }
       ]
@@ -1045,14 +915,14 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PA5",
-          "note": "2k/3.3k 分压"
+          "endpoint": "Echo",
+          "note": "→ R3=2k → 节点"
         },
         {
           "role": "dst",
           "block": "左超声波 HC-SR04（XH2.54-4P）",
           "pin": "3",
-          "signal": "Echo"
+          "signal": "Echo（节点 → PA5）"
         }
       ]
     },
@@ -1077,14 +947,14 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "PB5",
-          "note": "2k/3.3k 分压"
+          "endpoint": "Echo",
+          "note": "→ R4=2k → 节点"
         },
         {
           "role": "dst",
           "block": "右超声波 HC-SR04（XH2.54-4P）",
           "pin": "3",
-          "signal": "Echo"
+          "signal": "Echo（节点 → PB5）"
         }
       ]
     },
@@ -1109,14 +979,14 @@
       "fanout": [
         {
           "role": "src",
-          "endpoint": "12V",
-          "note": "经 100k"
+          "endpoint": "PA0",
+          "note": "仅网络名，未接分压"
         },
         {
           "role": "dst",
-          "block": "电池电压采样（分压）",
+          "block": "电池电压采样 —— ⚠️ 板上未装分压",
           "pin": "—",
-          "signal": "分压中点 → PA0 (ADC1_IN0)"
+          "signal": "（空）"
         }
       ]
     }

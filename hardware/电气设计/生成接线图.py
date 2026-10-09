@@ -25,7 +25,7 @@ OUT = HERE / "图纸"          # 图纸源码与产物都放这里
 OUT.mkdir(exist_ok=True)
 MIK = Path(r"C:\Users\35276\AppData\Local\Programs\MiKTeX\miktex\bin\x64")
 
-VERSION = "v3.0"
+VERSION = "v3.2"
 DATE = "2026-09-20"
 
 # ============================================================================
@@ -35,12 +35,12 @@ DATE = "2026-09-20"
 #  需关 JTAG：PA15 / PB3 / PB4（本设计关了 JTAG 换取 3 路预留）
 # ============================================================================
 PINMAP = {
-    "PA0": "VBAT_SENSE · ADC1_IN0（100k/10k 分压 + 100nF）",
+    "PA0": "VBAT_SENSE · ADC1_IN0（⚠️ as-built：板上未装 100k/10k 分压，只有 PA0 网络名）",
     "PA1": "US_R_TRIG · 右超声波触发",
     "PA2": "USART2_TX · BLE 模块 RXD",
     "PA3": "USART2_RX · BLE 模块 TXD",
     "PA4": "US_L_TRIG · 左超声波触发",
-    "PA5": "US_L_ECHO · 左超声波回波（分压）",
+    "PA5": "US_L_ECHO · 左超声波回波（as-built 分压：R3=2k 串 + R5=1k + R1=2k 下臂 ⇒ 3.0V）",
     "PA6": "ENC_R_C1 · TIM3_CH1 编码器",
     "PA7": "ENC_R_C2 · TIM3_CH2 编码器",
     "PA8": "PWM_L · TIM1_CH1（20kHz）",
@@ -56,17 +56,17 @@ PINMAP = {
     "PB2": "保留勿接 · BOOT1（拉高会从 SRAM 启动）",
     "PB3": "预留 · 需关 JTAG",
     "PB4": "预留 · 需关 JTAG",
-    "PB5": "US_R_ECHO · 右超声波回波（分压；非 JTAG 脚，核心功能不依赖关 JTAG）",
+    "PB5": "US_R_ECHO · 右超声波回波（R4=2k 串 + R6=1k + R2=2k 下臂 ⇒ 3.0V；非 JTAG 脚，核心功能不依赖关 JTAG）",
     "PB6": "ENC_L_C1 · TIM4_CH1 编码器",
     "PB7": "ENC_L_C2 · TIM4_CH2 编码器",
-    "PB8": "I2C1_SCL（重映射）· 灰度总线，上拉 5V",
-    "PB9": "I2C1_SDA（重映射）· 灰度总线，上拉 5V",
-    "PB10": "I2C2_SCL · OLED + MPU6050，上拉 3.3V",
-    "PB11": "I2C2_SDA · OLED + MPU6050，上拉 3.3V",
+    "PB8": "I2C1_SCL（重映射）· 灰度总线，上拉 5V（板上无上拉电阻 ⇒ 用感为模块板载 5V 跳帽）",
+    "PB9": "I2C1_SDA（重映射）· 灰度总线，上拉 5V（同上）",
+    "PB10": "I2C2_SCL · MPU6050，上拉 3.3V（2026-10-10 起 OLED 已放弃，本总线只剩 MPU）",
+    "PB11": "I2C2_SDA · MPU6050，上拉 3.3V（同上）",
     "PB12": "BIN1 · TB6612 右方向",
     "PB13": "BIN2 · TB6612 右方向",
     "PB14": "STBY · TB6612 使能（10k 上拉 + 跳线）",
-    "PB15": "BUZZER · 蜂鸣器（1k → NPN）",
+    "PB15": "BUZZER · 有源蜂鸣器【模块 U20】的 I/O（模块 VCC=5V_BUS；板上无三极管/基极电阻）",
     "PC13": "状态 LED（核心板板载）",
 }
 
@@ -122,64 +122,44 @@ FIGS = [
     ),
     dict(
         stem="03 感知接线",
-        title="感知接线：灰度（感为主/亚博备）+ 双超声波 + 两条 I2C",
-        fill="I2C1（灰度）上拉 5V；I2C2（OLED/MPU6050）上拉 3.3V —— 两条总线物理分开、绝不并联。",
+        title="感知接线：灰度（1×4P）+ 双超声波（带分压）+ 两条 I2C",
+        fill="I2C1（灰度）上拉 5V；I2C2（MPU6050）上拉 3.3V —— 两条总线物理分开、绝不并联。⚠️ 板上没有上拉电阻：灰度靠感为模块板载 5V 跳帽，MPU 靠模块自带 4.7k。",
         blocks=[
-            dict(title="感为八路灰度（16P 排母，★主方案）", sub="I2C 模式可读数字量+模拟量；5V 供电 33mA；板载 5V/10k 上拉跳帽【不插】，由 PCB 侧 10k 上拉到 5V",
+            dict(title="灰度接口（板载 1×4P 排针/座）", sub="as-built（2026-10-10 核对 PCB 焊盘网络）：板上只有一个 1×4P 灰度接口；感为模块用其中 4 根线：1=GND、2=+5V、15=SCL、16=SDA（其余脚在模块侧悬空）。⚠️ 板上**没有**上拉电阻 ⇒ 感为模块板载「SCL/SDA 上拉」5V 跳帽**必须插**（手册要求上拉源 ≥72%×5V=3.6V）",
                  rows=[
                      S("GND", "①电源负", "GND", "1", "GND"),
                      S("5V", "②电源正 33mA", "5V_BUS", "2", "+5V"),
-                     S("—", "按键：悬空", "GRAY_KEY", "3", "KEY"),
-                     S("—", "错误输出：悬空（可选接排针观察）", "NC", "4", "Err"),
-                     S("—", "并行数据：引排针、不接 MCU", "NC", "5-12", "1 ~ 8"),
-                     S("—", "串行备份：引排针、不接 MCU", "GRAY_CLK", "13", "CLK"),
-                     S("—", "串行备份：引排针、不接 MCU", "GRAY_DAT", "14", "DAT"),
-                     S("PB8", "I2C1_SCL 重映射", "I2C_GRAY_SCL", "15", "SCL"),
-                     S("PB9", "I2C1_SDA 重映射", "I2C_GRAY_SDA", "16", "SDA"),
+                     S("PB8", "I2C1_SCL 重映射", "I2C_GRAY_SCL", "3", "SCL"),
+                     S("PB9", "I2C1_SDA 重映射", "I2C_GRAY_SDA", "4", "SDA"),
                  ]),
-            dict(title="亚博八路灰度 YB-MUX04（16P 排母，备用）", sub="针 1/2 与感为相反（5V 在 1 脚）→ 必须独立座；同样支持 I2C，共用 I2C1 的 SCL/SDA",
-                 rows=[
-                     S("5V", "①电源", "5V_BUS", "1", "5V"),
-                     S("GND", "②接地", "GND", "2", "GND"),
-                     S("—", "按键：悬空", "GRAY_KEY", "3", "KEY"),
-                     S("—", "复位：悬空", "NC", "4", "RESET"),
-                     S("—", "并行 IO：引排针、不接 MCU", "NC", "5-12", "X1 ~ X8"),
-                     S("—", "串口：引排针、不接 MCU", "GRAY_TX", "13", "TX"),
-                     S("—", "串口：引排针、不接 MCU", "GRAY_RX", "14", "RX"),
-                     S("PB8", "I2C1_SCL 重映射", "I2C_GRAY_SCL", "15", "SCL"),
-                     S("PB9", "I2C1_SDA 重映射", "I2C_GRAY_SDA", "16", "SDA"),
-                 ]),
-            dict(title="左超声波 HC-SR04（XH2.54-4P）", sub="两个 Trig 必须独立、软件分时触发；Echo 5V→3.11V 分压",
+            dict(title="左超声波 HC-SR04（XH2.54-4P）", sub="两个 Trig 必须独立、软件分时触发。as-built 分压：Echo → **R3=2k（串）** → 节点 → **R5=1k + R1=2k（下臂共 3k）** → GND ⇒ 5V×3/5 = **3.0V**",
                  rows=[
                      S("5V", "", "5V_BUS", "1", "VCC"),
                      S("PA4", "", "US_L_TRIG", "2", "Trig"),
-                     S("PA5", "2k/3.3k 分压", "US_L_ECHO", "3", "Echo"),
-                     S("GND", "", "GND", "4", "GND"),
+                     S("Echo", "→ R3=2k → 节点", "US_L_ECHO", "3", "Echo（节点 → PA5）"),
+                     S("下臂", "R5=1k + R1=2k = 3k → GND", "GND", "4", "GND"),
                  ]),
-            dict(title="右超声波 HC-SR04（XH2.54-4P）", sub="Echo 用 PB5（非 JTAG 脚）—— 核心功能不依赖关 JTAG",
+            dict(title="右超声波 HC-SR04（XH2.54-4P）", sub="Echo 用 PB5（非 JTAG 脚）；分压同样：**R4=2k（串）+ R6=1k + R2=2k（下臂 3k）** ⇒ 3.0V",
                  rows=[
                      S("5V", "", "5V_BUS", "1", "VCC"),
                      S("PA1", "", "US_R_TRIG", "2", "Trig"),
-                     S("PB5", "2k/3.3k 分压", "US_R_ECHO", "3", "Echo"),
-                     S("GND", "", "GND", "4", "GND"),
+                     S("Echo", "→ R4=2k → 节点", "US_R_ECHO", "3", "Echo（节点 → PB5）"),
+                     S("下臂", "R6=1k + R2=2k = 3k → GND", "GND", "4", "GND"),
                  ]),
-            dict(title="OLED 显示屏（XH2.54-4P）", sub="走 I2C2（3.3V 上拉）；与感为的 5V 总线完全隔离",
+            dict(title="MPU6050 六轴（板载 1×8P 排针）", sub="诊断用；AD0 接地 → 7bit 地址 0x68。I2C2 现为 MPU 专用（OLED 2026-10-10 放弃）",
                  rows=[
                      S("3V3", "核心板 LDO", "3V3_LOGIC", "1", "VCC"),
                      S("GND", "", "GND", "2", "GND"),
                      S("PB10", "I2C2_SCL", "I2C_AUX_SCL", "3", "SCL"),
                      S("PB11", "I2C2_SDA", "I2C_AUX_SDA", "4", "SDA"),
+                     S("—", "悬空", "NC", "5", "XDA"),
+                     S("—", "悬空", "NC", "6", "XCL"),
+                     S("GND", "接地 = 地址 0x68", "GND", "7", "AD0"),
+                     S("—", "悬空", "NC", "8", "INT"),
                  ]),
-            dict(title="MPU6050 六轴（XH2.54-4P）", sub="备用姿态；AD0 接地 → 7bit 地址 0x68（与 OLED 同总线，地址不冲突）",
+            dict(title="电池电压采样 —— ⚠️ 板上未装分压", sub="as-built（2026-10-10）：原理图/PCB 上**没有** 100k/10k 与 100nF，只有 PA0 的网络名 `VBAT_SENSE` ⇒ 低压告警不可用（要做得飞线补分压）",
                  rows=[
-                     S("3V3", "核心板 LDO", "3V3_LOGIC", "1", "VCC"),
-                     S("GND", "", "GND", "2", "GND"),
-                     S("PB10", "I2C2_SCL", "I2C_AUX_SCL", "3", "SCL"),
-                     S("PB11", "I2C2_SDA", "I2C_AUX_SDA", "4", "SDA"),
-                 ]),
-            dict(title="电池电压采样（分压）", sub="100k / 10k + 100nF；满电 12.6V → 1.15V，只做低压告警",
-                 rows=[
-                     S("12V", "经 100k", "VBAT_SENSE", "—", "分压中点 → PA0 (ADC1_IN0)"),
+                     S("PA0", "仅网络名，未接分压", "VBAT_SENSE", "—", "（空）"),
                  ]),
         ],
     ),
@@ -188,21 +168,19 @@ FIGS = [
         title="调试与扩展：BLE + 遥测串口 + SWD + 按键/蜂鸣器 + 预留",
         fill="遥测留在 USART1（与已冻结的遥测协议、已跑通的 MVP1 一致）；烧录、复位、救板都不需要拆车。",
         blocks=[
-            dict(title="BLE 模块（实物 6P：GPIO1/VCC/GND/TXD/RXD/GPIO2）", sub="按实物做封装（不要按 HC-06 4P 底板猜）；VCC 取 3.3V（模块标称 2.2~5V）；天线端朝板边并留 keep-out",
+            dict(title="BLE 模块（板载 1×4P）", sub="实物模块是 6P 克隆（GPIO1/VCC/GND/TXD/RXD/GPIO2），本板只接 4 根：VCC/GND/TXD/RXD（GPIO1/GPIO2 悬空）。VCC 按 3V3 走线、实测可用（实物丝印 3.6~6V，口径见决策 E-05/E-29）；天线端朝板边并留 keep-out",
                  rows=[
-                     S("—", "GPIO1：悬空/预留", "NC", "1", "GPIO1"),
-                     S("3V3", "核心板 LDO", "3V3_LOGIC", "2", "VCC"),
-                     S("GND", "", "GND", "3", "GND"),
-                     S("PA3", "USART2_RX", "BLE_TXD", "4", "TXD"),
-                     S("PA2", "USART2_TX", "BLE_RXD", "5", "RXD"),
-                     S("—", "GPIO2：悬空/预留", "NC", "6", "GPIO2"),
+                     S("3V3", "核心板 LDO", "3V3_LOGIC", "1", "VCC"),
+                     S("GND", "", "GND", "2", "GND"),
+                     S("PA3", "USART2_RX", "BLE_TXD", "3", "TXD"),
+                     S("PA2", "USART2_TX", "BLE_RXD", "4", "RXD"),
                  ]),
-            dict(title="遥测串口 USB-TTL（XH2.54-4P）", sub="USART1 · 115200 8N1（后续可升 460800）· 帧格式见 docs/遥测协议.md（已冻结）",
+            dict(title="遥测串口 USB-TTL（XH2.54-4P）", sub="USART1 · 115200 8N1 · 帧格式见 docs/遥测协议.md（已冻结）。⚠️ 板端第 4 针就是 5V_BUS —— 用车电供电时**不要**接 TTL 的 5V（两路 5V 顶牛）",
                  rows=[
-                     S("5V", "TTL 电源脚可不接", "5V_BUS", "1", "5V"),
-                     S("PA9", "USART1_TX", "UART1_TX", "2", "RXD"),
-                     S("PA10", "USART1_RX", "UART1_RX", "3", "TXD"),
-                     S("GND", "", "GND", "4", "GND"),
+                     S("PA9", "USART1_TX（车→电脑）", "UART1_TX", "1", "RXD"),
+                     S("PA10", "USART1_RX（电脑→车）", "UART1_RX", "2", "TXD"),
+                     S("GND", "", "GND", "3", "GND"),
+                     S("5V", "可不接（车自己供电）", "5V_BUS", "4", "5V"),
                  ]),
             dict(title="SWD 调试排针（1×5）", sub="NRST 必须引出：关掉 JTAG 后靠它「连接下复位」救板（核心板自带 4pin SWD 没有 NRST）",
                  rows=[
@@ -212,11 +190,12 @@ FIGS = [
                      S("NRST", "核心板 R 脚", "NRST", "4", "NRST"),
                      S("GND", "", "GND", "5", "GND"),
                  ]),
-            dict(title="按键 / 蜂鸣器 / 指示灯", sub="核心板已自带复位键、BOOT0 跳线帽、电源灯 → PCB 上不重复",
+            dict(title="按键 / 蜂鸣器模块 U20 / 指示灯", sub="as-built（2026-10-10）：蜂鸣器是 **3 针模块 U20**（内置驱动，不需要三极管/基极电阻）；**板上没有 12V 指示灯**；核心板已自带复位键、BOOT0 跳线帽、PC13 灯",
                  rows=[
-                     S("PA12", "板上已有 1.5k 上拉", "KEY", "—", "用户按键 → GND"),
-                     S("PB15", "1k 基极电阻", "BUZZER", "—", "NPN(S8050) → 有源蜂鸣器 → 5V，并联续流二极管"),
-                     S("12V", "1k 限流", "LED_12V", "—", "12V 电源指示灯 → GND"),
+                     S("PA12", "核心板已有 1.5k 上拉", "KEY", "—", "用户按键 → GND"),
+                     S("5V", "模块 VCC", "5V_BUS", "1", "U20 VCC"),
+                     S("PB15", "模块 I/O（直连，无三极管）", "BUZZER", "2", "U20 I/O"),
+                     S("GND", "", "GND", "3", "U20 GND"),
                  ]),
             dict(title="预留排针（2×4）", sub="3 路空闲 IO（PA15/PB3/PB4 需关 JTAG）+ 电源；示波器 / 逻辑分析仪 / 后续扩展",
                  rows=[
@@ -227,7 +206,7 @@ FIGS = [
                      S("5V", "", "5V_BUS", "5", "5V"),
                      S("GND", "", "GND", "6", "GND"),
                      S("GND", "", "GND", "7", "GND"),
-                     S("12V", "经保险丝+反接保护", "12V_BUS", "8", "12V"),
+                     S("12V", "板上无保险丝/反接保护", "12V_BUS", "8", "12V"),
                  ]),
         ],
     ),
@@ -331,6 +310,7 @@ def emit_json() -> str:
     doc = {
         "_readme": "全车电气连接网络表（机器可读）。生成自 生成接线图.py，勿手改；改数据后重跑脚本。",
         "_version": VERSION,
+        "_as_built": "2026-10-10 按实物原理图（SCH_Schematic1_1-P1_1_2026-10-10.svg / DXF）与 PCB v2.1 焊盘网络逐针核对校正：去掉 OLED/亚博座/16P 排母/保险丝/反接保护/12V LED/去耦电容/VBAT 分压；补齐超声波分压（2k+1k+2k=3.0V）、蜂鸣器模块 U20、BLE 4P、灰度 1×4P、MPU 8P、TTL 针序",
         "_authority": ["docs/引脚分配表.md", "hardware/电气设计/电气连接规范.md"],
         "board": {
             "mcu": "STM32F103C8T6 最小系统板（Blue Pill 克隆；micro-USB；板载 8MHz + 32.768kHz 晶振；板载 RT9193 LDO）",
@@ -342,12 +322,13 @@ def emit_json() -> str:
                 "PA13/PA14": "保留给 SWD，不得作 GPIO",
             },
             "jtag": "关闭 JTAG 保留 SWD（__HAL_AFIO_REMAP_SWJ_NOJTAG）→ 释放 PA15/PB3/PB4 作预留；NRST 已引到 SWD 排针，可用「连接下复位」恢复",
-            "supply": ("单电源 12V 锂电 → DC005/2P焊盘 → T3A 慢断保险丝 → AO4407A P-MOS 反接保护 → 总开关 → 12V_BUS；"
-                       "MP1584 → 5V_BUS；3V3_LOGIC 由核心板 RT9193 输出（≤300mA）"),
+            "supply": ("单电源 12V 锂电 → DC005 座 → 总开关（SS-12D10，3 脚中间位）→ +12V；MP1584 → 5V_BUS；3V3_LOGIC 由核心板 RT9193 输出（≤300mA）。"
+                       "⚠️ as-built（2026-10-10 核对原理图/PCB）：板上【没有】保险丝、反接保护、12V 指示灯、去耦电容 —— 电池反接会直通到 TB6612 VM 与 MP1584 输入"),
             "power_buses": ["12V_BUS", "5V_BUS", "3V3_LOGIC", "GND"],
             "power_rules": [
                 "核心板 5V 脚与 3V3 脚只能接一个（本项目接 5V）；本板不得自行产生 3.3V",
-                "I2C1（灰度）上拉 5V；I2C2（OLED+MPU6050）上拉 3.3V；两条总线绝不并联",
+                "I2C1（灰度）上拉 5V（板上无上拉电阻 ⇒ 感为模块板载 5V 跳帽必须插）；I2C2（MPU6050）上拉 3.3V（模块自带）；两条总线绝不并联",
+                "⚠️ 板上无保险丝/反接保护（与决策 E-10 不符，待组长/王政淋确认是否外部补）",
             ],
         },
         "pinmap": PINMAP,

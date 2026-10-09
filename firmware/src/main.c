@@ -13,7 +13,6 @@
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
-#include "drv/drv_oled.h"
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
@@ -33,7 +32,6 @@ int main(void)
     Bsp_LedInit();
     Us_Init();
     Gr_Init();
-    Ol_Init();
     Mo_Init();
     En_Init();
     Hmi_Init();
@@ -136,9 +134,6 @@ int main(void)
             Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);  /* 超声波也走蓝牙（4Hz）*/
             last_us = HAL_GetTick();
         }
-
-        /* ---- 车载 OLED 仪表盘（内部分页刷新，每 2 拍刷 1 页，不卡控制）---- */
-        Trace_Dash();
 
         /* ---- $T 遥测 + 循迹算法：100 Hz ----
                仲裁：避障接管时传 0 → 循迹只算不发，电机让给避障（否则 100Hz 会把它冲掉）*/

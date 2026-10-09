@@ -157,23 +157,24 @@ def main():
     allmd = md + spec + (HERE / "电气连接规范.md").read_text(encoding="utf-8")
     pin_all = " ".join(PINMAP.values())
 
-    # —— 已确认决策（李沛阳 ×王政淋，2026-09-20）
-    chk("感为" in allmd and "主方案" in allmd, "灰度：感为主方案、亚博备用（用户决策）")
-    for m in ["OLED", "MPU6050", "BLE"]:
+    # —— 已确认决策（李沛阳 ×王政淋，2026-09-20；2026-10-10 组长拍板放弃 OLED + 按实物原理图校正）
+    chk("感为" in allmd and "1×4P" in allmd, "灰度接口：板载 1×4P（as-built）")
+    for m in ["MPU6050", "BLE"]:
         chk(m in allmd, f"{m} 已接入（用户要求全装）")
     chk("JST-XH" in allmd, "电机用现成 JST-XH 插头（用户决策）")
     chk("闭环" in allmd, "编码器用于闭环测速（用户决策）")
-    chk("T3A" in allmd or "3A" in allmd, "保险丝按 3A 慢断预留（用户决策）")
+    chk(("无保险丝" in allmd) or ("没有保险丝" in allmd), "已写明 as-built 板上无保险丝（2026-10-10 校正）")
     chk("单板" in allmd, "PCB 为单板（用户决策）")
-    for m in ["蜂鸣器", "按键", "12V"]:
-        chk(m in allmd, f"{m} 相关电路已保留（用户决策：全要）")
+    for m in ["蜂鸣器", "按键"]:
+        chk(m in allmd, f"{m} 相关电路已保留（用户决策）")
+    chk("U20" in allmd, "蜂鸣器为 3 针模块 U20（as-built）")
+    chk(("VBAT_SENSE" in allmd) and ("未装" in allmd), "已标注 as-built 未装项（VBAT 分压等）")
 
     # —— 厂商手册硬约束
     chk("5V" in PINMAP["PB8"] and "5V" in PINMAP["PB9"],
         "感为总线按 5V 上拉（手册：外置上拉源不得低于 72%×5V=3.6V）")
-    chk("不插" in allmd or "不装" in allmd or "不插上" in allmd,
-        "已写明感为板载 5V 上拉跳帽不插（避免与 PCB 上拉并联）")
-    chk("3.1" in allmd or "2k/3.3k" in allmd, "超声波 Echo 有分压（HC-SR04 Echo 为 5V 输出）")
+    chk("必须插" in allmd, "已写明感为板载 5V 上拉跳帽必须插（板上无上拉电阻，as-built）")
+    chk("3.0V" in allmd and "2k" in allmd, "超声波 Echo 分压 = 2k + 1k+2k ⇒ 3.0V（as-built）")
     trig = [x for x in rows if x[4] == "Trig"]
     chk(len({x[2] for x in trig}) == 2, f"两个超声波 Trig 各自独立网络（{sorted({x[2] for x in trig})}）")
 

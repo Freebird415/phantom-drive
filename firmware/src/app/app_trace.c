@@ -16,7 +16,6 @@
 #include "drv/drv_grayscale.h"
 #include "drv/drv_motor.h"
 #include "app/app_log.h"       /* 板载 RAM 快照（跑车时插不了串口，靠它事后读）*/
-#include "drv/drv_oled.h"      /* 车载仪表盘 */
 #include "drv/drv_hmi.h"       /* 精停蜂鸣两声 */
 #include "drv/drv_encoder.h"    /* 终点精停靠编码器计距 */
 #include "bsp/bsp_board.h"      /* Bsp_FmtFix：不用浮点 printf（省 ~6KB）*/
@@ -35,12 +34,6 @@
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
-/* 车载仪表盘开关（命令 `DASH 0|1`）。
-   ⚠️ 2026-10-01 起【默认关】：OLED 是"锦上添花"的显示件，不该影响主体控制 ——
-   它一旦没插好/不亮，I2C2 写帧缓冲会【超时】（每帧最多几百毫秒），
-   足以把 10ms 控制循环拖慢 ⇒ D 项算出虚假的巨大变化率 ⇒ 车左右猛打舵 ✗
-   ⇒ 要用仪表盘时显式发 `DASH 1`（那时才产生 I2C 流量）。*/
-static uint8_t s_dash  = 0u;
 static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常巡线，4 = 精停 */
 
 /* ==================== 终点精停（T 头 / 终止线）====================
@@ -288,7 +281,6 @@ void Trace_StartRun(void)
 }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
 uint8_t Trace_Online(void)         { return s_online; }
-void    Trace_DashEnable(uint8_t on) { s_dash = on ? 1u : 0u; }
 
 void Trace_Init(void)
 {
@@ -301,54 +293,6 @@ void Trace_Init(void)
     if (!s_online) {
         printf("#       灰度不在线 -> 先发模拟数据（保住 P01 链路自检）；每 500ms 自动重探，插好会自己切回真实读数 ✓\r\n");
     }
-}
-
-/* ==================== 车载仪表盘（OLED）====================
-   分页刷新：每调用一次只刷 1 页(128B ≈ 3ms) ⇒ 8 次一轮 ≈ 80~160ms 全屏更新
-   ⇒ **不卡控制循环**（100kHz 下刷满屏要 100ms，直接卡死 ✗ 所以必须分页）
-   调用位置：main 主循环末尾（每 10ms 一次）*/
-void Trace_Dash(void)
-{
-    static uint32_t t_next;
-    LogDash d;
-    char l[24];
-
-    if (s_drive || !s_dash) { return; }       /* 跑车时不刷（护控制循环）；DASH 0 时也不刷 */
-    if ((int32_t)(HAL_GetTick() - t_next) < 0) { return; }
-    t_next = HAL_GetTick() + 500u;            /* 2Hz */
-
-    Log_GetDash(&d);
-    float e = (float)d.err10 * 0.1f;
-    char kp[16], ee[16], tt[16];
-    Bsp_FmtFix(kp, sizeof kp, Tlm_Params()->kp, 2, 0);
-    Bsp_FmtFix(ee, sizeof ee, e, 1, 1);          /* 带正负号，等价 %+.1f */
-    Bsp_FmtFix(tt, sizeof tt, (float)d.n * 0.01f, 1, 0);   /* n/100 秒 */
-
-    Ol_FbClear();                             /* 整屏清空 + 重画 + 一次刷完（简单=不出错）*/
-    const char *mode = (!s_online)     ? "NOGR" :   /* ⭐ 灰度不在线：一眼看出（此时绝不驱动）*/
-                       (s_state == 4u) ? "STOP" :
-                       (s_fin   != 0u) ? "FIN " :
-                       (e < -0.8f)     ? "LEFT" :
-                       (e >  0.8f)     ? "RGHT" : "GO  ";
-    snprintf(l, sizeof l, "%-4s k%s v%d", mode, kp, Tlm_Params()->base_speed);
-    Ol_Text(0, 0, l);
-
-    snprintf(l, sizeof l, "e%s L%3d R%3d", ee, d.pwm_l, d.pwm_r);
-    Ol_Text(0, 1, l);
-
-    snprintf(l, sizeof l, "gray %d", (int)d.bits);
-    Ol_Text(0, 2, l);
-
-    snprintf(l, sizeof l, "dL%+d dR%+d", d.dl, d.dr);
-    Ol_Text(0, 3, l);
-
-    snprintf(l, sizeof l, "gy%+d F%ld/%d", d.gz, (long)s_fin_mm, s_fin_dist);
-    Ol_Text(0, 4, l);
-
-    snprintf(l, sizeof l, "N%u %ss", (unsigned)d.n, tt);
-    Ol_Text(0, 5, l);
-
-    Ol_FbFlush();
 }
 
 void Trace_Step(uint8_t allow_drive)
@@ -638,7 +582,7 @@ else                             { s_wide_hold = 0u; }
 
     /* ---- P + D（⚠️ D 项必须用【真实 dt】+ 钳位）----
        用假设的固定 10ms 会在“主循环被拖慢”时算出虚假的巨大变化率 ⇒ 车猛打舵 ✗
-       （2026-10-01 实踩：OLED 400k 超时把节奏打乱 ⇒ D 项爆表 ⇒ 左右猛一下猛一下）*/
+       （2026-10-01 实踩：I2C2 器件超时把节奏打乱 ⇒ D 项爆表 ⇒ 左右猛一下猛一下）*/
     uint32_t dt_ms = ms - s_ms_prev;
     s_ms_prev = ms;
     if (!s_d_valid || dt_ms == 0u || dt_ms > 50u) {

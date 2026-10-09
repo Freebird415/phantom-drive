@@ -6,7 +6,6 @@
 #include "bsp/bsp_board.h"
 #include "drv/drv_ultrasonic.h"
 #include "drv/drv_grayscale.h"
-#include "drv/drv_oled.h"
 #include "drv/drv_motor.h"
 #include "drv/drv_encoder.h"
 #include "drv/drv_hmi.h"
@@ -193,18 +192,52 @@ static void handle_command(char *line)
     if (strncmp(line, "GYROD ", 6) == 0)  { Trace_SetGyroD(line[6] == '1'); Tlm_SendEvent(97, line[6]=='1' ? "GYROD ON" : "GYROD OFF"); return; }      /* v3：陀螺仪阻尼（未验证）*/
     if (strncmp(line, "SEEK ", 5) == 0)   { Trace_SetSeek(line[5] == '1'); Tlm_SendEvent(95, line[5]=='1' ? "SEEK ON" : "SEEK OFF"); return; }   /* 调试：起步找线 */
 
+    /* ---- 超声波：原始电平 / 强制 Trig（台面查线用）---- */
+    if (strcmp(line, "USPIN") == 0) {
+        printf("# USPIN L:trig=%u echo=%u | R:trig=%u echo=%u  (mm L=%d R=%d)\r\n",
+               (unsigned)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4), (unsigned)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_5),
+               (unsigned)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1), (unsigned)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5),
+               (int)Us_Get(US_L)->mm, (int)Us_Get(US_R)->mm);
+        return;
+    }
+    if (strncmp(line, "USTRIG", 6) == 0) {
+        int a[2] = { -1, -1 };
+        int got = parse_int(line + 6, a);
+        if (got < 2 || (a[0] != 0 && a[0] != 1) || (a[1] != 0 && a[1] != 1)) {
+            printf("# 用法：USTRIG <0=左 1=右> <0|1>（先 AUTO 0；=1 把 Trig 常高，用万用表量模块端 Trig 是不是 3.3V）\r\n");
+            return;
+        }
+        UsDev *d = Us_Get((UsId)a[0]);
+        HAL_GPIO_WritePin(d->trig_port, d->trig_pin, a[1] ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        printf("# USTRIG %s(%s) = %d\r\n", d->name, a[0] ? "右" : "左", a[1]);
+        return;
+    }
+
     /* ---- 超声波 ---- */
-    if (line[0] == 'U' && line[1] == 'S') {
+    if (line[0] == 'U' && line[1] == 'S' && (line[2] == 0 || line[2] == ' ')) {
         int id = -1, n = 1;
-        if (line[2] == ' ') { (void)parse_int(line + 3, &id); }
+        if (line[2] == ' ') {
+            int a[2] = { -1, 1 };          /* parse_int 会连续写 out[0]、out[1]… ⇒ 必须给足数组 */
+            int got = parse_int(line + 3, a);
+            if (got >= 1) { id = a[0]; }
+            if (got >= 2) { n  = a[1]; }
+        }
         if (id < -1 || id > 1) { id = -1; }
         if (n < 1) { n = 1; }
         if (n > 30) { n = 30; }
         printf("# US id=%d n=%d auto=%u\r\n", id, n, (unsigned)s_us_auto);
         HAL_Delay(80);
         for (int k = 0; k < n; k++) {
-            if (id != 1) { Us_Read(US_L); Us_PrintDebug(US_L); }
-            if (id != 0) { HAL_Delay(70); Us_Read(US_R); Us_PrintDebug(US_R); }
+            int32_t v;
+            if (id != 1) {
+                v = Us_Read(US_L); Us_PrintDebug(US_L);
+                if (v < 0 && v != US_TOO_SOON) { HAL_Delay(320); }   /* 失败后留一段恢复期，否则后面全是 -6 */
+            }
+            if (id != 0) {
+                HAL_Delay(70);
+                v = Us_Read(US_R); Us_PrintDebug(US_R);
+                if (v < 0 && v != US_TOO_SOON) { HAL_Delay(320); }
+            }
             if (k + 1 < n) { HAL_Delay(100); }
         }
         Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
@@ -337,29 +370,6 @@ static void handle_command(char *line)
     /* ---- 灰度 (I2C1) ---- */
     if (strcmp(line, "GR") == 0) { Gr_PrintDebug(); return; }
     if (strcmp(line, "GRSCAN") == 0) { Gr_Scan(); return; }
-
-    /* ---- OLED (I2C2) ---- */
-    if (strcmp(line, "OLSCAN") == 0) {
-        Ol_Present();
-        return;
-    }
-    if (strcmp(line, "OLED") == 0) {
-        Trace_DashEnable(0u);      /* 先停仪表盘，否则测试图案 0.5s 就被盖掉 */
-        Ol_PrintDebug();
-        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
-        return;
-    }
-    if (strcmp(line, "OLEDTXT") == 0) {
-        Trace_DashEnable(0u);
-        Ol_TextTest();
-        printf("# 仪表盘已暂停，看完发 DASH 1 恢复\r\n");
-        return;
-    }
-    if (strncmp(line, "DASH ", 5) == 0) {
-        Trace_DashEnable(line[5] == '1');
-        printf("# DASH=%c\r\n", line[5] == '1' ? '1' : '0');
-        return;
-    }
 
     /* ---- 在线调参 ---- */
     if (strncmp(line, "SET ", 4) == 0) {

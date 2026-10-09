@@ -1728,7 +1728,7 @@ class App(tk.Tk):
         fresh = (self.us_l is not None) and (time.time() - self.us_t < 2.0)
         for sx, mm in ((-1, self.us_l), (1, self.us_r)):
             ax = cx + sx * px(US_BASE_MM) / 2.0               # 该探头位置
-            axis = 90.0 - sx * US_HALF_DEG                    # 屏幕角：左 90+35、右 90−35
+            axis = 90.0 - sx * US_HALF_DEG                    # 屏幕角：左 90+15、右 90−15（2026-10-10 实物角度）
             a0, a1 = axis - US_BEAM_DEG, axis + US_BEAM_DEG
             pts = [ax, py]
             for a in (a0, a1):

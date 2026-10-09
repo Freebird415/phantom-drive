@@ -1,9 +1,8 @@
 /* =============================================================================
- *  drv_mpu6050.c —— MPU6050 六轴（I2C2，与 OLED 共用总线）
+ *  drv_mpu6050.c —— MPU6050 六轴（I2C2 · **本总线现在只有 MPU6050**）
  *  说明与注意见 drv_mpu6050.h
  * ========================================================================== */
 #include "drv_mpu6050.h"
-#include "drv/drv_oled.h"       /* 借用它的 I2C2 句柄（同一条总线只能有一个句柄） */
 #include "bsp/bsp_board.h"
 
 #include <stdio.h>
@@ -22,15 +21,33 @@
 #define ACC_LSB_PER_G     16384.0f     /* ±2g */
 #define GYRO_LSB_PER_DPS  131.0f       /* ±250°/s */
 
+/* I2C2 句柄由本驱动独占（2026-10-10 起 OLED 已放弃，总线上只剩 MPU6050）。
+   GPIO/时钟的板级初始化仍在 bsp_board.c 的 HAL_I2C_MspInit 里。*/
+static I2C_HandleTypeDef s_i2c2;
+
+static void mpu_bus_init(void)
+{
+    s_i2c2.Instance             = I2C2;
+    s_i2c2.Init.ClockSpeed      = 100000;   /* 100k 够用（14B 读 ≈1.5ms）；MPU 支持 400k，需要时再提 */
+    s_i2c2.Init.DutyCycle       = I2C_DUTYCYCLE_2;
+    s_i2c2.Init.OwnAddress1     = 0;
+    s_i2c2.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT;
+    s_i2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    s_i2c2.Init.OwnAddress2     = 0;
+    s_i2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    s_i2c2.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
+    (void)HAL_I2C_Init(&s_i2c2);
+}
+
 static uint8_t mpu_rd(uint8_t reg, uint8_t *buf, uint16_t n)
 {
-    return (HAL_I2C_Mem_Read(Ol_Bus(), MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
+    return (HAL_I2C_Mem_Read(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
                              buf, n, MPU_TO) == HAL_OK) ? 1u : 0u;
 }
 
 static uint8_t mpu_wr(uint8_t reg, uint8_t val)
 {
-    return (HAL_I2C_Mem_Write(Ol_Bus(), MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
+    return (HAL_I2C_Mem_Write(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
                               &val, 1, MPU_TO) == HAL_OK) ? 1u : 0u;
 }
 
@@ -55,6 +72,7 @@ uint16_t Mpu_ReinitCount(void) { return s_reinit_cnt; }
 
 void Mpu_Init(void)
 {
+    mpu_bus_init();                 /* 总线先起来（谁也不能再替它初始化 I2C2）*/
     if (Mpu_WhoAmI() == 0) {
         printf("# MPU6050 未应答（查 VCC=3V3 / SCL->PB10 / SDA->PB11 / AD0->GND / 共地）\r\n");
         return;

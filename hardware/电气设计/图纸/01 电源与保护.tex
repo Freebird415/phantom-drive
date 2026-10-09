@@ -1,19 +1,18 @@
 % =============================================================================
-%  全车电气连接原理图 · 图 01 —— 电源与保护（元件级）    v3.0 / 2026-09-20
-%  依据：docs/引脚分配表.md v3.0 + 电气连接规范.md §电源
-%  决策记录：
-%    · 顺序：DC 座 → T3A 慢断保险丝 → P-MOS 反接保护 → 总开关 → 12V_BUS
-%      （保险丝在最前，可保护保险丝之后的一切；T3A 是预留值，实车测流后定值）
-%    · 反接保护用 AO4407A（SO-8，30V P-MOS）；不用 IRF9540（体积/导通电阻），不优先 AO3401（Vgs 余量）
-%    · 3.3V 不由本板产生 —— 核心板自带 RT9193，本板只送 5V（方案 A，2026-09-20 定）
-%      ⇒ 本板禁止再把自产 3.3V 灌进核心板 3V3 脚（两颗 LDO 会对打）
-%    · 编码器 VCC 实测走 +5V（王政淋 2026-09-20 实测旧板）
-%  版面约定（改图请守住）：12V 干线 y=0；5V 母线 y=-3.6；3.3V 母线 y=-7.2；
-%    接地干线 y=-10.5 唯一接地符号；12V 支路下拉全落在 x ≤ 18.4，故与下方母线不相交。
-%  编译：见同目录 生成接线图.py（在 ASCII 临时目录里跑 xelatex，避开中文路径）
+%  全车电气连接原理图 · 图 01 —— 电源（as-built，按实物原理图校正）
+%  v3.2 / 2026-10-10
+%  依据：硬件/电气设计/SCH_Schematic1_1-P1_1_2026-10-10.svg（嘉立创EDA）
+%        + hardware/PCB/ProPrj_工创小车pcb_v2.1_2026-10-03.epro2（焊盘网络）
+%  as-built 事实（2026-10-10 逐针核对）：
+%    · 电池（DC005 座，网名 VCC）→ 总开关 SS-12D10 → +12V
+%    · 板上【没有】保险丝、反接保护、12V 指示灯、去耦电容、VBAT 分压
+%    · +12V → MP1584 模块（IN+/IN−/OUT+/OUT−）；OUT+ = 5V_BUS、OUT− = GND
+%    · 3.3V 不由本板产生 —— 核心板自带 RT9193，本板只送 5V（两颗 LDO 不能对打）
+%    · 网名对照：文档 12V_RAW = EDA VCC；文档 12V_BUS = EDA +12V
+%  编译：见同目录 生成接线图.py --build（在 ASCII 临时目录里跑 xelatex）
 % =============================================================================
 \documentclass{article}
-\usepackage[paperwidth=55cm,paperheight=25cm,margin=0pt]{geometry}
+\usepackage[paperwidth=42cm,paperheight=17cm,margin=0pt]{geometry}
 \usepackage{fontspec}\setmainfont{Latin Modern Roman}
 \usepackage{xeCJK}\setCJKmainfont{Microsoft YaHei}
 \usepackage{amsmath, amssymb, siunitx}
@@ -29,105 +28,53 @@
 
 % ---------------------------------------------------------------- 12V 干线（y = 0）
 \draw (0,0) node[ocirc]{} node[above=3pt, align=center, font=\footnotesize]
-      {DC005 座\\+ 2P 焊盘\\{\scriptsize 12V\_RAW}}
-      to[short] (1.4,0)
-      to[fuse, l={$F_1$\ T3A}] (3.4,0)
-      to[short] (4.2,0);
-
-% Q1 反接保护（画成模块块，器件已定 AO4407A）
-\draw[rounded corners=2pt] (4.2,-0.74) rectangle (6.6,0.74);
-\node[align=center, font=\small] at (5.4,0) {$Q_1$\ AO4407A\\P-MOS 反接保护};
-\draw (6.6,0) to[switch, l={$SW_1$\ 总开关}] (9.0,0);
-\draw (9.0,0) -- (21.4,0);
-\fill (9.6,0) circle (1.3pt);                     % 节点：12V_BUS
-
-% Q1 栅极 100k 下拉
-\draw (5.4,-0.74) -- (5.4,-1.6) to[R, l=$100\,\mathrm{k}\Omega$] (5.4,-4.8) -- (5.4,-10.5);
-
-% ---- C1 470µF / C2 0.1µF
-\draw (10.6,0) -- (10.6,-2.2) to[C] (10.6,-4.2) -- (10.6,-10.5);
-\node[anchor=west, font=\footnotesize] at (10.85,-2.75) {$C_1$};
-\node[anchor=west, font=\footnotesize] at (10.85,-3.30) {470\,\si{\micro\farad}/25V};
-\fill (10.6,0) circle (1.3pt);
-
-\draw (12.6,0) -- (12.6,-2.7) to[C] (12.6,-4.0) -- (12.6,-10.5);
-\node[anchor=west, font=\footnotesize] at (12.85,-2.95) {$C_2$};
-\node[anchor=west, font=\footnotesize] at (12.85,-3.50) {0.1\,\si{\micro\farad}};
-\fill (12.6,0) circle (1.3pt);
-
-% ---- 电池电压采样分压 → PA0
-\draw (14.6,0) -- (14.6,-1.6) to[R] (14.6,-3.0);
-\node[anchor=east, font=\footnotesize] at (14.35,-1.95) {$R_4$ 100\,k$\Omega$};
-\fill (14.6,0) circle (1.3pt);
-\fill (14.6,-3.0) circle (1.3pt);
-\draw (14.6,-3.0) to[R] (14.6,-5.4) -- (14.6,-10.5);
-\node[anchor=east, font=\footnotesize] at (14.35,-3.85) {$R_5$ 10\,k$\Omega$};
-\draw (14.6,-3.0) -- (16.4,-3.0) to[C] (16.4,-5.4) -- (16.4,-10.5);
-\node[anchor=west, font=\footnotesize] at (16.65,-3.55) {$C_7$ 100\,nF};
-\draw (16.4,-3.0) -- (17.6,-3.0) node[ocirc]{};
-\node[anchor=south east, font=\footnotesize, align=right] at (17.6,-3.10) {$\to$ PA0\\ADC1\_IN0};
-
-% ---- LED_12V 电源指示灯（不占 IO）
-\draw (18.4,0) -- (18.4,-1.6) to[R] (18.4,-2.8) to[leD] (18.4,-4.0) -- (18.4,-10.5);
-\node[anchor=west, font=\footnotesize] at (18.65,-1.85) {$R_2$ 1\,k$\Omega$};
-\node[anchor=west, font=\footnotesize] at (18.65,-3.05) {$LED_1$ 12V};
-\fill (18.4,0) circle (1.3pt);
+      {DC005 座\\{\scriptsize 电池 VCC（=12V\_RAW）}}
+      to[short] (2.0,0)
+      to[switch, l={$SW_1$\ 总开关\\{\scriptsize SS-12D10}}] (5.6,0)
+      to[short] (24.0,0);
+\fill (6.8,0) circle (1.3pt);
+\node[above=2pt, font=\footnotesize] at (8.6,0) {+12V（=12V\_BUS）};
 
 % ---- VM 输出（大电流，不经过排针）
-\draw (19.5,0) -- (19.5,1.6) node[ocirc]{} node[right=2pt, font=\footnotesize]{$\to$ TB6612 \textbf{VM}（大电流，不经过排针）};
-\fill (19.5,0) circle (1.3pt);
+\draw (6.2,0) -- (6.2,1.6) node[ocirc]{} node[right=2pt, font=\footnotesize]{$\to$ TB6612 \textbf{VM}（大电流，不经过排针）};
+\fill (6.2,0) circle (1.3pt);
 
-% ---------------------------------------------------------------- 12V → 5V（MP1584 模块，竖放）
-\draw[rounded corners=2pt] (20.4,-0.7) rectangle (22.4,-3.0);
-\node[rotate=90, font=\small] at (21.4,-1.85) {MP1584};
-\node[anchor=west, font=\footnotesize, align=left] at (22.65,-1.3) {$U_1$ 降压模块\\12V$\to$5V\\{\scriptsize IN+/IN−/OUT+/OUT−}};
-\draw (21.4,0) -- (21.4,-0.7);
-\draw (21.4,-3.0) -- (21.4,-3.6);
+% ---------------------------------------------------------------- MP1584 降压模块（12V→5V）
+\draw[rounded corners=2pt] (10.0,-1.0) rectangle (12.0,-3.0);
+\node[align=center, font=\small] at (11.0,-2.0) {MP1584\\{\scriptsize 12V$\to$5V}};
+\node[anchor=west, font=\footnotesize, align=left] at (12.25,-1.5) {$U_1$ 降压模块\\{\scriptsize IN+\,/\,IN$-$\,/\,OUT+\,/\,OUT$-$}};
+\draw (10.4,0) -- (10.4,-1.0);                    % IN+ ← +12V
+\draw (9.7,-1.8) -- (9.0,-1.8) -- (9.0,-10.5);    % IN−/OUT− → GND
+\fill (10.4,0) circle (1.3pt);
 
 % ---------------------------------------------------------------- 5V 母线（y = -3.6）
-\draw (21.4,-3.6) -- (28.0,-3.6);
-\fill (21.4,-3.6) circle (1.3pt);
-
-\draw (22.6,-3.6) -- (22.6,-5.0) to[C] (22.6,-6.2) -- (22.6,-10.5);
-\node[anchor=west, font=\footnotesize] at (22.85,-5.25) {$C_3$ 10\,\si{\micro\farad}};
-\fill (22.6,-3.6) circle (1.3pt);
-\draw (24.6,-3.6) -- (24.6,-5.0) to[C] (24.6,-6.2) -- (24.6,-10.5);
-\node[anchor=west, font=\footnotesize] at (24.85,-5.25) {$C_4$ 0.1\,\si{\micro\farad}};
-\fill (24.6,-3.6) circle (1.3pt);
-
-% ---- 5V 输出（感为手册要求供电稳定，就近再加 100µF + 0.1µF）
-\draw (26.4,-3.6) -- (26.4,-2.1) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{5V\_BUS：感为灰度 33mA /\\超声波 ×2 / 编码器 ×2};
-\fill (26.4,-3.6) circle (1.3pt);
+\draw (10.4,-3.0) -- (10.4,-3.6) -- (23.0,-3.6);  % OUT+ → 5V_BUS
+\fill (10.4,-3.6) circle (1.3pt);
+\draw (13.5,-3.6) -- (13.5,-2.1) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{5V\_BUS：感为灰度 33mA /\\超声波 ×2 / 编码器 ×2 / 蜂鸣器 U20 / 核心板 5V};
+\fill (13.5,-3.6) circle (1.3pt);
 
 % ---------------------------------------------------------------- 3.3V 由核心板 LDO 供给（本板不产生）
-\draw[rounded corners=2pt] (26.8,-4.4) rectangle (29.0,-6.4);
-\node[align=center, font=\footnotesize] at (27.9,-5.4) {核心板\\RT9193};
-\draw (28.0,-3.6) -- (28.0,-4.4);
-\draw (28.0,-6.4) -- (28.0,-7.2);
+\draw[rounded corners=2pt] (17.6,-4.4) rectangle (19.8,-6.4);
+\node[align=center, font=\footnotesize] at (18.7,-5.4) {核心板\\RT9193};
+\draw (18.0,-3.6) -- (18.0,-4.4);                 % 5V 脚
+\draw (18.0,-6.4) -- (18.0,-7.2);                 % 3V3 脚
+\fill (18.0,-3.6) circle (1.3pt);
+\draw (17.6,-5.4) -- (16.6,-5.4) -- (16.6,-10.5); % 核心板 GND
 
 % ---------------------------------------------------------------- 3.3V 母线（y = -7.2）
-\draw (28.0,-7.2) -- (34.6,-7.2);
-
-\draw (29.2,-7.2) -- (29.2,-8.4) to[C] (29.2,-9.2) -- (29.2,-10.5);
-\node[anchor=west, font=\footnotesize] at (29.45,-8.55) {$C_5$ 10\,\si{\micro\farad}};
-\fill (29.2,-7.2) circle (1.3pt);
-\draw (31.2,-7.2) -- (31.2,-8.4) to[C] (31.2,-9.2) -- (31.2,-10.5);
-\node[anchor=west, font=\footnotesize] at (31.45,-8.55) {$C_6$ 0.1\,\si{\micro\farad}};
-\fill (31.2,-7.2) circle (1.3pt);
-
-\draw (33.0,-7.2) -- (33.0,-5.7) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{3V3\_LOGIC：OLED / MPU6050 /\\TB6612 VCC / I2C2 上拉 / 预留（$\leq$300\,mA）};
+\draw (18.0,-7.2) -- (23.6,-7.2);
+\draw (21.5,-7.2) -- (21.5,-5.7) node[ocirc]{} node[right=2pt, font=\footnotesize, align=left]{3V3\_LOGIC：MPU6050 / BLE /\\TB6612 VCC / 预留（$\leq$300\,mA）};
+\fill (21.5,-7.2) circle (1.3pt);
 
 % ---------------------------------------------------------------- 接地干线（y = -10.5）
-\draw (0,-10.5) node[ground]{} -- (31.2,-10.5);
+\draw (0,-10.5) node[ground]{} -- (23.6,-10.5);
 \draw (0,0) -- (0,-10.5);                          % DC 座的地
 
 % ---------------------------------------------------------------- 页脚
-\node[anchor=west, font=\footnotesize, align=left] at (0,-11.9)
-  {\textbf{硬性要求}：全车只有一块 12V 锂电池（规则硬要求，多电源每轮 $-10\%$）；保险丝 + 反接保护 + 总开关为必需项；\\
-   \textbf{核心板 5V 脚与 3V3 脚只能接一个}（本项目接 5V）；本板\textbf{不得}自行产生 3.3V；3V3 负载须核算（RT9193 $\leq$300\,mA）；$F_1$ 为 \textbf{T3A 预留值}，成车实测电流后定值；\\
-   12V\_BUS / 5V\_BUS / 3V3\_LOGIC / GND 各留 $\geq$1 个测试点（TP）；12V\_BUS 对地可预留 TVS + 470$\sim$1000\,\si{\micro\farad} 电解 + 100\,nF；\\
-   MP1584 首次上电必须\textbf{先脱机}把 OUT 调到 5.0\,V 再接后级；开关节点/电感附近不走 I2C、编码器、蓝牙天线等敏感信号；\\
-   每个模块接口的 5V 支路串 0$\Omega$ 跳线或自恢复保险丝，挑故障时可单独断开。};
-
+\node[anchor=west, font=\footnotesize, align=left] at (0,-12.0)
+  {\textbf{as-built（2026-10-10 按实物原理图/PCB 焊盘网络校正）}：板上\textbf{没有}保险丝、\textbf{没有}反接保护、\textbf{没有} 12V 指示灯、\textbf{没有}去耦电容、\textbf{没有} VBAT 分压（PA0 只留了网络名）；\\
+   $\Rightarrow$ \textbf{电池反接会直通 TB6612 VM 与 MP1584 输入}：上电前必须先核极性；若要保护，只能在\textbf{电池线外部}加（板上无位置）。\\
+   \textbf{核心板 5V 脚与 3V3 脚只能接一个}（本项目接 5V）；本板\textbf{不得}自行产生 3.3V；MP1584 首次上电必须\textbf{先脱机}把 OUT 调到 5.0\,V 再接后级。\\
+   全车只有一块 12V 锂电池（规则硬要求，多电源每轮 $-10\%$）；开关节点/电感附近不走 I2C、编码器、蓝牙天线等敏感信号。};
 \end{circuitikz}
 \end{document}
