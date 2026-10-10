@@ -29,6 +29,9 @@
 #define AV_TURN_MAX_MS     1400u
 #define AV_SEEK_MAX_MS     2500u
 #define AV_TOTAL_MAX_MS   10000u
+#define AV_CENTER_HOLD_MS   120u
+#define AV_LINE_LOST_MS     150u
+#define AV_LINE_LOST_MM      25.0f /* 名义尺度，只允许短暂续搜 */
 #define AV_MM_PER_CNT        0.115f
 #define AV_DEG_TO_RAD        0.01745329252f
 
@@ -48,6 +51,9 @@ static uint32_t s_progress_ms, s_line_ready_ms, s_center_ms;
 static int16_t s_enc_l, s_enc_r;
 static float s_trip_mm, s_phase_mm, s_x_mm, s_y_mm, s_yaw_deg, s_clear_x;
 static float s_gz_bias, s_yaw_rate, s_steer_out;
+static float s_line_err, s_line_d;
+static uint32_t s_line_ms;
+static float s_line_trip;
 static uint32_t s_dt_ms;
 static int s_pwm_l, s_pwm_r;
 
@@ -68,6 +74,8 @@ static void av_reset(void)
         s_good_us_ms[i] = 0u;
     }
     s_line_ready_ms = s_center_ms = 0u;
+    s_line_ms = 0u;
+    s_line_err = s_line_d = s_line_trip = 0.0f;
 }
 
 void Avoid_SetDrive(uint8_t on)
@@ -89,6 +97,7 @@ void Avoid_Init(void)
     av_reset();
     printf("# AVOID start=%dmm stop=%dmm; line-ready=%ums\r\n",
            AV_START_MM, AV_STOP_MM, (unsigned)AV_LINE_READY_MS);
+    Tlm_SendEvent(97, "AVOID build a02-v2-local-line-trial");
 }
 
 static void av_phase(AvPhase next, uint32_t ms, const char *note)
@@ -102,7 +111,13 @@ static void av_phase(AvPhase next, uint32_t ms, const char *note)
 
 static void av_fault(const char *note)
 {
-    if (s_phase != AV_FAULT) { Tlm_SendEvent(88, note); }
+    if (s_phase != AV_FAULT) {
+        Tlm_SendEvent(88, note);
+        char pose[64];
+        snprintf(pose, sizeof pose, "AVOID pose p=%d x=%ld y=%ld yaw=%ld",
+                 (int)s_phase, (long)s_x_mm, (long)s_y_mm, (long)s_yaw_deg);
+        Tlm_SendEvent(88, pose); /* 名义 mm / 度，便于区分距离与回线故障。 */
+    }
     s_phase = AV_FAULT;
     Mo_Brake();
     s_pwm_l = s_pwm_r = 0;
@@ -216,6 +231,68 @@ static void av_release(uint32_t ms, uint8_t bits, int count)
     av_reset(); /* 保持最后前进命令，由下一拍 A01 接手。 */
 }
 
+/* 回线跟随局部黑线，不以“接管时朝向=0”约束弯道上的新切线。
+ * 允许 4 路连续黑（斜交线），拒绝宽黑/离散黑点作为交接依据。 */
+static uint8_t av_line(uint8_t bits, int count)
+{
+    if (count < 1 || count > 4) { return 0u; }
+    while (!(bits & 1u)) { bits >>= 1; }
+    return (bits & (uint8_t)(bits + 1u)) == 0u;
+}
+
+static void av_recover(uint32_t ms, uint8_t bits, int count)
+{
+    if ((s_trip_mm - s_phase_mm) > 180.0f || (ms - s_phase_ms) > 1600u) {
+        av_fault("AVOID centering failed");
+        return;
+    }
+    if (av_line(bits, count)) {
+        int sum = 0;
+        for (int i = 0; i < 8; i++) { if (bits & (1u << i)) { sum += i; } }
+        float err = (float)sum / (float)count - 3.5f;
+        uint32_t dt = ms - s_line_ms;
+        if (s_line_ms && dt && dt <= 50u) {
+            float rate = (err - s_line_err) * 1000.0f / (float)dt;
+            s_line_d += 0.2f * (rate - s_line_d);
+        } else if (!s_line_ms || dt > 50u) {
+            s_line_d = 0.0f; s_center_ms = 0u;
+        } /* 调度追赶产生同毫秒样本时，不累加也不打断稳定窗口。 */
+        s_line_err = err;
+        s_line_ms = ms;
+        s_line_trip = s_trip_mm;
+        float d = 0.05f * s_line_d;
+        if (d > 4.0f) { d = 4.0f; }
+        if (d < -4.0f) { d = -4.0f; }
+        /* 边缘见线先慢下来捕获；绝对偏航项会把弯道的新方向拉回旧直线。 */
+        int base = fabsf(err) > 1.0f ? 8 : 12;
+        av_drive(base, 8.0f * err + d - 0.04f * s_yaw_rate);
+        if (fabsf(err) <= 1.0f && (bits & 0x18u) &&
+            fabsf(s_yaw_rate) <= 80.0f) {
+            if (!s_center_ms) { s_center_ms = ms; }
+            if ((ms - s_center_ms) >= AV_CENTER_HOLD_MS) {
+                av_release(ms, bits, count);
+                return;
+            }
+        } else { s_center_ms = 0u; }
+    } else {
+        s_center_ms = 0u;
+        s_line_d = 0.0f;
+        /* 线从哪侧滑出，就向哪侧低速续搜；不反转到固定的旧偏航目标。
+         * 全白/宽黑/离散黑点不证明回线成功，也不能无限盲开。 */
+        if (!s_line_ms || (ms - s_line_ms) > AV_LINE_LOST_MS ||
+            (s_trip_mm - s_line_trip) > AV_LINE_LOST_MM) {
+            av_fault("AVOID local line lost");
+            return;
+        }
+        float dir = s_line_err < -0.25f ? -1.0f :
+                    s_line_err > 0.25f ? 1.0f : -(float)s_away;
+        float damping = 0.04f * s_yaw_rate;
+        if (damping > 4.0f) { damping = 4.0f; }
+        if (damping < -4.0f) { damping = -4.0f; }
+        av_drive(8, dir * 8.0f - damping);
+    }
+}
+
 void Avoid_Step(void)
 {
     uint32_t ms = HAL_GetTick();
@@ -318,37 +395,24 @@ void Avoid_Step(void)
         }
         break;
     case AV_RETURN:
-        if (count >= 1 && count <= 3) {
+        if (av_line(bits, count)) {
             av_phase(AV_RECOVER, ms, "AVOID line seen, center now");
+            av_recover(ms, bits, count); /* 见线这一拍就纠偏，不再沿用旧舵量。 */
+            if (s_phase == AV_IDLE) { return; }
+        } else if (count >= 5) {
+            /* 斜交/标识区域先降速和抑制旋转，不把全黑当作线已居中。 */
+            av_drive(8, -0.08f * s_yaw_rate);
         } else {
             av_heading(-(float)s_away * AV_TARGET_DEG, 20);
         }
-        if ((s_trip_mm - s_phase_mm) > AV_SEEK_MAX_MM ||
-            (ms - s_phase_ms) > AV_SEEK_MAX_MS) {
+        if (s_phase == AV_RETURN && ((s_trip_mm - s_phase_mm) > AV_SEEK_MAX_MM ||
+            (ms - s_phase_ms) > AV_SEEK_MAX_MS)) {
             av_fault("AVOID line not found");
         }
         break;
     case AV_RECOVER:
-        if (count >= 1 && count <= 3) {
-            int sum = 0;
-            for (int i = 0; i < 8; i++) { if (bits & (1u << i)) { sum += i; } }
-            float err = (float)sum / (float)count - 3.5f;
-            /* 看见黑线就居中，不再盲转固定 35 度；偏航阻尼限制越线。 */
-            av_drive(18, 8.0f * err - 0.35f * s_yaw_deg - 0.10f * s_yaw_rate);
-            if (fabsf(err) <= 1.0f && (bits & 0x3cu) &&
-                fabsf(s_yaw_deg) <= 18.0f && fabsf(s_yaw_rate) <= 60.0f) {
-                if (!s_center_ms) { s_center_ms = ms; }
-                if ((ms - s_center_ms) >= 40u) { av_release(ms, bits, count); return; }
-            } else {
-                s_center_ms = 0u;
-            }
-        } else {
-            s_center_ms = 0u;
-            av_heading(-(float)s_away * 25.0f, 16);
-        }
-        if ((s_trip_mm - s_phase_mm) > 180.0f || (ms - s_phase_ms) > 1600u) {
-            av_fault("AVOID centering failed");
-        }
+        av_recover(ms, bits, count);
+        if (s_phase == AV_IDLE) { return; }
         break;
     case AV_FAULT:
         Mo_Brake();
