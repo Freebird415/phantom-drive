@@ -1,14 +1,14 @@
 /* =============================================================================
  *  app_trace.c —— A01 循迹控制（熊雅琦）
  *
- *  数字灰度 → 位置误差 → P+D → 分档速度/差速混控；独立处理起步找线、
+ *  数字灰度 → 位置误差 → PID → 分档速度/差速混控；独立处理起步找线、
  *  普通短时丢线和终点精停，并上报 $T/板载快照。
  *
  *  参数不用重烧就能改（串口，回车结尾）：
  *      SET kp 8        改比例
  *      SET ki 0.02     改积分
  *      SET kd 1.5      改微分
- *      SET base_speed 45   改基准速度
+ *      SET base_speed 18   改基准速度（本版循迹上限 22）
  *      GET             看当前参数
  * ========================================================================== */
 #include "app/app_trace.h"
@@ -22,15 +22,16 @@
 
 #include <stdio.h>
 
-#define TR_BASE_DEFAULT   30     /* v5 提速：与 s_p.base_speed 默认值保持一致 */
-#define TR_REV_MIN        10     /* 反转落入低占空比死区时的最小幅度 */
+#define TR_BASE_DEFAULT   22     /* 10/10 场地试跑：先用较低巡航速度验证弯道 */
+#define TR_BASE_MAX       22     /* A01 试跑上限；SET 调高也不会绕过该限速 */
+#define TR_SEEK_MAX       16     /* 起步全白找线时不能直接用巡航速度 */
 #define TR_POS_CENTER     3.5f    /* 8 路灰度的中心：0..7 的中点是 3.5 */
 /* ⭐ v5：宽黑区判据。20mm 的黑线正常只压到 1~2 路；出现 ≥5 路同时黑
    ⇒ 那是【横向黑条】（起点/终点的 T 头、赛道标识等），此时“黑点质心”毫无意义 ——
    实测到这里会因为半黑白黑的怪图案算出假 err，车先往一边猛拐一下
    （用户反馈：“终点 T 头被当成左拐”✗）⇒ 一律当【居中】走直线通过 ✓ */
-#define TR_WIDE_BLACK_N   3u     /* v6：3 路及以上算宽黑（实测巡线时 3 路黑只占 0.1%，安全 ✓）*/
-#define TR_WIDE_HOLD_MS 300u    /* v6：黑区内及离开后的 300ms 内一律直行（不要急着找线）*/
+#define TR_WIDE_BLACK_N   5u     /* 3~4 路黑仍可来自斜向弯线；5 路起才视为宽黑区 */
+#define TR_WIDE_HOLD_MS  80u    /* 退出宽黑区后短暂直行，避免 300ms 盲走到线边 */
 
 static uint8_t s_online;          /* 灰度是否在线（不在线就发模拟数据，保住 P01 链路）*/
 static uint8_t s_drive;           /* ⚠️ 0 = 只算不发（默认，安全）；1 = 真的驱动电机 */
@@ -103,7 +104,7 @@ static uint32_t s_seek_t0;        /* 起步找线开始时刻 */
 static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（终点线武装用）*/
 static uint8_t  s_fin_armed;      /* ⭐ 锁存：一旦在线上跑够时间就置 1（不再被黑条清零）*/
 static int32_t  s_odo_cnt;        /* ⭐ v8：累计里程（编码器计数，绝对值）—— 给精停放“最少跑够多远”的门槛 */
-static uint16_t s_wide_hold;      /* ⭐ 穿过宽黑区后的“保持直行”倒计时(ms) */
+static uint32_t s_wide_until_ms;  /* 离开宽黑区后短暂直行的实际截止时刻 */
 static uint32_t s_startt_t0;      /* 上一次报“经过起始线 T 头”的时刻（限流：2s 最多一条）*/
 /* 每计数多少 mm。**出厂推定值 0.115**（2026-10-01 实测反推：
    100% 占空比 = 10506 计数/s；按 JGB37-520 12V 330RPM + ⌀70mm 轮 ⇒ 理论满速 1210mm/s
@@ -128,7 +129,7 @@ static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
    修：给 800ms，并按编码器限住“盲开总距离”，达到上限立刻停 ✓ */
 #define TR_LOST_MAX_MM   45.0f   /* 盲开距离上限（mm）；若还有 mm/计数 就换算成计数，否则用下面固定值 */
 #define TR_LOST_MAX_CNT  300     /* 固定兜底：约 34mm @0.115mm/计数 */
-#define TR_D_ALPHA 0.20f         /* 10ms 时约 45ms 时间常数；真实 dt 仍参与差分 */
+#define TR_D_ALPHA 0.12f         /* 减弱数字灰度跳变引起的微分尖峰 */
 static int32_t  s_lost_cnt;       /* 丢线恢复期间累计的“盲开计数”*/
 static int16_t  s_lost_l0, s_lost_r0; /* 丢线那一刻的编码器起点（算盲开距离用）*/
 
@@ -196,6 +197,9 @@ static void tr_mix(int base, int steer, int *l, int *r)
     int room = 100 - (steer < 0 ? -steer : steer);
     if (base > room) { base = room; }
     if (base < 0) { base = 0; }
+    /* 循迹时只允许内轮减速到零；大误差不能命令反转。 */
+    if (steer > base) { steer = base; }
+    if (steer < -base) { steer = -base; }
     *l = base + steer;
     *r = base - steer;
 }
@@ -261,7 +265,11 @@ static uint8_t tr_pack(const int s[8])
     return b;
 }
 
-void    Trace_SetDrive(uint8_t on) { s_drive = on ? 1u : 0u; }
+void Trace_SetDrive(uint8_t on)
+{
+    if (!on && s_drive && s_fin != 2u) { Mo_Stop(); }
+    s_drive = on ? 1u : 0u;
+}
 void    Trace_SetSeek(uint8_t on)  { s_seek = on ? 1u : 0u; s_seek_t0 = HAL_GetTick(); }
 
 /* ⭐ 发车统一入口（按钮 / 以后加命令都调它）：复位精停 + 打开【起步找线】
@@ -274,7 +282,7 @@ void Trace_StartRun(void)
     s_seek_t0 = HAL_GetTick();
     s_track_ms = 0u;
     s_fin_armed = 0u;                 /* v6：新一趟重新武装（锁存清 0）*/
-    s_wide_hold = 0u;
+    s_wide_until_ms = 0u;
     s_odo_cnt = 0;                    /* v8：里程清零（每趟重新计）*/
     s_last_line_err = 0.0f;
     s_risk = 0u; s_clear_frames = 0u;
@@ -287,6 +295,7 @@ void Trace_Init(void)
     s_drive  = 0u;                /* ⚠️ 默认不驱动：第一次一定要让轮子悬空再 `TRACE 1` */
     s_state  = 0;
     s_online = Gr_Ping();
+    Tlm_Params()->base_speed = TR_BASE_DEFAULT;  /* $P/GET 与实际试跑默认速度一致 */
 
     printf("# TRACE 灰度=%s 驱动=%s\r\n",
            s_online ? "在线" : "不在线", s_drive ? "开" : "关(只算不发)");
@@ -351,7 +360,6 @@ void Trace_Step(uint8_t allow_drive)
    ⇒ **全黑的同一拍里先清零、再拿它判断** ⇒ 判断永远为假 ⇒ **精停永远不会触发** ✗✗
    证据：场地那趟 8 路全黑持续 8 秒（268 帧）也毫无反应，整趟 state 里没有 4 ✓
    修法：用【锁存标志】s_fin_armed（跑够时间置 1，只有新一趟开始时才清 ✓）*/
-#define TR_FIN_ARM_TICKS 150u   /* 在线上连续跑 150 拍（1.5s）即武装 */
 #define TR_FIN_MIN_MM    800    /* ⭐ v8：里程门槛 —— 不到这个里程绝不当终点
                                    为什么：桌面推车几百 mm 就会误判成终点（实测 ✗），
                                    而真赛道至少要跑 1.5m 以上 ✓（名义尺度，±20~40%）*/
@@ -363,10 +371,12 @@ void Trace_Step(uint8_t allow_drive)
             → 再遇全黑（灰地板/阴影）⇒ **误判成终点线** ⇒ 进精停、车就地停住，看起来“卡住”✗
       依据：真赛道实测巡线时黑的是 **1~2 路**（43% / 47%），**3 路及以上只占 0.1%**
       ⇒ 只在 `1 <= cnt <= 3` 时累计；宽黑（4~8 路）不算“在跟线”✓ */
-if (cnt >= 8) {
-    /* 黑条期间不累计（但已锁存的武装保持 ✓）*/
-} else if (cnt >= 1 && cnt <= 3 && !s_fin_armed) {
-    if ((s_track_ms += 10u) >= TR_FIN_ARM_TICKS) { s_fin_armed = 1u; }
+if (!s_fin_armed) {
+    if (cnt >= 1 && cnt <= 3) {
+        if ((s_track_ms += 10u) >= TR_FIN_ARM_MS) { s_fin_armed = 1u; }
+    } else {
+        s_track_ms = 0u;   /* 离开窄线后重新累计；已武装则保持锁存 */
+    }
 }
 
 /* ①-1c 累计里程（只累计数，不累 mm —— 免得 0.115mm 被取整成 0 ✗）
@@ -385,10 +395,8 @@ if (cnt >= 8) {
     odo_l0 = cl; odo_r0 = cr;
 }
 
-/* ①-1b 宽黑区“保持直行”倒计时（见 ② 的宽黑区判据）*/
-if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_hold = TR_WIDE_HOLD_MS; }
-else if (s_wide_hold >= 10u)     { s_wide_hold -= 10u; }
-else                             { s_wide_hold = 0u; }
+/* ①-1b 用真实时钟算保持期；主循环被超声波读数阻塞时也不会延长盲走。 */
+if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
 
         /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且【已武装】+【里程够】
              ⭐ v8：里程门槛（TR_FIN_MIN_MM）是桌面误判的第二道闸 ✓ */
@@ -475,6 +483,7 @@ else                             { s_wide_hold = 0u; }
                     tr_reset_ctrl(); s_base_actual = 0;
                     int sp = p->base_speed;
                     if (sp <= 0) { sp = TR_BASE_DEFAULT; }
+                    if (sp > TR_SEEK_MAX) { sp = TR_SEEK_MAX; }
                     Mo_Set(sp, sp);                      /* 慢速直行去找线 */
                     Log_Note(tr_pack(s), 0.0f, sp, sp, 5);
                     Tlm_SendT(ms, s, 0.0f, sp, sp, 5);
@@ -535,7 +544,10 @@ else                             { s_wide_hold = 0u; }
         /* ⭐ v5/v6：宽黑区（T 头 / 标识 / 大黑块）不当线看 —— 走直线，且【出来后继续直行一小段】
            为什么还要“保持”：实测过完 T 头时车常是斜着的，退出黑区那几帧会出现“只剩最边上一路黑”
            ⇒ 被当成 err=±3.5 而猛拐一下 ✗（场地日志 2656~2659 帧：4→3→1 路黑，pwm 一路打到 65/−43）*/
-        if (cnt >= (int)TR_WIDE_BLACK_N || s_wide_hold > 0u) { err = 0.0f; }
+        if (cnt >= (int)TR_WIDE_BLACK_N ||
+            (s_wide_until_ms != 0u && (int32_t)(ms - s_wide_until_ms) < 0)) {
+            err = 0.0f;
+        }
     } else {
         /* ---- 灰度不在线：只做链路自检，**绝不驱动电机** --------------------
            [!][!] 2026-10-01 实踩（当天"车完全不听灰度、左右乱打舵"的真因）：
@@ -578,7 +590,7 @@ else                             { s_wide_hold = 0u; }
     /* ---- 巡航上限 + 曲率风险：量化误差需连续稳定才升速 ---- */
     int base = p->base_speed;
     if (base <= 0) { base = TR_BASE_DEFAULT; }
-    if (base > 100) { base = 100; }
+    if (base > TR_BASE_MAX) { base = TR_BASE_MAX; }
 
     /* ---- P + D（⚠️ D 项必须用【真实 dt】+ 钳位）----
        用假设的固定 10ms 会在“主循环被拖慢”时算出虚假的巨大变化率 ⇒ 车猛打舵 ✗
@@ -597,7 +609,7 @@ else                             { s_wide_hold = 0u; }
     float ad = s_d_filt < 0.0f ? -s_d_filt : s_d_filt;
     uint8_t outer = s[0] || s[7];
     uint8_t risk = (ae >= 2.0f || outer || ad >= 65.0f) ? 2u :
-                   (ae >= 1.0f || ad >= 25.0f) ? 1u : 0u;
+                   (ae >= 0.5f || ad >= 25.0f) ? 1u : 0u;
     /* ⭐⭐ v7（2026-10-01 晚，日志挖出来的关键缺陷）：
        err 在【正常过弯】时会长期为 0（车跟着线转 ✓），于是曲率风险永远判“直道”⇒ 不降速 ✗
        实例：1838 那趟第 1980~1986 帧，err=0、pwm=20/20，而陀螺仪 gz 已经 14→34→44→60 °/s
@@ -622,8 +634,8 @@ else                             { s_wide_hold = 0u; }
     if (s_base_actual > target) { s_base_actual -= 3; if (s_base_actual < target) { s_base_actual = target; } }
     s_last_line_err = err;
     float d_term = p->kd * s_d_filt;
-    if (d_term >  30.0f) { d_term =  30.0f; }  /* ⚠️ 钳位：D 项最多贡献 ±30 */
-    if (d_term < -30.0f) { d_term = -30.0f; }
+    if (d_term >  12.0f) { d_term =  12.0f; }
+    if (d_term < -12.0f) { d_term = -12.0f; }
 
     /* ================= v3 ③ 小积分（长弧道自动维持差速）=================
        用户诉求：“大弧线不要一段段直线，而是自然差速走出弯” ——
@@ -661,15 +673,14 @@ else                             { s_wide_hold = 0u; }
         if (dstep < -slew) { dstep = -slew; }
         s_steer_out += dstep;
     }
-    int   steer   = (int)(s_steer_out + (s_steer_out >= 0.0f ? 0.5f : -0.5f));
+    /* 舵量软限幅：小误差仍有差速，大误差渐近于内轮停转，避免突然反转。 */
+    float mag = s_steer_out < 0.0f ? -s_steer_out : s_steer_out;
+    float steer_safe = mag > 0.0f ? s_steer_out * (float)s_base_actual /
+                                   ((float)s_base_actual + mag) : 0.0f;
+    int steer = (int)(steer_safe + (steer_safe >= 0.0f ? 0.5f : -0.5f));
 
     int l, r;
     tr_mix(s_base_actual, steer, &l, &r); /* 线偏左 → 左轮慢、右轮快 */
-
-    /* ⭐ 急弯：内侧轮若被压到“轻微反转”，补足到 TR_REV_MIN ——
-       否则 −5%~−10% 也在电机死区里，等于没转（急弯就转不过来）*/
-    if (l < 0 && l > -TR_REV_MIN) { l = -TR_REV_MIN; }
-    if (r < 0 && r > -TR_REV_MIN) { r = -TR_REV_MIN; }
 
     s_state = 1;
     if (s_drive && allow_drive) {
