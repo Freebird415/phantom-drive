@@ -50,7 +50,7 @@ int main(void)
            "跑完插回串口发 DUMP\r\n");
 
     Tlm_SendParams();                                    /* 上电先报一次参数快照 */
-    Tlm_SendEvent(97, "BOOT");
+    Tlm_SendEvent(97, "BOOT a02-v1-20261010-20cm-trial");
 
     uint32_t next_t  = HAL_GetTick();   /* $T：100 Hz */
     uint32_t last_us = HAL_GetTick() - 100;  /* 超声波：上一发结束时刻（从完成时刻计时，避免追赶补发） */
@@ -86,7 +86,7 @@ int main(void)
                     (HAL_GetTick() - s_t0) >= 1000u) {
                     s_fired = 1u;
                     if (Trace_GetDrive()) {
-                        Trace_SetDrive(0u); Log_Stop();
+                        Trace_SetDrive(0u); Avoid_SetDrive(0u); Log_Stop();
                         /* ⭐ 3 短声 = 手动停车（场地没屏幕，靠声音确认按键生效）
                            对照：1 短声=发车 ／ 2 长声=到终点自动停 */
                         Hmi_Beep(90); HAL_Delay(110);
@@ -98,7 +98,7 @@ int main(void)
                         Trace_StartRun();          /* ⭐ 复位终点精停 + 打开起步找线（起始线 T 头在前面 ✓）*/
                         Log_SetBle(1u);            /* ⭐ 顺便开无线回传：跑车时插不了串口，
                                                       长按按钮就把数据推到电脑 ✓ */
-                        Log_Start(); Trace_SetDrive(1u);
+                        Log_Start(); Avoid_SetDrive(1u); Trace_SetDrive(1u);
                         Hmi_Beep(150);             /* ⭐ 1 短声 = 已发车 */
                         printf("# BTN(长按1s): 开始记录 + 发车 + BLE回传（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
@@ -129,17 +129,22 @@ int main(void)
                 Us_Read((UsId)us_idx);
                 us_idx ^= 1u;
             }
-            Avoid_Step();       /* A02：拿到新读数立刻决策（可能接管电机）*/
             Tlm_SendU(HAL_GetTick(), Us_Get(US_L)->mm, Us_Get(US_R)->mm);
             Log_BleUsFrame(Us_Get(US_L)->mm, Us_Get(US_R)->mm);  /* 超声波也走蓝牙（4Hz）*/
             last_us = HAL_GetTick();
         }
 
-        /* ---- $T 遥测 + 循迹算法：100 Hz ----
-               仲裁：避障接管时传 0 → 循迹只算不发，电机让给避障（否则 100Hz 会把它冲掉）*/
+        /* ---- 100Hz 控制与 $T 遥测 ----
+               避障接管时由 A02 独立读灰度、控电机、发 state=2/3；
+               循迹暂停，避免其终点/丢线状态机覆盖绕障动作。 */
         if ((int32_t)(HAL_GetTick() - next_t) >= 0) {
             next_t += 10;
-            Trace_Step(Avoid_Mode() ? 0u : 1u);          /* A01：读灰度→算误差→控电机→发 $T */
+            if (Avoid_Mode()) {
+                Avoid_Step();
+            } else {
+                Trace_Step(1u);
+                Avoid_Step();  /* 用新鲜 $U 测量触发接管；下一拍起 A02 负责 $T */
+            }
             Log_BleTick();                              /* BLE 实时日志回传（BTL 1 才发）*/
         }
     }

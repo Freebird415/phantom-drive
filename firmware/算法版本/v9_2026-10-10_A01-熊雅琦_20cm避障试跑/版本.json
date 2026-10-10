@@ -1,0 +1,42 @@
+{
+  "archive_version": "v9",
+  "git_tag": "a02-v1-20261010-20cm-trial",
+  "date": "2026-10-10",
+  "base_commit": "7e49f7e9d500acc5fc495243f5b9a3f280a743bb",
+  "boot_event": "BOOT a02-v1-20261010-20cm-trial",
+  "parameters": {
+    "trace_base_pct": 22,
+    "avoid_start_mm": 200,
+    "emergency_stop_mm": 30,
+    "offset_mm_nominal": 120,
+    "mm_per_count_nominal": 0.115
+  },
+  "status": "trial_with_known_curve_return_failure; 15cm only evaluated in temporary models",
+  "build": {
+    "environment": "bluepill_f103c8",
+    "platform": "ststm32@20.0.0",
+    "framework": "framework-stm32cubef1@1.8.7",
+    "compiler_package": "toolchain-gccarmnoneeabi@1.70201.0",
+    "warnings": 0,
+    "firmware_bytes": 45808,
+    "sha256": "60962eea295a1de5ed64ede40a1c3ae9f5eacd56959be862b9d66d7834ea7142",
+    "snapshot_start": "0x0800D800",
+    "snapshot_margin_bytes": 9488
+  },
+  "flash": {
+    "interface": "ST-Link SWD",
+    "address": "0x08000000",
+    "device_id": "0x410",
+    "programmer": "STM32CubeProgrammer 2.19.0",
+    "verified": true,
+    "software_reset": true
+  },
+  "source_hash_encoding": "SHA256 after normalizing CRLF to LF",
+  "source_sha256": {
+    "firmware/src/app/app_trace.c": "d966daa70f6e7761ea404de71908a485bc3c5a4c7445eb3d47bb246ea5ab487f",
+    "firmware/src/app/app_trace.h": "7d1f88a1807b4f2268887194b5de1e82beb11f7e549d62d762679ca6a7a544aa",
+    "firmware/src/app/app_avoid.c": "a0fdd7e8fd847323f647042a564417310ad98b7e2639974bf471960e3108389a",
+    "firmware/src/app/app_avoid.h": "267ff10e481b42aec2b06cae3b914f1065df742e0113d2682b17bcbbeaaafe55",
+    "firmware/src/main.c": "13a0c59c11e222019335f3dca73fd5537c8603c8271bfbf299de3d190d751e7b"
+  }
+}
