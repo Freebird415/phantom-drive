@@ -1,7 +1,7 @@
 """Reproduce the KNOWN, UNFIXED v4 zero-gyro failure using actual ARM ELF.
 
 Run after building firmware, with unicorn and pyelftools installed:
-    python firmware/tests/a02_gyro_diagnostic.py
+    python firmware/测试/a02_gyro_diagnostic.py
 
 No hardware access or log writes. The plant is synthetic, not a measurement
 of physical yaw or clearance. A passing diagnostic means the BUG reproduced,

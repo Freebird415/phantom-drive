@@ -28,7 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 LIVE = REPO / "firmware" / "src" / "app" / "app_trace.c"
-VERDIR = REPO / "firmware" / "算法版本"
+VERDIR = REPO / "firmware" / "算法快照"
 KEEP = Path("_当前快照")          # 切换前自动备份的位置
 
 
@@ -48,7 +48,7 @@ def git_last(path: Path) -> str:
 
 
 def cmd_list(_a):
-    print("=== 算法版本（存档在 firmware/算法版本/）===")
+    print("=== 算法版本（存档在 firmware/算法快照/）===")
     for d in versions():
         f = d / "app_trace.c"
         note = d / "说明.md"

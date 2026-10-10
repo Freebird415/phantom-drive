@@ -1,4 +1,4 @@
-# 算法版本库（app_trace.c 的历史版本）
+# 算法快照库（app_trace.c 的历史版本）
 
 > **权威文件永远是 `firmware/src/app/app_trace.c`** —— 编译器只看它 ✓
 > 本目录只做**存档、对比、回退**用（用户 2026-10-01 要求：“每版本分文件夹存起来方便对比和管理，后续也可以删一些旧版本”）
@@ -25,7 +25,7 @@ python tools/algo_version.py use v2            # 切到 v2（会把当前文件�
 python tools/algo_version.py save "v4_降速保稳"  # 把当前 app_trace.c 存成新版本
 python tools/algo_version.py diff v2           # 当前 vs v2 的差异摘要
 ```
-> 手动也行：`cp firmware/算法版本/<版本>/app_trace.c firmware/src/app/app_trace.c`
+> 手动也行：`cp firmware/算法快照/<版本>/app_trace.c firmware/src/app/app_trace.c`
 > 切完**必须重新编译烧录**：`pio run -d firmware -t upload`
 
 ## 三、加新版本的规矩
