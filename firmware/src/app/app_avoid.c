@@ -1,6 +1,8 @@
-/* 短距离绕障：近障确认 -> 必要外移 -> 车尾越障 -> 看线即居中。
- * 姿态使用有方向的偏航积分；里程仍用未精标的 0.115mm/计数。
- * 所有控制距离是首轮参数，不能等同于实际碰撞间隙。 */
+/* A02 v4：保守曲率初值、柔和低速横移、车尾越障、有界局部搜线。
+ * STEP 底板坐标下模型 200x195.5x100mm；用户确认朝驱动轮端前进。
+ * 模型未包含现装探头/灰度/线束及全部突出件。下列外廓/安装偏移仍待实测。
+ * 25mm 是名义规划余量，不是超声读数或已验收的实车间隙。
+ * mm/计数仍未精标；保留原有有方向的陀螺积分，不改驱动/接口。 */
 #include "app/app_avoid.h"
 #include "app/app_trace.h"
 #include "app/app_telemetry.h"
@@ -13,23 +15,39 @@
 #include <math.h>
 #include <stdio.h>
 
-#define AV_CONFIRM_MM       260
-#define AV_START_MM         200   /* 20cm 试跑触发；3cm 仅用于紧急刹停 */
+#define AV_CONFIRM_MM       550
 #define AV_STOP_MM           30
 #define AV_LINE_READY_MS    250u
 #define AV_US_FRESH_MS      150u
 #define AV_PAIR_MAX_MS      550u
-#define AV_OFFSET_MM        120.0f /* 车半宽按 100mm + 20mm 余量，实际待量 */
-#define AV_OBSTACLE_LEN_MM  150.0f /* 规则中的最大纵向尺寸；摆放朝向待复核 */
-#define AV_SENSOR_REAR_MM   200.0f /* 探头至车尾的名义距离，实际待量 */
-#define AV_CLEAR_MARGIN_MM   20.0f
-#define AV_SEEK_MAX_MM      300.0f
-#define AV_MAX_TRIP_MM     1400.0f
-#define AV_TARGET_DEG       45.0f
-#define AV_TURN_MAX_MS     1400u
-#define AV_SEEK_MAX_MS     2500u
-#define AV_TOTAL_MAX_MS   10000u
-#define AV_CENTER_HOLD_MS   120u
+#define AV_BODY_HALF_MM     100.0f /* 模型宽 195.5 向上圆整，未覆盖未知突出件 */
+#define AV_BODY_FRONT_MM     40.0f /* 模型轮轴到驱动轮端约 35mm，圆整 */
+#define AV_BODY_REAR_MM     170.0f /* 模型轮轴到万向轮端约 165mm，圆整 */
+#define AV_PROBE_FRONT_MM    40.0f /* 探头面相对驱动轮轴：安装后待量 */
+#define AV_GAP_MM            25.0f /* 用户目标 2~3cm，取中值；非验收结论 */
+#define AV_TRACK_PAD_MM       8.0f /* 控制量化/微小偏航的名义跟踪预算，未实测 */
+#define AV_RANGE_PAD_MM      10.0f /* 仅名义误差预算，覆盖范围/偏移仍待标测 */
+#define AV_MOUNT_PAD_MM      40.0f /* 未量探头前后偏移的试跑预算，不是测量值 */
+#define AV_MIN_RADIUS_MM     90.0f /* 前进差速的规划半径，实车待标定 */
+#define AV_OBSTACLE_LEN_MM  181.0f /* 最大底面150x100的对角线向上圆整，覆盖任意摆角 */
+#define AV_OBSTACLE_WIDTH_MM 181.0f /* 判侧仍不能测出障碍近侧边的实际横向位置 */
+#define AV_ROUTE_SPEED       80.0f /* 以下均为编码器名义 mm/s，不是 PWM */
+#define AV_SEEK_SPEED        60.0f /* 本轮只软化外移/越障，回线控制响应保持v3 */
+#define AV_CAPTURE_SPEED     40.0f /* 首次边缘捕获先压低平移，留出回正时间 */
+#define AV_CENTER_SPEED      50.0f
+#define AV_LOOKAHEAD_MM      55.0f
+#define AV_RETURN_LOOK_MM    65.0f
+#define AV_NAV_RATE_MAX      40.0f /* 名义目标角速度上限；非实车已标定上限 */
+#define AV_CURVE_MAX          0.0012f /* 只外推缓弯，不把刚驶出的急弯当赛道地图 */
+#define AV_CURVE_MATCH        0.00035f
+#define AV_SEARCH_LOOK_MM   180.0f /* 低速浅角交线，避免近目标产生75度斜冲 */
+#define AV_RETURN_RUN_MM    280.0f /* 平滑回归并在预测线附近回正，不用单点斜冲 */
+#define AV_SEARCH_BAND_MM    70.0f
+#define AV_SEEK_MAX_MM      750.0f
+#define AV_MAX_TRIP_MM     1800.0f
+#define AV_SEEK_MAX_MS    13000u
+#define AV_TOTAL_MAX_MS   30000u /* 降速20%同步调整总时限；搜索/丢线/里程保护不放宽 */
+#define AV_CENTER_HOLD_MS   350u /* 覆盖低速下灰度量化平台，避免120ms短暂中心假稳定 */
 #define AV_LINE_LOST_MS     150u
 #define AV_LINE_LOST_MM      25.0f /* 名义尺度，只允许短暂续搜 */
 #define AV_MM_PER_CNT        0.115f
@@ -37,7 +55,7 @@
 
 typedef enum {
     AV_IDLE, AV_OUT, AV_SHIFT, AV_PARALLEL, AV_PASS,
-    AV_RETURN, AV_RECOVER, AV_FAULT
+    AV_RETURN, AV_RECOVER, AV_FAULT, AV_SEARCH
 } AvPhase;
 
 static uint8_t s_drive, s_seen[2], s_clear_reads;
@@ -56,6 +74,80 @@ static uint32_t s_line_ms;
 static float s_line_trip;
 static uint32_t s_dt_ms;
 static int s_pwm_l, s_pwm_r;
+static uint32_t s_speed_ms, s_speed_dt, s_search_ms;
+static float s_speed_dist, s_speed_mm_s, s_speed_i, s_curve_live, s_curve_entry;
+static float s_offset_mm, s_shift_x, s_obstacle_x, s_obstacle_end, s_obstacle_y, s_search_x, s_search_trip;
+static float s_pass_y, s_return_offset;
+static uint8_t s_plan_valid;
+static float s_heading_target;
+
+static float av_clip(float v, float lo, float hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+/* 每 50ms 实时计数窗口，补偿测距阻塞；同毫秒追赶不重复估速。 */
+static void av_speed_sample(uint32_t ms, float ds)
+{
+    if (!s_speed_ms) { s_speed_ms = ms; s_speed_dist = 0.0f; return; }
+    s_speed_dist += ds;
+    uint32_t dt = ms - s_speed_ms;
+    if (dt >= 50u) {
+        float v = ds >= 0.0f ? s_speed_dist * 1000.0f / (float)dt : 0.0f;
+        s_speed_mm_s += av_clip((float)dt / 100.0f, 0.0f, 1.0f) *
+                          (av_clip(v, 0.0f, 600.0f) - s_speed_mm_s);
+        s_speed_dist = 0.0f; s_speed_ms = ms; s_speed_dt = dt;
+    }
+}
+
+static int av_speed_base(float target, int cap)
+{
+    float e = target - s_speed_mm_s;
+    if (s_speed_dt) {
+        float dt = (float)(s_speed_dt > 100u ? 100u : s_speed_dt) * 0.001f;
+        s_speed_i = av_clip(s_speed_i + 0.025f * e * dt, -3.0f, 3.0f);
+        s_speed_dt = 0u;
+    }
+    /* 前馈来自本机日志 PWM20 时约150mm/s，PI 只作有界修正。 */
+    float pwm = 4.0f + target * 0.10f + e * 0.025f + s_speed_i;
+    return (int)(av_clip(pwm, 6.0f, (float)cap) + 0.5f);
+}
+
+static float av_trigger_mm(void)
+{
+    /* 三次平滑横移所需长度 >= sqrt(6*横移*半径)，另含测距确认/调度迟滞。
+     * 0.35s 与误差预算为保守试跑值，不是已测制动能力。 */
+    float lateral = AV_BODY_HALF_MM + AV_GAP_MM;
+    float lead = sqrtf(6.0f * lateral * AV_MIN_RADIUS_MM) + AV_GAP_MM +
+                 AV_RANGE_PAD_MM + 0.35f * s_speed_mm_s;
+    return av_clip(lead / 0.8660f, 260.0f, 500.0f); /* 15°安装+名义波束扩展到30° */
+}
+
+static float av_line_y(float x)
+{
+    /* 进入前局部曲率仅用作有限搜索的初值；不是已知赛道地图。 */
+    x = av_clip(x, 0.0f, AV_MAX_TRIP_MM + AV_SEARCH_LOOK_MM);
+    return 0.5f * s_curve_entry * x * x;
+}
+
+/* 模型车身矩形与外扩25mm的名义障碍矩形做四轴 SAT。
+ * 可防模型车尾/转弯角切入；不能弥补未知安装偏移、障碍姿态或漏检。 */
+static uint8_t av_body_clear(float x, float y, float yaw)
+{
+    float c = cosf(yaw * AV_DEG_TO_RAD), sn = sinf(yaw * AV_DEG_TO_RAD);
+    float half = 0.5f * (AV_BODY_FRONT_MM + AV_BODY_REAR_MM);
+    float mid = 0.5f * (AV_BODY_FRONT_MM - AV_BODY_REAR_MM);
+    float dx = (s_obstacle_x + s_obstacle_end) * 0.5f - (x + mid * c);
+    float dy = s_obstacle_y - (y + mid * sn);
+    float ox = (s_obstacle_end - s_obstacle_x) * 0.5f + AV_GAP_MM;
+    float oy = AV_OBSTACLE_WIDTH_MM * 0.5f + AV_GAP_MM;
+    float ac = fabsf(c), as = fabsf(sn);
+    if (fabsf(dx) > ox + half * ac + AV_BODY_HALF_MM * as) { return 1u; }
+    if (fabsf(dy) > oy + half * as + AV_BODY_HALF_MM * ac) { return 1u; }
+    if (fabsf(dx * c + dy * sn) > half + ox * ac + oy * as) { return 1u; }
+    if (fabsf(-dx * sn + dy * c) > AV_BODY_HALF_MM + ox * as + oy * ac) { return 1u; }
+    return 0u;
+}
 
 static int av_count(uint8_t bits)
 {
@@ -76,6 +168,9 @@ static void av_reset(void)
     s_line_ready_ms = s_center_ms = 0u;
     s_line_ms = 0u;
     s_line_err = s_line_d = s_line_trip = 0.0f;
+    s_plan_valid = 0u;
+    s_search_ms = 0u;
+    s_speed_i = 0.0f;
 }
 
 void Avoid_SetDrive(uint8_t on)
@@ -94,10 +189,12 @@ void Avoid_Init(void)
     s_drive = 0u;
     s_cool_until = 0u;
     s_gz_bias = 0.0f;
+    s_speed_ms = s_speed_dt = 0u;
+    s_speed_mm_s = s_speed_dist = s_curve_live = 0.0f;
     av_reset();
-    printf("# AVOID start=%dmm stop=%dmm; line-ready=%ums\r\n",
-           AV_START_MM, AV_STOP_MM, (unsigned)AV_LINE_READY_MS);
-    Tlm_SendEvent(97, "AVOID build a02-v2-local-line-trial");
+    printf("# AVOID dynamic lead; gap=%ldmm stop=%dmm; route/search=%ld/%ldmmps nominal\r\n",
+           (long)AV_GAP_MM, AV_STOP_MM, (long)AV_ROUTE_SPEED, (long)AV_SEEK_SPEED);
+    Tlm_SendEvent(97, "AVOID build a02-v4-soft-entry-trial");
 }
 
 static void av_phase(AvPhase next, uint32_t ms, const char *note)
@@ -125,9 +222,12 @@ static void av_fault(const char *note)
 
 static void av_drive(int base, float steer)
 {
+    if (s_phase == AV_FAULT) { return; }
     if (steer > (float)base) { steer = (float)base; }
     if (steer < -(float)base) { steer = -(float)base; }
-    float slew = 3.0f * (float)s_dt_ms / 10.0f;
+    /* 外移/越障每10ms只改变1档差速；回线/边缘纠偏保留原响应。 */
+    float slew = (s_phase >= AV_OUT && s_phase <= AV_PASS ? 1.0f : 3.0f) *
+                 (float)s_dt_ms / 10.0f;
     float change = steer - s_steer_out;
     if (change > slew) { change = slew; }
     if (change < -slew) { change = -slew; }
@@ -135,6 +235,23 @@ static void av_drive(int base, float steer)
     if (s_steer_out > (float)base) { s_steer_out = (float)base; }
     if (s_steer_out < -(float)base) { s_steer_out = -(float)base; }
     int turn = (int)(s_steer_out + (s_steer_out >= 0.0f ? 0.5f : -0.5f));
+    if (s_plan_valid) {
+        float x = s_x_mm, y = s_y_mm, yaw = s_yaw_deg;
+        float v = 1.15f * fmaxf(s_speed_mm_s, (float)base * 7.5f);
+        /* 检查当前外廓和210ms前向预测；转速是名义模型，非精标执行保证。 */
+        float rate = av_clip((float)turn * 7.0f, -100.0f, 100.0f);
+        for (int i = 0; i < 4; i++) {
+            if (!av_body_clear(x, y, yaw)) { av_fault("AVOID footprint guard"); return; }
+            float turn_step = rate * 0.07f;
+            if (s_phase != AV_RECOVER && turn_step * (s_heading_target - yaw) >= 0.0f &&
+                fabsf(turn_step) > fabsf(s_heading_target - yaw)) {
+                turn_step = s_heading_target - yaw; rate = 0.0f;
+            }
+            float mid = (yaw + turn_step * 0.5f) * AV_DEG_TO_RAD;
+            x += v * 0.07f * cosf(mid); y += v * 0.07f * sinf(mid);
+            yaw += turn_step;
+        }
+    }
     s_pwm_l = base + turn;
     s_pwm_r = base - turn;
     Mo_Set(s_pwm_l, s_pwm_r);
@@ -143,7 +260,31 @@ static void av_drive(int base, float steer)
 static void av_heading(float target, int base)
 {
     /* 正舵量 -> 右转；实车日志正 gz -> 左转，已在 av_motion 统一符号。 */
-    av_drive(base, 0.8f * (target - s_yaw_deg) - 0.10f * s_yaw_rate);
+    s_heading_target = target;
+    if (s_phase == AV_RETURN || s_phase == AV_SEARCH) {
+        av_drive(base, 0.8f * (target - s_yaw_deg) - 0.10f * s_yaw_rate);
+        return;
+    }
+    float wanted = av_clip(1.5f * (target - s_yaw_deg), -AV_NAV_RATE_MAX, AV_NAV_RATE_MAX);
+    /* 前馈/角速度反馈有界，避免角度误差直接饱和到单轮停转。
+     * 7deg/s/PWM仍是名义响应；真正角速度由同方向陀螺反馈修正。 */
+    av_drive(base, wanted / 7.0f + 0.12f * (wanted - s_yaw_rate));
+}
+
+static void av_nav(float x, float y, float speed, int cap)
+{
+    float angle = atan2f(y - s_y_mm, x - s_x_mm) / AV_DEG_TO_RAD;
+    angle = av_clip(angle, -75.0f, 75.0f); /* 不倒车、不无限转圈找线 */
+    av_heading(angle, av_speed_base(speed, cap));
+}
+
+static void av_offset_path(void)
+{
+    float gx = s_x_mm + AV_LOOKAHEAD_MM;
+    float t = av_clip(gx / s_shift_x, 0.0f, 1.0f);
+    /* 越障时沿障碍近侧边的平行线，不沿弯曲黑线向障碍侧收拢。 */
+    float gy = s_pass_y * t * t * (3.0f - 2.0f * t);
+    av_nav(gx, gy, AV_ROUTE_SPEED, 18);
 }
 
 static void av_emit(uint32_t ms, uint8_t bits, int count)
@@ -154,7 +295,7 @@ static void av_emit(uint32_t ms, uint8_t bits, int count)
         if (gray[i]) { sum += i; }
     }
     float err = (count > 0 && count < 5) ? (float)sum / (float)count - 3.5f : 0.0f;
-    int state = (s_phase == AV_RETURN || s_phase == AV_RECOVER) ? 3 : 2;
+    int state = (s_phase == AV_RETURN || s_phase == AV_RECOVER || s_phase == AV_SEARCH) ? 3 : 2;
     Log_Note(bits, err, s_pwm_l, s_pwm_r, state);
     Tlm_SendT(ms, gray, err, s_pwm_l, s_pwm_r, state);
 }
@@ -172,7 +313,7 @@ static int av_scan(uint32_t ms, uint8_t ready, int *side, int32_t *range)
         if ((ms - u->stamp_ms) > AV_US_FRESH_MS) { s_seen[i] = 0u; continue; }
         if (mm > 0 && mm <= AV_STOP_MM) { return -1; }
         if (s_phase != AV_IDLE && i == (int)s_obstacle_side) {
-            if (mm > AV_START_MM + 100) {
+            if (mm > (int32_t)av_trigger_mm() + 100) {
                 if (s_clear_reads < 2u) { s_clear_reads++; }
             } else {
                 s_clear_reads = 0u;
@@ -190,7 +331,7 @@ static int av_scan(uint32_t ms, uint8_t ready, int *side, int32_t *range)
         }
         s_good_us_ms[i] = ms;
         s_prev_mm[i] = mm;
-        if (s_seen[i] >= 2u && mm <= AV_START_MM && mm < nearest) {
+        if (s_seen[i] >= 2u && (float)mm <= av_trigger_mm() && mm < nearest) {
             chosen = i;
             nearest = mm;
         }
@@ -216,10 +357,11 @@ static void av_motion(uint32_t ms)
     s_yaw_deg += s_yaw_rate * (float)dt * 0.001f;
     float ds = (float)(dl + dr) * 0.5f * AV_MM_PER_CNT;
     if (ds >= 0.0f && ds < 60.0f) {
+        av_speed_sample(ms, ds);
         s_trip_mm += ds;
         s_x_mm += ds * cosf(yaw_mid * AV_DEG_TO_RAD);
         s_y_mm += ds * sinf(yaw_mid * AV_DEG_TO_RAD);
-        if (dl + dr >= 4) { s_progress_ms = ms; }
+        if (dl + dr > 0) { s_progress_ms = ms; }
     }
 }
 
@@ -242,7 +384,7 @@ static uint8_t av_line(uint8_t bits, int count)
 
 static void av_recover(uint32_t ms, uint8_t bits, int count)
 {
-    if ((s_trip_mm - s_phase_mm) > 180.0f || (ms - s_phase_ms) > 1600u) {
+    if ((s_trip_mm - s_phase_mm) > 250.0f || (ms - s_phase_ms) > 4500u) {
         av_fault("AVOID centering failed");
         return;
     }
@@ -253,21 +395,21 @@ static void av_recover(uint32_t ms, uint8_t bits, int count)
         uint32_t dt = ms - s_line_ms;
         if (s_line_ms && dt && dt <= 50u) {
             float rate = (err - s_line_err) * 1000.0f / (float)dt;
-            s_line_d += 0.2f * (rate - s_line_d);
+            s_line_d += 0.05f * (rate - s_line_d);
         } else if (!s_line_ms || dt > 50u) {
             s_line_d = 0.0f; s_center_ms = 0u;
         } /* 调度追赶产生同毫秒样本时，不累加也不打断稳定窗口。 */
         s_line_err = err;
         s_line_ms = ms;
         s_line_trip = s_trip_mm;
-        float d = 0.05f * s_line_d;
-        if (d > 4.0f) { d = 4.0f; }
-        if (d < -4.0f) { d = -4.0f; }
+        float d = av_clip(1.20f * s_line_d, -12.0f, 12.0f);
         /* 边缘见线先慢下来捕获；绝对偏航项会把弯道的新方向拉回旧直线。 */
-        int base = fabsf(err) > 1.0f ? 8 : 12;
-        av_drive(base, 8.0f * err + d - 0.04f * s_yaw_rate);
+        int base = fabsf(err) > 1.0f ? av_speed_base(AV_CAPTURE_SPEED, 9) :
+                                            av_speed_base(AV_CENTER_SPEED, 10);
+        av_drive(base, 3.0f * err + d - 0.12f * s_yaw_rate);
+        if (s_phase == AV_FAULT) { return; }
         if (fabsf(err) <= 1.0f && (bits & 0x18u) &&
-            fabsf(s_yaw_rate) <= 80.0f) {
+            fabsf(s_yaw_rate) <= 30.0f && fabsf(s_line_d) <= 1.5f) {
             if (!s_center_ms) { s_center_ms = ms; }
             if ((ms - s_center_ms) >= AV_CENTER_HOLD_MS) {
                 av_release(ms, bits, count);
@@ -289,7 +431,8 @@ static void av_recover(uint32_t ms, uint8_t bits, int count)
         float damping = 0.04f * s_yaw_rate;
         if (damping > 4.0f) { damping = 4.0f; }
         if (damping < -4.0f) { damping = -4.0f; }
-        av_drive(8, dir * 8.0f - damping);
+        int base = av_speed_base(AV_CAPTURE_SPEED, 8);
+        av_drive(base, dir * (float)base - damping);
     }
 }
 
@@ -303,12 +446,19 @@ void Avoid_Step(void)
             s_gz_bias += 0.02f * ((float)Log_GetGz() - s_gz_bias);
         }
         s_enc_l = l; s_enc_r = r;
+        s_speed_ms = ms; s_speed_dist = s_speed_mm_s = 0.0f;
+        s_speed_dt = 0u; s_curve_live = 0.0f;
         if (s_phase != AV_IDLE) { av_reset(); }
         return;
     }
     if (!s_drive) { return; }
 
     if (s_phase == AV_IDLE) {
+        int16_t l = En_Count(ENC_L), r = En_Count(ENC_R);
+        float ds = ((float)(int16_t)(l - s_enc_l) + (float)(int16_t)(r - s_enc_r)) *
+                   0.5f * AV_MM_PER_CNT;
+        s_enc_l = l; s_enc_r = r;
+        av_speed_sample(ms, av_clip(ds, 0.0f, 60.0f));
         /* 日志公开的 8B live frame：byte0=黑位图，byte4=state。
          * 本函数在 A01 后调用，复用本拍灰度，避免再次访问 I2C。 */
         const uint8_t *live = Log_LiveFrame();
@@ -317,6 +467,11 @@ void Avoid_Step(void)
             s_line_ready_ms = 0u;
         } else if (!s_line_ready_ms) {
             s_line_ready_ms = ms;
+        }
+        if (live[4] == 1u && count >= 1 && count <= 3 && s_speed_mm_s >= 50.0f) {
+            float rate = -((float)Log_GetGz() - s_gz_bias) / 131.0f;
+            float curve = av_clip(rate * AV_DEG_TO_RAD / s_speed_mm_s, -0.002f, 0.002f);
+            s_curve_live += 0.05f * (curve - s_curve_live);
         }
         uint8_t ready = s_line_ready_ms && (ms - s_line_ready_ms) >= AV_LINE_READY_MS &&
                         (int32_t)(ms - s_cool_until) >= 0;
@@ -327,10 +482,33 @@ void Avoid_Step(void)
         if (!found) { return; }
         s_obstacle_side = (UsId)side;
         s_away = side == US_L ? 1 : -1;
-        s_clear_x = (float)mm * 0.9659f + AV_OBSTACLE_LEN_MM +
-                    AV_SENSOR_REAR_MM + AV_CLEAR_MARGIN_MM;
+        float entry_rate = -((float)Log_GetGz() - s_gz_bias) / 131.0f;
+        float entry_curve = s_speed_mm_s >= 50.0f ?
+                            entry_rate * AV_DEG_TO_RAD / s_speed_mm_s : 0.0f;
+        /* 15:44-3先急弯、再直行：滤波器还记着旧曲率，实际角速度已归零。
+         * 仅保留与当前实测一致的缓弯；不确定时回到有界局部搜线。 */
+        s_curve_entry = fabsf(entry_curve) <= AV_CURVE_MAX &&
+                        fabsf(entry_curve - s_curve_live) <= AV_CURVE_MATCH ?
+                        av_clip(s_curve_live, -AV_CURVE_MAX, AV_CURVE_MAX) : 0.0f;
+        s_offset_mm = AV_BODY_HALF_MM + AV_GAP_MM + AV_TRACK_PAD_MM;
+        /* 接近用近界、越障用远界，不能把同一低估距离又用于过早回转。 */
+        s_obstacle_x = AV_PROBE_FRONT_MM + (float)mm * 0.8660f - AV_RANGE_PAD_MM;
+        s_obstacle_end = AV_PROBE_FRONT_MM + (float)mm + AV_MOUNT_PAD_MM +
+                         AV_RANGE_PAD_MM + AV_OBSTACLE_LEN_MM;
+        float near_y = av_line_y(s_obstacle_x);
+        float far_y = av_line_y(s_obstacle_end - AV_OBSTACLE_LEN_MM);
+        /* 相对通过一致性检查的局部线估计留足车宽；旧急弯不再缩小直行外移量。
+         * 不能一律把缓弯当直线，否则会横移过远并使低速回线距离暴增。 */
+        float edge_y = s_away > 0 ? fmaxf(near_y, far_y) : fminf(near_y, far_y);
+        s_obstacle_y = edge_y - (float)s_away * AV_OBSTACLE_WIDTH_MM * 0.5f;
+        s_pass_y = edge_y + (float)s_away * s_offset_mm;
+        s_shift_x = s_obstacle_x - AV_BODY_FRONT_MM - AV_GAP_MM;
+        /* 车尾转向时比直行投影长，先越过整个车尾扫掠半径再向内搜线。 */
+        s_clear_x = s_obstacle_end + AV_GAP_MM +
+                    sqrtf(AV_BODY_REAR_MM * AV_BODY_REAR_MM + AV_BODY_HALF_MM * AV_BODY_HALF_MM);
         s_trip_mm = s_x_mm = s_y_mm = s_yaw_deg = 0.0f;
         s_yaw_rate = 0.0f;
+        s_speed_i = 0.0f; s_plan_valid = 1u;
         s_steer_out = ((float)(int8_t)live[2] - (float)(int8_t)live[3]) * 0.5f;
         s_enc_l = En_Count(ENC_L); s_enc_r = En_Count(ENC_R);
         s_tick_ms = s_progress_ms = s_start_ms = ms;
@@ -338,7 +516,16 @@ void Avoid_Step(void)
         char note[48];
         snprintf(note, sizeof note, "AVOID %c near %ldmm", side == US_L ? 'L' : 'R', (long)mm);
         av_phase(AV_OUT, ms, note);
-        av_heading((float)s_away * AV_TARGET_DEG, 20);
+        char plan[80];
+        snprintf(plan, sizeof plan, "AVOID plan v=%ld lead=%ld offset=%ld clear=%ld",
+                 (long)s_speed_mm_s, (long)av_trigger_mm(), (long)s_offset_mm, (long)s_clear_x);
+        Tlm_SendEvent(3, plan);
+        snprintf(plan, sizeof plan, "AVOID path y=%ld curve=%ldppm rate=%ld",
+                 (long)s_pass_y, (long)(s_curve_entry * 1000000.0f), (long)entry_rate);
+        Tlm_SendEvent(3, plan);
+        /* 晚检出时不把“降速”误当缩短转弯半径；空间不足就停。 */
+        if (s_shift_x < 220.0f) { av_fault("AVOID insufficient turn room"); return; }
+        av_offset_path();
         return;
     }
 
@@ -359,54 +546,68 @@ void Avoid_Step(void)
     /* 仅在尚未明显离线时，两个正的远距读数允许取消误接管。 */
     if (s_phase == AV_OUT && s_clear_reads >= 2u && count >= 1 && count <= 3 &&
         fabsf(s_yaw_deg) < 12.0f && fabsf(s_y_mm) < 20.0f) {
+        s_plan_valid = 0u;
         av_phase(AV_RECOVER, ms, "AVOID echo cleared, recover");
     }
 
     switch (s_phase) {
     case AV_OUT:
-        av_heading((float)s_away * AV_TARGET_DEG, 20);
-        if (fabsf(s_yaw_deg - (float)s_away * AV_TARGET_DEG) <= 5.0f) {
-            av_phase(AV_SHIFT, ms, "AVOID short offset");
-        } else if ((ms - s_phase_ms) > AV_TURN_MAX_MS) {
-            av_fault("AVOID outward turn failed");
-        }
+        av_offset_path();
+        if (s_phase == AV_FAULT) { break; }
+        if (s_x_mm >= s_shift_x * 0.7f) { av_phase(AV_SHIFT, ms, "AVOID path offset"); }
         break;
     case AV_SHIFT:
-        av_heading((float)s_away * AV_TARGET_DEG, 20);
-        if (s_y_mm * (float)s_away >= AV_OFFSET_MM) {
-            av_phase(AV_PARALLEL, ms, "AVOID offset reached");
-        } else if ((s_trip_mm - s_phase_mm) > 250.0f) {
-            av_fault("AVOID offset not reached");
-        }
+        av_offset_path();
+        if (s_phase == AV_FAULT) { break; }
+        if (s_x_mm >= s_shift_x &&
+            (s_y_mm - s_pass_y) * (float)s_away >= -8.0f) {
+            av_phase(AV_PARALLEL, ms, "AVOID parallel align");
+        } else if (s_x_mm > s_shift_x + 90.0f) { av_fault("AVOID offset not reached"); }
         break;
     case AV_PARALLEL:
-        av_heading(0.0f, 20);
-        if (fabsf(s_yaw_deg) <= 5.0f) {
-            av_phase(AV_PASS, ms, "AVOID pass obstacle");
-        } else if ((ms - s_phase_ms) > AV_TURN_MAX_MS) {
-            av_fault("AVOID parallel turn failed");
-        }
-        break;
     case AV_PASS:
-        av_heading(0.0f, 20);
-        /* 用前向位移判断车尾越障，弯曲路径长度不能替代前向距离。 */
+        av_nav(s_x_mm + AV_LOOKAHEAD_MM, s_pass_y, AV_ROUTE_SPEED, 18);
+        if (s_phase == AV_FAULT) { break; }
+        if (s_phase == AV_PARALLEL && fabsf(s_yaw_deg) <= 25.0f) {
+            av_phase(AV_PASS, ms, "AVOID pass obstacle");
+        }
         if (s_x_mm >= s_clear_x) {
+            s_search_ms = ms; s_search_trip = s_trip_mm;
+            s_search_x = s_x_mm;
+            s_return_offset = s_y_mm - av_line_y(s_search_x);
             av_phase(AV_RETURN, ms, "AVOID return now");
         }
         break;
     case AV_RETURN:
+    case AV_SEARCH:
         if (av_line(bits, count)) {
             av_phase(AV_RECOVER, ms, "AVOID line seen, center now");
             av_recover(ms, bits, count); /* 见线这一拍就纠偏，不再沿用旧舵量。 */
             if (s_phase == AV_IDLE) { return; }
         } else if (count >= 5) {
             /* 斜交/标识区域先降速和抑制旋转，不把全黑当作线已居中。 */
-            av_drive(8, -0.08f * s_yaw_rate);
+            av_drive(av_speed_base(AV_CAPTURE_SPEED, 8), -0.08f * s_yaw_rate);
+        } else if (s_phase == AV_RETURN && s_x_mm < s_search_x + AV_RETURN_RUN_MM) {
+            float gx = s_x_mm + AV_RETURN_LOOK_MM;
+            float t = av_clip((gx - s_search_x) / AV_RETURN_RUN_MM, 0.0f, 1.0f);
+            float gy = av_line_y(gx) + s_return_offset *
+                       (1.0f - t * t * (3.0f - 2.0f * t));
+            av_nav(gx, gy, AV_SEEK_SPEED, 12);
         } else {
-            av_heading(-(float)s_away * AV_TARGET_DEG, 20);
+            /* 第一次跨过预测线70mm；仍全白就向另一侧扫一次，禁止单方向盲开。 */
+            float gx = s_search_x + (s_phase == AV_RETURN ? 65.0f : 150.0f);
+            float gy = av_line_y(gx) + (s_phase == AV_RETURN ? -(float)s_away : (float)s_away) *
+                        AV_SEARCH_BAND_MM;
+            if (s_phase == AV_RETURN && (s_y_mm - gy) * (float)s_away < 15.0f) {
+                av_phase(AV_SEARCH, ms, "AVOID local sweep reverse");
+                gx = s_search_x + 150.0f;
+                gy = av_line_y(gx) + (float)s_away * AV_SEARCH_BAND_MM;
+            }
+            av_nav(s_x_mm + AV_SEARCH_LOOK_MM, gy, AV_SEEK_SPEED, 12);
         }
-        if (s_phase == AV_RETURN && ((s_trip_mm - s_phase_mm) > AV_SEEK_MAX_MM ||
-            (ms - s_phase_ms) > AV_SEEK_MAX_MS)) {
+        if ((s_phase == AV_RETURN || s_phase == AV_SEARCH) &&
+            ((s_trip_mm - s_search_trip) > AV_SEEK_MAX_MM ||
+             (ms - s_search_ms) > AV_SEEK_MAX_MS)) {
             av_fault("AVOID line not found");
         }
         break;

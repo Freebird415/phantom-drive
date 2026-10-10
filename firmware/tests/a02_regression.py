@@ -75,7 +75,8 @@ def hook(uc, address, size, user):
         events.append(cstr(uc.reg_read(UC_ARM_REG_R1)))
     uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
-u.hook_add(UC_HOOK_CODE, hook)
+for address in [STOP, *hooks]:
+    u.hook_add(UC_HOOK_CODE, hook, begin=address, end=address)
 
 def call(ms, bits):
     u.reg_write(UC_ARM_REG_CPSR, 0x20)
@@ -105,11 +106,11 @@ def reset(yaw=0.0, err=0.0, away=-1):
 # A locally centered curve must not be rejected just because entry-relative yaw >18 degrees.
 for yaw in (-60.0, 60.0):
     reset(yaw=yaw)
-    for ms in range(1010, 1140, 10):
+    for ms in range(1010, 1370, 10):
         call(ms, 0x18)
     assert get('s_phase') == 0 and 'AVOID line recovered' in events
     assert all(l == r and l <= 12 for l, r in motors)
-print('PASS: curve-local centering and 120ms handoff, both directions')
+print('PASS: curve-local centering and 350ms handoff, both directions')
 
 # Replay the critical edge -> white pattern from 12:01, with mirrored direction.
 for bits, sign in [(0xe0, 1), (0x07, -1)]:
@@ -118,7 +119,7 @@ for bits, sign in [(0xe0, 1), (0x07, -1)]:
         call(ms, bits)
     call(1040, 0)
     assert get('s_phase') == 6
-    assert all((l - r) * sign > 0 and 0 <= l <= 16 and 0 <= r <= 16 for l, r in motors), (sign, motors)
+    assert all((l - r) * sign > 0 and 0 <= l <= 18 and 0 <= r <= 18 for l, r in motors), (sign, motors)
     call(1200, 0)
     assert get('s_phase') == 7 and motors[-1] == (0, 0)
     assert 'AVOID local line lost' in events
@@ -142,22 +143,22 @@ reset()
 for ms in range(1010, 1090, 10):
     call(ms, 0x18)
 call(1090, 0)
-for ms in range(1100, 1220, 10):
+for ms in range(1100, 1450, 10):
     call(ms, 0x18)
 assert get('s_phase') == 6
-call(1220, 0x18)
+call(1450, 0x18)
 assert get('s_phase') == 0
 print('PASS: handoff requires continuous centering, not accumulated sightings')
 
 reset()
 put('s_yaw_rate', 100.0)
-for ms in range(1010, 1150, 10):
+for ms in range(1010, 1400, 10):
     call(ms, 0x18)
 assert get('s_phase') == 6 and 'AVOID line recovered' not in events
 print('PASS: rapid rotation blocks premature handoff')
 
 reset()
 call(1010, 0x18)
-call(2700, 0x18)
+call(5600, 0x18)
 assert get('s_phase') == 7 and 'AVOID centering failed' in events
 print('PASS: overall centering timeout still brakes')
