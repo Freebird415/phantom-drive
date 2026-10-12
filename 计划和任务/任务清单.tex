@@ -14,7 +14,7 @@
 \begin{center}
 {\LARGE\bfseries 工创小车 · 任务清单}\par\vspace{4pt}
 {\small 重走古丝路 · 自动循迹避障小车（华南理工大学 · 工程训练分散项目）}\par\vspace{2pt}
-{\small 5 人 · 13 项任务 · v2.9 · 更新：2026-10-12}\par
+{\small 5 人 · 13 项任务 · v2.10 · 更新：2026-10-12}\par
 \end{center}
 \vspace{-2pt}
 
@@ -104,7 +104,7 @@ H02 & 电路与电气集成 & 做：✅ 主体完成（原理图落定、PCB v2.
 \textbf{编号} & \textbf{任务} & \textbf{做 · 交 · 需} & \textbf{截止日期}\tabularnewline
 \midrule
 \endhead
-A01 & 循迹控制 & 做：✅ \textbf{主体完成}（10/10 无障碍全程通过、精停已实现、v8 基线冻结）；剩：终点线几路黑 ＋ \texttt{STOPDIST} 标定、带障碍全赛道复跑、陪 A02 做融合（交还平滑性）；交：毕烨恺的全赛道稳定循迹版（他做避障回线的基座）；需：李沛阳的驱动接口与板载快照；李昕程的实车 & 精停标定 \textbf{10/15}；全赛道 \textbf{10/16}\tabularnewline
+A01 & 循迹控制 & 做：✅ \textbf{主体完成}（10/10 无障碍全程通过、精停已实现、v8 基线冻结）；剩：陪 A02 做融合（接管暂停后交还的第一拍平滑性、绕障中看到线立刻结束机动的验证）；交：毕烨恺的全赛道稳定循迹版（他做避障回线的基座）；需：李沛阳的驱动接口与板载快照；李昕程的实车 & 融合 \textbf{10/17\textasciitilde{}10/18}\tabularnewline
 S01 & 辅助电路 & 做：打板前核对元件、封装与接线，避免打板出错；交：王政淋一份核对过的落图依据；需：王政淋的 \texttt{netlist.json} 与电气设计 & ✅ 已完成（随电气设计 9/23 冻结）\tabularnewline
 S02 & 辅助装配 & 做：装配打下手、拍照记录、固定走线；交：李昕程的装配照片与记录；需：李昕程的装配安排与到货材料 & ✅ 已完成（随 M02；照片入 \texttt{mech/加工证据/}）\tabularnewline
 \bottomrule
@@ -160,7 +160,6 @@ D02 & 文档与展示材料 & 做：PPT、答辩问答、演示视频；收全�
 \vspace{5pt}{\bfseries\color{accent}10/15（周四）· 第 2 步：固定障碍矩阵}\par\vspace{2pt}
 \begin{itemize}\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
 \item 毕烨恺：贴线边／半压线／偏 35° × 左右 × 2 速度，每格 \textbf{5/5、零接触}；触发距离与让开量记成表
-\item 熊雅琦：\textbf{终点线现场实测}（几路黑）＋ \texttt{STOPDIST} 定值
 \end{itemize}
 \vspace{5pt}{\bfseries\color{accent}10/16（周五 · 重心①）· 第 3 步 ＋ 融合首轮 —— 【关卡①】}\par\vspace{2pt}
 \begin{itemize}\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
@@ -199,7 +198,7 @@ D02 & 文档与展示材料 & 做：PPT、答辩问答、演示视频；收全�
 \midrule
 10/12\textasciitilde{}10/13 & 课满，不排任务\tabularnewline
 10/14（周三） & 15° 标测 ＋ 陀螺失效打点；A02 第 1 步 10/10；H02 点亮记录＋接线图入库\tabularnewline
-10/15（周四） & A02 第 2 步：障碍矩阵 5/5 零接触；精停 \texttt{STOPDIST} 定值\tabularnewline
+10/15（周四） & A02 第 2 步：障碍矩阵 5/5 零接触\tabularnewline
 10/16（周五） & A02 第 3 步 ＋ 全赛道首通（4 障 ＋ 精停）【关卡①】\tabularnewline
 10/17（周六） & 多轮验收（$\geq$ 3 轮全过）；素材交齐【关卡②】\tabularnewline
 10/18（周日） & \textbf{24:00 死线}：验收（连续 2 轮 4 障全过 ＋ 精停）＋ 材料冻结 ＋ 比赛日演练 ＋ 备份\tabularnewline
