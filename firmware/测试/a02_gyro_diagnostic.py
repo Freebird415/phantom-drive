@@ -1,8 +1,10 @@
 """ARM ELF regression: bad feedback must brake early, never reproduce a half-turn.
 
+Run after building firmware, with unicorn and pyelftools installed:
+    python firmware/测试/a02_gyro_diagnostic.py
+
 No hardware access or log writes. Angles/times here refer to the explicit nominal
 plant, NOT measured car response or a guaranteed physical stopping distance.
-Run after pio run -d firmware; requires unicorn and pyelftools.
 """
 import math
 import a02_navigation as nav
