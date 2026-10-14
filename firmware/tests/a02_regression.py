@@ -33,6 +33,8 @@ for address, data in segments:
     u.mem_write(address, data)
 events = []
 motors = []
+clock = 1000
+gyro_provider = lambda: struct.pack('<IIhHBBxx', clock, clock//40+1, 0, 0, 1, 0)
 STOP = 0x0800fff0
 
 def put(name, value, fmt=None):
@@ -58,7 +60,7 @@ def cstr(addr):
 def signed(n):
     return n if n < 0x80000000 else n - 0x100000000
 
-hooks = {symbols[n][0] & ~1: n for n in ['Mo_Set', 'Mo_Brake', 'Tlm_SendEvent', 'Log_Note', 'Tlm_SendT']}
+hooks = {symbols[n][0] & ~1: n for n in ['Mo_Set', 'Mo_Brake', 'Tlm_SendEvent', 'Log_Note', 'Tlm_SendT', 'Log_GetGyro', 'HAL_GetTick', 'Trace_FinReset']}
 
 def hook(uc, address, size, user):
     if address == STOP:
@@ -73,12 +75,20 @@ def hook(uc, address, size, user):
         motors.append((0, 0))
     elif name == 'Tlm_SendEvent':
         events.append(cstr(uc.reg_read(UC_ARM_REG_R1)))
+        if events[-1].startswith('AVOID ') and 'gyro' in events[-1] and ('mismatch' in events[-1] or 'invalid' in events[-1] or 'not ready' in events[-1]):
+            assert motors[-1] == (0, 0), 'Fault must brake before emitting events'
+    elif name == 'Log_GetGyro':
+        uc.mem_write(uc.reg_read(UC_ARM_REG_R0), gyro_provider())
+    elif name == 'HAL_GetTick':
+        uc.reg_write(UC_ARM_REG_R0, clock)
     uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
 
 for address in [STOP, *hooks]:
     u.hook_add(UC_HOOK_CODE, hook, begin=address, end=address)
 
 def call(ms, bits):
+    global clock
+    clock = ms
     u.reg_write(UC_ARM_REG_CPSR, 0x20)
     u.reg_write(UC_ARM_REG_SP, 0x2000f000)
     u.reg_write(UC_ARM_REG_LR, STOP | 1)
@@ -99,6 +109,7 @@ def reset(yaw=0.0, err=0.0, away=-1):
                         ('s_line_err', err), ('s_line_d', 0.0), ('s_trip_mm', 0.0),
                         ('s_phase_mm', 0.0), ('s_line_trip', 0.0)]:
         put(name, value)
+    put('s_speed_mm_s', 50.0)
     motors.clear()
     events.clear()
     assert get('s_steer_out', 'f') == 0.0
@@ -158,7 +169,30 @@ assert get('s_phase') == 6 and 'AVOID line recovered' not in events
 print('PASS: rapid rotation blocks premature handoff')
 
 reset()
+put('s_speed_mm_s', 120.0)
+for ms in range(1010, 1400, 10):
+    call(ms, 0x18)
+assert get('s_phase') == 6 and 'AVOID line recovered' not in events
+print('PASS: excessive nominal translation speed blocks handoff')
+
+reset()
 call(1010, 0x18)
 call(5600, 0x18)
 assert get('s_phase') == 7 and 'AVOID centering failed' in events
 print('PASS: overall centering timeout still brakes')
+
+# A latest read can fail exactly at handoff; never reset the resulting fault.
+saved_gyro = gyro_provider
+reads = 0
+def fail_at_release():
+    global reads
+    reads += 1
+    return struct.pack('<IIhHBBxx', clock, 1, 0, int(reads > 1), int(reads == 1), 2 if reads > 1 else 0)
+gyro_provider = fail_at_release
+reset()
+put('s_line_ms', 1380); put('s_center_ms', 1000)
+call(1400, 0x18)
+assert get('s_phase') == 7 and motors[-1] == (0,0)
+assert 'AVOID line recovered' not in events
+gyro_provider = saved_gyro
+print('PASS: failed final read cannot falsely release A02 fault to A01')

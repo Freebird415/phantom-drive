@@ -9,7 +9,7 @@
 
 #define MPU_ADDR7   0x68
 #define MPU_ADDR8   (MPU_ADDR7 << 1)
-#define MPU_TO      50u
+#define MPU_TO       5u /* HAL transaction timeout, not a whole-loop guarantee */
 
 #define REG_WHO     0x75
 #define REG_PWR     0x6B
@@ -24,8 +24,10 @@
 /* I2C2 句柄由本驱动独占（2026-10-10 起 OLED 已放弃，总线上只剩 MPU6050）。
    GPIO/时钟的板级初始化仍在 bsp_board.c 的 HAL_I2C_MspInit 里。*/
 static I2C_HandleTypeDef s_i2c2;
+static uint8_t s_ready, s_status = MPU_NOT_READY;
+static uint32_t s_retry_ms;
 
-static void mpu_bus_init(void)
+static uint8_t mpu_bus_init(void)
 {
     s_i2c2.Instance             = I2C2;
     s_i2c2.Init.ClockSpeed      = 100000;   /* 100k 够用（14B 读 ≈1.5ms）；MPU 支持 400k，需要时再提 */
@@ -36,19 +38,25 @@ static void mpu_bus_init(void)
     s_i2c2.Init.OwnAddress2     = 0;
     s_i2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     s_i2c2.Init.NoStretchMode   = I2C_NOSTRETCH_DISABLE;
-    (void)HAL_I2C_Init(&s_i2c2);
+    return HAL_I2C_Init(&s_i2c2) == HAL_OK;
 }
 
 static uint8_t mpu_rd(uint8_t reg, uint8_t *buf, uint16_t n)
 {
-    return (HAL_I2C_Mem_Read(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
-                             buf, n, MPU_TO) == HAL_OK) ? 1u : 0u;
+    if (HAL_I2C_Mem_Read(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
+                         buf, n, MPU_TO) != HAL_OK) {
+        s_status = MPU_IO_ERROR; return 0u;
+    }
+    return 1u;
 }
 
 static uint8_t mpu_wr(uint8_t reg, uint8_t val)
 {
-    return (HAL_I2C_Mem_Write(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
-                              &val, 1, MPU_TO) == HAL_OK) ? 1u : 0u;
+    if (HAL_I2C_Mem_Write(&s_i2c2, MPU_ADDR8, reg, I2C_MEMADD_SIZE_8BIT,
+                          &val, 1, MPU_TO) != HAL_OK) {
+        s_status = MPU_IO_ERROR; return 0u;
+    }
+    return 1u;
 }
 
 uint8_t Mpu_WhoAmI(void)
@@ -58,40 +66,56 @@ uint8_t Mpu_WhoAmI(void)
     return v;
 }
 
-/* ⭐ 自愈计数（2026-10-01 实踩：断电/上电时序会让芯片回到【睡眠态】）
-   现象：`WHO_AM_I=0x68` ✓、`temp` 还在更新 ✓，但 **acc(三轴) 与 gyro 全 0** ✗
-        （因为初始化只在开机调一次，芯片被复位回睡眠后就再没人叫醒它；
-         `Mpu_Read` 也不报错，只是扔回一排 0 ⇒ 陀螺仪静默失效）
-   对策：**连续多次读到“六轴全 0”就重新初始化一次**。
-   判据可靠：活着的加速度计静止时至少有一轴 ≈ ±1g，**六轴全 0 在物理上不可能**。*/
-static uint16_t s_zero_run;        /* 连续多少次六轴全 0 */
+/* Six zero axes are rejected data, not proof of hardware damage. Reinitializing
+ * a failed sensor must not block the loop while motors are enabled. */
 static uint16_t s_reinit_cnt;      /* 自动重新初始化了几次 */
-#define MPU_ZERO_RUN_TRIG  20u     /* 陀螺仪按 ~25Hz 轮询 ⇒ 约 0.8 秒触发一次重试 */
 
 uint16_t Mpu_ReinitCount(void) { return s_reinit_cnt; }
+uint8_t Mpu_Status(void) { return s_status; }
+
+static uint8_t mpu_config_ok(void)
+{
+    uint8_t pwr, gyro;
+    if (!mpu_rd(REG_PWR, &pwr, 1) || !mpu_rd(REG_GYRO, &gyro, 1)) {
+        s_status = MPU_IO_ERROR;
+        return 0u;
+    }
+    /* Reject reset/sleep/cycle and disabled temperature/alternate clock setup;
+     * reject self-test or non-250dps range. Matches our verified init values. */
+    if (pwr != 0u || gyro != 0u) {
+        s_status = (pwr & 0x40u) ? MPU_SLEEP : MPU_CONFIG_ERROR;
+        return 0u;
+    }
+    return 1u;
+}
 
 void Mpu_Init(void)
 {
-    mpu_bus_init();                 /* 总线先起来（谁也不能再替它初始化 I2C2）*/
-    if (Mpu_WhoAmI() == 0) {
-        printf("# MPU6050 未应答（查 VCC=3V3 / SCL->PB10 / SDA->PB11 / AD0->GND / 共地）\r\n");
+    s_ready = 0u; s_status = MPU_NOT_READY;
+    s_retry_ms = HAL_GetTick();
+    uint8_t who = 0, config = 0, accel = 0;
+    if (!mpu_bus_init()) { s_status = MPU_IO_ERROR; return; }
+    if (!mpu_rd(REG_WHO, &who, 1) || who != MPU_ADDR7 ||
+        !mpu_wr(REG_PWR, 0) || !mpu_wr(REG_CONFIG, 3) ||
+        !mpu_wr(REG_GYRO, 0) || !mpu_wr(REG_ACCEL, 0) || !mpu_config_ok() ||
+        !mpu_rd(REG_CONFIG, &config, 1) || !mpu_rd(REG_ACCEL, &accel, 1) ||
+        config != 3u || accel != 0u) {
+        if (s_status == MPU_NOT_READY) { s_status = MPU_CONFIG_ERROR; }
+        printf("# MPU6050 init FAILED status=%u\r\n", (unsigned)s_status);
         return;
     }
-    (void)mpu_wr(REG_PWR,    0x00);     /* 解除睡眠 */
-    (void)mpu_wr(REG_CONFIG, 0x03);     /* DLPF ≈44Hz */
-    (void)mpu_wr(REG_GYRO,   0x00);     /* ±250°/s */
-    (void)mpu_wr(REG_ACCEL,  0x00);     /* ±2g */
-    /* ⭐ 回读确认：以前不核对，写失败（上电时序/总线忙）也当成功 ⇒ 症状隐蔽 */
-    {
-        uint8_t pwr = 0xFF;
-        if (mpu_rd(REG_PWR, &pwr, 1) && (pwr & 0x40u)) {
-            printf("# MPU6050 **唤醒失败**（PWR_MGMT_1=0x%02X，睡眠位仍=1）——可能上电太早，稍后可重试\r\n",
-                   (unsigned)pwr);
-            return;
-        }
+    s_ready = 1u; s_status = MPU_OK;
+    printf("# MPU6050 init OK (WHO_AM_I=0x%02X)\r\n", (unsigned)who);
+}
+
+void Mpu_Service(uint8_t parked)
+{
+    /* Never reinitialize/print while driving. IO failure, sleep or zero axes
+     * all get bounded-frequency recovery while parked, not just zero axes. */
+    if (parked && s_status != MPU_OK && (HAL_GetTick() - s_retry_ms) >= 1000u) {
+        s_reinit_cnt++;
+        Mpu_Init();
     }
-    s_zero_run = 0;
-    printf("# MPU6050 init OK (WHO_AM_I=0x%02X)\r\n", (unsigned)Mpu_WhoAmI());
 }
 
 /* ⭐ 调试用：故意让 MPU 回到睡眠态（模拟“断电/上电时序”那个故障），
@@ -103,7 +127,7 @@ void Mpu_DebugReset(void)
 {
     uint8_t back = 0xFF;
     (void)mpu_wr(REG_PWR, 0xC0);      /* DEVICE_RESET(0x80) + SLEEP(0x40) */
-    s_zero_run = 0;
+    s_ready = 0u; s_status = MPU_NOT_READY;
     (void)mpu_rd(REG_PWR, &back, 1);  /* ⭐ 回读确认（写失败/总线忙时以前看不出来）*/
     printf("# MPU6050 已复位回上电默认（回读 PWR_MGMT_1=0x%02X）——数据寄存器应归 0，等约 1 秒看自愈\r\n",
            (unsigned)back);
@@ -112,22 +136,19 @@ void Mpu_DebugReset(void)
 uint8_t Mpu_Read(int16_t raw[7])
 {
     uint8_t b[14];
-    if (!mpu_rd(REG_DATA, b, 14)) { return 0; }
+    if (!s_ready) { return 0; }
+    if (!mpu_config_ok()) { return 0; }
+    if (!mpu_rd(REG_DATA, b, 14)) { s_status = MPU_IO_ERROR; return 0; }
     for (int i = 0; i < 7; i++) {
         raw[i] = (int16_t)((b[2 * i] << 8) | b[2 * i + 1]);
     }
-    /* ⭐ 自愈：芯片应答但六轴全 0 ⇒ 八成是睡回去了（见文件开头的说明）*/
+    /* Zero axes are invalid evidence, not an assertion about hardware damage. */
     if (raw[0] == 0 && raw[1] == 0 && raw[2] == 0 &&
         raw[4] == 0 && raw[5] == 0 && raw[6] == 0) {
-        if (++s_zero_run >= MPU_ZERO_RUN_TRIG) {
-            s_zero_run = 0;
-            s_reinit_cnt++;
-            printf("# MPU6050 六轴全 0 OK 自动重新初始化（第 %u 次）\r\n", (unsigned)s_reinit_cnt);
-            Mpu_Init();               /* 重新叫醒（Mpu_Init 不再递归调 Mpu_Read）*/
-        }
-    } else {
-        s_zero_run = 0;
+        s_status = MPU_ZERO_AXES;
+        return 0;
     }
+    s_status = MPU_OK;
     return 1;
 }
 
@@ -136,7 +157,8 @@ void Mpu_PrintDebug(void)
     int16_t r[7];
     printf("MPU> WHO_AM_I=0x%02X\r\n", (unsigned)Mpu_WhoAmI());
     if (!Mpu_Read(r)) {
-        printf("MPU> **读不到数据**（设备没应答；查接线与 AD0 接地）\r\n");
+        printf("MPU> invalid status=%u parked-retries=%u\r\n",
+               (unsigned)Mpu_Status(), (unsigned)Mpu_ReinitCount());
         return;
     }
     {
@@ -150,9 +172,7 @@ void Mpu_PrintDebug(void)
         Bsp_FmtFix(tp, sizeof tp, r[3] / 340.0f + 36.53f, 1, 0);
         printf("MPU> acc(g) x=%s y=%s z=%s | gyro(dps) x=%s y=%s z=%s | temp=%sC\r\n",
                ax, ay, az, gx, gy, gz, tp);
-        printf("MPU> 健康度：自动重新初始化 %u 次%s\r\n",
-               (unsigned)Mpu_ReinitCount(),
-               (r[0] == 0 && r[1] == 0 && r[2] == 0 && r[4] == 0 && r[5] == 0 && r[6] == 0)
-                   ? "  ← **六轴仍全 0：没醒过来**（多等几秒会自动重试；也可发 MPUINIT）" : "");
+        printf("MPU> status=%u parked-retries=%u\r\n",
+               (unsigned)Mpu_Status(), (unsigned)Mpu_ReinitCount());
     }
 }

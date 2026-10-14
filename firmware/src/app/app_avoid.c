@@ -1,8 +1,8 @@
-/* A02 v4：保守曲率初值、柔和低速横移、车尾越障、有界局部搜线。
+/* A02 v5: valid/fresh gyro + encoder evidence watchdog; no blind fallback.
  * STEP 底板坐标下模型 200x195.5x100mm；用户确认朝驱动轮端前进。
  * 模型未包含现装探头/灰度/线束及全部突出件。下列外廓/安装偏移仍待实测。
  * 25mm 是名义规划余量，不是超声读数或已验收的实车间隙。
- * mm/计数仍未精标；保留原有有方向的陀螺积分，不改驱动/接口。 */
+ * mm/计数仍未精标；轮侧只做转向活动/方向证据，不当角速度真值。 */
 #include "app/app_avoid.h"
 #include "app/app_trace.h"
 #include "app/app_telemetry.h"
@@ -14,6 +14,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define AV_CONFIRM_MM       550
 #define AV_STOP_MM           30
@@ -52,10 +53,59 @@
 #define AV_LINE_LOST_MM      25.0f /* 名义尺度，只允许短暂续搜 */
 #define AV_MM_PER_CNT        0.115f
 #define AV_DEG_TO_RAD        0.01745329252f
+#define AV_GYRO_MAX_AGE_MS    80u   /* two 40ms read periods; reject at motor write too */
+#define AV_BIAS_SAMPLES      16u   /* fresh parked samples only, roughly 0.64s */
+#define AV_BIAS_MAX_RAW     655.0f /* +/-5dps raw bound, not gyroscope calibration truth */
+#define AV_BIAS_STABLE_RAW  262.0f /* within 2dps of parked running mean */
+#define AV_CHECK_WINDOW_MS  100u
+#define AV_CHECK_BAD_WINDOWS  3u   /* sustained evidence, not a single noisy frame */
+#define AV_CHECK_PWM_DIFF     8
+#define AV_CHECK_COUNT_DIFF  12    /* raw quadrature counts, NOT mm or degrees */
+#define AV_CHECK_ZERO_DPS     3.0f
+#define AV_HANDOFF_SPEED_MAX 85.0f /* nominal only; no scale calibration claimed */
+
+/* Stage 1 ONLY: raw quadrature counts, NOT calibrated mm/turn angles.
+ * Burn-time opt-in; no telemetry command can enable this calibration mode.
+ * +1 = right (left wheel faster), -1 = left. ALL motion values await field tuning. */
+#ifndef AV_STAGE1_ENABLE
+#define AV_STAGE1_ENABLE       0
+#endif
+#ifndef AV_STAGE1_DIRECTION
+#define AV_STAGE1_DIRECTION    1
+#endif
+#define AV_TEST_TRIGGER_CNT 2000u /* average of the two forward wheel counts */
+#define AV_TEST_SPEED_CPS     400.0f
+#define AV_TEST_SEARCH_CPS    320.0f
+#define AV_TEST_CAPTURE_CPS   250.0f
+#define AV_TEST_CENTER_CPS    350.0f
+#define AV_TEST_TURN            3.0f /* half of L-R PWM difference */
+#define AV_TEST_TURN_MAX        4.0f
+#define AV_TEST_TURN_SLEW       0.25f /* per 10ms; each wheel <=1 PWM/10ms */
+#define AV_TEST_BASE_SLEW       0.75f
+#define AV_TEST_WHEEL_MIN       5.0f /* positive command, not proof of wheel movement */
+#define AV_TEST_WHEEL_MAX      14.0f
+#define AV_TEST_OUT_CNT       700u
+#define AV_TEST_FWD_CNT       150u
+#define AV_TEST_RETURN_CNT   1400u
+#define AV_TEST_CAPTURE_MIN   150u
+#define AV_TEST_SEARCH_CNT    800u
+#define AV_TEST_TOTAL_CNT    6000u
+#define AV_TEST_WHITE_MS       60u
+#define AV_TEST_DECEL_MS     1500u
+#define AV_TEST_OUT_MS       3000u
+#define AV_TEST_FWD_MS       1500u
+#define AV_TEST_RETURN_MS    6000u
+#define AV_TEST_SEARCH_MS    4000u
+#define AV_TEST_TOTAL_MS    20000u
+#define AV_TEST_ENCODER_STEP  500  /* implausible single-wheel counts per 10ms */
+#define AV_TEST_CHECK_DIFF      4  /* smaller steering still gets v5 health protection */
+#define AV_TEST_RATE_MAX       60.0f /* diagnostic stop only, NOT a heading controller */
+#define AV_TEST_RATE_HOLD_MS   100u
 
 typedef enum {
     AV_IDLE, AV_OUT, AV_SHIFT, AV_PARALLEL, AV_PASS,
-    AV_RETURN, AV_RECOVER, AV_FAULT, AV_SEARCH
+    AV_RETURN, AV_RECOVER, AV_FAULT, AV_SEARCH,
+    AV_TEST_DECEL, AV_TEST_OUT, AV_TEST_FWD, AV_TEST_RETURN, AV_TEST_SEARCH
 } AvPhase;
 
 static uint8_t s_drive, s_seen[2], s_clear_reads;
@@ -80,10 +130,48 @@ static float s_offset_mm, s_shift_x, s_obstacle_x, s_obstacle_end, s_obstacle_y,
 static float s_pass_y, s_return_offset;
 static uint8_t s_plan_valid;
 static float s_heading_target;
+static uint32_t s_bias_seq, s_gyro_report_ms, s_check_ms;
+static uint8_t s_bias_n, s_bias_ready, s_check_bad, s_check_raw_zero;
+static int8_t s_check_dir;
+static int32_t s_check_diff, s_check_total;
+static float s_check_angle;
+
+/* Volatile keeps both branches in the offline ELF; no public runtime setter.
+ * s_test_used intentionally survives TRACE/AVOID stop/restart; only Init rearms. */
+static volatile uint8_t s_test_enabled = AV_STAGE1_ENABLE;
+static volatile int8_t s_test_direction = AV_STAGE1_DIRECTION;
+static uint8_t s_test_active, s_test_used, s_test_running, s_test_left_line;
+static uint32_t s_test_before2, s_test_trip2, s_test_phase2;
+static uint32_t s_test_white_ms, s_test_slow_ms, s_test_search_ms, s_test_search2;
+static uint32_t s_test_fast_ms;
+static float s_test_base;
+static const uint16_t test_limits[] = {
+    AV_TEST_DECEL_MS, AV_TEST_OUT_MS, AV_TEST_FWD_MS, AV_TEST_RETURN_MS, AV_TEST_SEARCH_MS
+};
+
+static void av_test_search(uint32_t ms);
+static void av_test_step(uint32_t ms);
 
 static float av_clip(float v, float lo, float hi)
 {
     return v < lo ? lo : v > hi ? hi : v;
+}
+
+static uint8_t av_gyro(uint32_t ms, LogGyro *g)
+{
+    Log_GetGyro(g);
+    return g->valid && g->seq && (ms - g->stamp_ms) <= AV_GYRO_MAX_AGE_MS;
+}
+
+static void av_gyro_report(uint32_t ms)
+{
+    LogGyro g;
+    Log_GetGyro(&g);
+    char note[48];
+    snprintf(note, sizeof note, "AV G v%u s%u b%u a%lu r%d f%u",
+             g.valid, g.status, s_bias_ready, (unsigned long)(ms - g.stamp_ms), g.raw, g.failures);
+    Tlm_SendEvent(3, note); /* existing E protocol, raw LSB, age ms; no gz8 ambiguity */
+    s_gyro_report_ms = ms;
 }
 
 /* 每 50ms 实时计数窗口，补偿测距阻塞；同毫秒追赶不重复估速。 */
@@ -158,6 +246,7 @@ static int av_count(uint8_t bits)
 
 static void av_reset(void)
 {
+    s_test_active = 0u; /* never clear s_test_used here */
     s_phase = AV_IDLE;
     s_seen[0] = s_seen[1] = s_clear_reads = 0u;
     s_prev_mm[0] = s_prev_mm[1] = 0;
@@ -171,6 +260,9 @@ static void av_reset(void)
     s_plan_valid = 0u;
     s_search_ms = 0u;
     s_speed_i = 0.0f;
+    s_check_ms = 0u; s_check_dir = 0; s_check_bad = 0u;
+    s_check_raw_zero = 1u;
+    s_check_diff = s_check_total = 0; s_check_angle = 0.0f;
 }
 
 void Avoid_SetDrive(uint8_t on)
@@ -186,15 +278,21 @@ uint8_t Avoid_Mode(void) { return s_phase != AV_IDLE; }
 
 void Avoid_Init(void)
 {
+    s_test_used = s_test_running = 0u;
+    s_test_before2 = 0u;
     s_drive = 0u;
     s_cool_until = 0u;
     s_gz_bias = 0.0f;
+    s_bias_seq = 0u; s_bias_n = s_bias_ready = 0u;
+    s_gyro_report_ms = 0u;
     s_speed_ms = s_speed_dt = 0u;
     s_speed_mm_s = s_speed_dist = s_curve_live = 0.0f;
     av_reset();
-    printf("# AVOID dynamic lead; gap=%ldmm stop=%dmm; route/search=%ld/%ldmmps nominal\r\n",
-           (long)AV_GAP_MM, AV_STOP_MM, (long)AV_ROUTE_SPEED, (long)AV_SEEK_SPEED);
-    Tlm_SendEvent(97, "AVOID build a02-v4-soft-entry-trial");
+    Tlm_SendEvent(97, "AVOID build a02-s1-count-trial");
+    char test[48];
+    snprintf(test, sizeof test, "A02 TEST en%u dir%d trigger%u counts",
+             s_test_enabled, s_test_direction, AV_TEST_TRIGGER_CNT);
+    Tlm_SendEvent(97, test);
 }
 
 static void av_phase(AvPhase next, uint32_t ms, const char *note)
@@ -208,21 +306,49 @@ static void av_phase(AvPhase next, uint32_t ms, const char *note)
 
 static void av_fault(const char *note)
 {
-    if (s_phase != AV_FAULT) {
-        Tlm_SendEvent(88, note);
-        char pose[64];
-        snprintf(pose, sizeof pose, "AVOID pose p=%d x=%ld y=%ld yaw=%ld",
-                 (int)s_phase, (long)s_x_mm, (long)s_y_mm, (long)s_yaw_deg);
-        Tlm_SendEvent(88, pose); /* 名义 mm / 度，便于区分距离与回线故障。 */
-    }
+    AvPhase old = s_phase;
+    /* Brake BEFORE serial/event formatting: logging must never prolong a turn. */
     s_phase = AV_FAULT;
     Mo_Brake();
     s_pwm_l = s_pwm_r = 0;
+    if (old != AV_FAULT) {
+        Tlm_SendEvent(88, note);
+        char pose[64];
+        snprintf(pose, sizeof pose, "AVOID pose p=%d x=%ld y=%ld yaw=%ld",
+                 (int)old, (long)s_x_mm, (long)s_y_mm, (long)s_yaw_deg);
+        Tlm_SendEvent(88, pose); /* 名义 mm / 度，便于区分距离与回线故障。 */
+        av_gyro_report(HAL_GetTick());
+    }
 }
 
 static void av_drive(int base, float steer)
 {
     if (s_phase == AV_FAULT) { return; }
+    LogGyro g;
+    if (!av_gyro(HAL_GetTick(), &g)) { av_fault("AVOID gyro invalid/stale"); return; }
+    if (s_test_active) {
+        /* Common speed AND differential slew. Seeded from A01 at DECEL entry;
+         * normal stage commands are 5..14%, never reverse or pivot in place. */
+        float step = (float)s_dt_ms / 10.0f;
+        float wanted_base = (float)base;
+        if (s_phase != AV_TEST_DECEL) {
+            wanted_base = av_clip(wanted_base, AV_TEST_WHEEL_MIN + fabsf(s_steer_out),
+                                 AV_TEST_WHEEL_MAX - fabsf(s_steer_out));
+        }
+        s_test_base += av_clip(wanted_base - s_test_base,
+                              -AV_TEST_BASE_SLEW * step, AV_TEST_BASE_SLEW * step);
+        steer = av_clip(steer, -AV_TEST_TURN_MAX, AV_TEST_TURN_MAX);
+        float room = fminf(s_test_base - AV_TEST_WHEEL_MIN,
+                          AV_TEST_WHEEL_MAX - s_test_base);
+        if (s_phase != AV_TEST_DECEL) { steer = av_clip(steer, -fmaxf(room, 0.0f), fmaxf(room, 0.0f)); }
+        s_steer_out += av_clip(steer - s_steer_out,
+                              -AV_TEST_TURN_SLEW * step, AV_TEST_TURN_SLEW * step);
+        s_pwm_l = (int)(s_test_base + s_steer_out + 0.5f);
+        s_pwm_r = (int)(s_test_base - s_steer_out + 0.5f);
+        /* Initial DECEL may start above the stage cap: ramp, don't snap to it. */
+        Mo_Set(s_pwm_l > 0 ? s_pwm_l : 0, s_pwm_r > 0 ? s_pwm_r : 0);
+        return; /* no yaw, coordinates, route predictor or footprint model */
+    }
     if (steer > (float)base) { steer = (float)base; }
     if (steer < -(float)base) { steer = -(float)base; }
     /* 外移/越障每10ms只改变1档差速；回线/边缘纠偏保留原响应。 */
@@ -295,8 +421,16 @@ static void av_emit(uint32_t ms, uint8_t bits, int count)
         if (gray[i]) { sum += i; }
     }
     float err = (count > 0 && count < 5) ? (float)sum / (float)count - 3.5f : 0.0f;
-    int state = (s_phase == AV_RETURN || s_phase == AV_RECOVER || s_phase == AV_SEARCH) ? 3 : 2;
+    int state = (s_phase == AV_RETURN || s_phase == AV_RECOVER || s_phase == AV_SEARCH ||
+                 s_phase == AV_TEST_RETURN || s_phase == AV_TEST_SEARCH) ? 3 : 2;
     Log_Note(bits, err, s_pwm_l, s_pwm_r, state);
+    /* Log_Note can perform this cycle's MPU transaction. If it just failed,
+     * brake now, not after another turn/serial frame. Fault emission never
+     * recurses through this check. The stored T records the preceding command. */
+    LogGyro g;
+    if (s_phase != AV_IDLE && s_phase != AV_FAULT && !av_gyro(HAL_GetTick(), &g)) {
+        av_fault("AVOID gyro invalid/stale");
+    }
     Tlm_SendT(ms, gray, err, s_pwm_l, s_pwm_r, state);
 }
 
@@ -351,8 +485,63 @@ static void av_motion(uint32_t ms)
     s_tick_ms = ms;
     s_dt_ms = dt < 40u ? dt : 40u;
     if (dt > 80u) { av_fault("AVOID control delayed"); return; }
+    LogGyro g;
+    if (!av_gyro(ms, &g)) { av_fault("AVOID gyro invalid/stale"); return; }
     /* 方向积分保留正负；原先累加绝对 gz 会把反向摆动也算成转角。 */
-    s_yaw_rate = -((float)Log_GetGz() - s_gz_bias) / 131.0f;
+    s_yaw_rate = -((float)g.raw - s_gz_bias) / 131.0f;
+    if (s_test_active) {
+        if (fabsf(s_yaw_rate) > AV_TEST_RATE_MAX) {
+            if (!s_test_fast_ms) { s_test_fast_ms = ms; }
+            if (ms - s_test_fast_ms >= AV_TEST_RATE_HOLD_MS) {
+                av_fault("A02 TEST rotation too fast"); return;
+            }
+        } else { s_test_fast_ms = 0u; }
+    }
+    /* Sign/turn activity only. ENC_SIGN_L=+1, ENC_SIGN_R=-1 means forward
+     * positive on both wheels, so dl-dr and our -gz right yaw must agree.
+     * No wheelbase or uncalibrated count->deg conversion enters control. */
+    int pwm_diff = s_pwm_l - s_pwm_r;
+    int check_diff = s_test_active ? AV_TEST_CHECK_DIFF : AV_CHECK_PWM_DIFF;
+    int8_t dir = pwm_diff >= check_diff ? 1 : pwm_diff <= -check_diff ? -1 : 0;
+    if (!dir || dir != s_check_dir) {
+        s_check_ms = ms; s_check_dir = dir; s_check_bad = 0u;
+        s_check_raw_zero = g.raw == 0;
+        s_check_diff = s_check_total = 0; s_check_angle = 0.0f;
+    } else {
+        s_check_diff += dl - dr;
+        s_check_total += (dl < 0 ? -dl : dl) + (dr < 0 ? -dr : dr);
+        s_check_angle += s_yaw_rate * (float)dt * 0.001f;
+        if (g.raw) { s_check_raw_zero = 0u; }
+        uint32_t window = ms - s_check_ms;
+        if (window >= AV_CHECK_WINDOW_MS) {
+            int32_t diff = s_check_diff < 0 ? -s_check_diff : s_check_diff;
+            float rate = s_check_angle * 1000.0f / (float)window;
+            uint8_t turn = diff >= AV_CHECK_COUNT_DIFF && diff * 4 >= s_check_total;
+            /* A dead raw-zero signal minus a previously nonzero bias must not
+             * masquerade as a real 3..5dps turn. Require whole-window raw zero,
+             * strong wheel evidence and the same 3-window debounce. */
+            uint8_t bad = turn && (s_check_raw_zero || fabsf(rate) < AV_CHECK_ZERO_DPS ||
+                          rate * (float)s_check_diff < 0.0f);
+            s_check_bad = bad ? s_check_bad + 1u : 0u;
+            s_check_ms = ms; s_check_diff = s_check_total = 0; s_check_angle = 0.0f;
+            s_check_raw_zero = 1u;
+            if (s_check_bad >= AV_CHECK_BAD_WINDOWS) {
+                av_fault("AVOID gyro/wheel mismatch"); return;
+            }
+        }
+    }
+    if (s_test_active) {
+        int32_t limit = AV_TEST_ENCODER_STEP * (int32_t)(dt + 10u) / 10;
+        if (dl < -2 || dr < -2 || dl > limit || dr > limit) {
+            av_fault("A02 TEST encoder direction/jump"); return;
+        }
+        if (dl > 0 && dr > 0) { s_progress_ms = ms; } /* neither wheel may stall */
+        if (dl + dr > 0) { s_test_trip2 += (uint32_t)(dl + dr); }
+        float ds = (float)(dl + dr) * 0.5f * AV_MM_PER_CNT;
+        av_speed_sample(ms, ds);
+        s_trip_mm += ds > 0.0f ? ds : 0.0f; /* compatibility: not route progress */
+        return; /* gyro is health evidence, not an integrated path reference */
+    }
     float yaw_mid = s_yaw_deg + s_yaw_rate * (float)dt * 0.0005f;
     s_yaw_deg += s_yaw_rate * (float)dt * 0.001f;
     float ds = (float)(dl + dr) * 0.5f * AV_MM_PER_CNT;
@@ -367,8 +556,16 @@ static void av_motion(uint32_t ms)
 
 static void av_release(uint32_t ms, uint8_t bits, int count)
 {
-    Tlm_SendEvent(4, "AVOID line recovered");
-    av_emit(ms, bits, count);
+    av_emit(ms, bits, count); /* last fresh read before releasing control */
+    if (s_phase == AV_FAULT) { return; }
+    /* Entry was allowed only from A01 state=1 (not precision stopping).
+     * Existing FinReset clears stale I/D/steer and common PWM ramp, but leaves
+     * finish arming, odometry and stop distance intact. No A01 source change.
+     * Next A01 tick ramps from low PWM instead of reviving pre-obstacle steer. */
+    Trace_FinReset();
+    LogGyro g;
+    if (!av_gyro(HAL_GetTick(), &g)) { av_fault("AVOID gyro invalid/stale"); return; }
+    Tlm_SendEvent(4, s_test_active ? "A02 TEST local line stable; A01" : "AVOID line recovered");
     s_cool_until = ms + 1000u;
     av_reset(); /* 保持最后前进命令，由下一拍 A01 接手。 */
 }
@@ -404,12 +601,18 @@ static void av_recover(uint32_t ms, uint8_t bits, int count)
         s_line_trip = s_trip_mm;
         float d = av_clip(1.20f * s_line_d, -12.0f, 12.0f);
         /* 边缘见线先慢下来捕获；绝对偏航项会把弯道的新方向拉回旧直线。 */
-        int base = fabsf(err) > 1.0f ? av_speed_base(AV_CAPTURE_SPEED, 9) :
-                                            av_speed_base(AV_CENTER_SPEED, 10);
-        av_drive(base, 3.0f * err + d - 0.12f * s_yaw_rate);
+        float capture = s_test_active ? AV_TEST_CAPTURE_CPS * AV_MM_PER_CNT : AV_CAPTURE_SPEED;
+        float center = s_test_active ? AV_TEST_CENTER_CPS * AV_MM_PER_CNT : AV_CENTER_SPEED;
+        int base = av_speed_base(fabsf(err) > 1.0f ? capture : center, fabsf(err) > 1.0f ? 9 : 10);
+        av_drive(base, 3.0f * err + d - (s_test_active ? 0.0f : 0.12f * s_yaw_rate));
         if (s_phase == AV_FAULT) { return; }
         if (fabsf(err) <= 1.0f && (bits & 0x18u) &&
-            fabsf(s_yaw_rate) <= 30.0f && fabsf(s_line_d) <= 1.5f) {
+            fabsf(s_yaw_rate) <= 30.0f && fabsf(s_line_d) <= 1.5f &&
+            s_speed_mm_s <= AV_HANDOFF_SPEED_MAX) {
+            if (s_test_active && (abs(s_pwm_l - s_pwm_r) > 2 ||
+                s_speed_mm_s > AV_TEST_CENTER_CPS * AV_MM_PER_CNT + 20.0f)) {
+                s_center_ms = 0u; return;
+            }
             if (!s_center_ms) { s_center_ms = ms; }
             if ((ms - s_center_ms) >= AV_CENTER_HOLD_MS) {
                 av_release(ms, bits, count);
@@ -423,6 +626,7 @@ static void av_recover(uint32_t ms, uint8_t bits, int count)
          * 全白/宽黑/离散黑点不证明回线成功，也不能无限盲开。 */
         if (!s_line_ms || (ms - s_line_ms) > AV_LINE_LOST_MS ||
             (s_trip_mm - s_line_trip) > AV_LINE_LOST_MM) {
+            if (s_test_active) { av_test_search(ms); return; }
             av_fault("AVOID local line lost");
             return;
         }
@@ -431,20 +635,183 @@ static void av_recover(uint32_t ms, uint8_t bits, int count)
         float damping = 0.04f * s_yaw_rate;
         if (damping > 4.0f) { damping = 4.0f; }
         if (damping < -4.0f) { damping = -4.0f; }
-        int base = av_speed_base(AV_CAPTURE_SPEED, 8);
-        av_drive(base, dir * (float)base - damping);
+        int base = av_speed_base(s_test_active ? AV_TEST_CAPTURE_CPS * AV_MM_PER_CNT : AV_CAPTURE_SPEED, 8);
+        av_drive(base, s_test_active ? dir * AV_TEST_TURN : dir * (float)base - damping);
     }
+}
+
+static void av_test_phase(AvPhase phase, uint32_t ms)
+{
+    s_test_phase2 = s_test_trip2;
+    av_phase(phase, ms, NULL);
+    char note[48];
+    snprintf(note, sizeof note, "A02 TEST p%u c%lu dir%d", (unsigned)phase,
+             (unsigned long)(s_test_trip2 / 2u), s_away);
+    Tlm_SendEvent(3, note);
+}
+
+static void av_test_search(uint32_t ms)
+{
+    /* One search budget, including all repeated short captures; never restart it. */
+    if (!s_test_search_ms) { s_test_search_ms = ms; s_test_search2 = s_test_trip2; }
+    s_line_ms = 0u; s_line_d = 0.0f;
+    av_test_phase(AV_TEST_SEARCH, ms);
+}
+
+static void av_test_step(uint32_t ms)
+{
+    /* Stage 1 has no obstacle route. Only retain the unchanged 30mm emergency. */
+    for (int i = 0; i < 2; i++) {
+        const UsDev *u = Us_Get((UsId)i);
+        if (u->stamp_ms && (ms - u->stamp_ms) <= AV_US_FRESH_MS &&
+            u->mm > 0 && u->mm <= AV_STOP_MM) {
+            av_fault("AVOID emergency <=30mm"); return;
+        }
+    }
+    if (!s_test_active) {
+        int16_t l = En_Count(ENC_L), r = En_Count(ENC_R);
+        int32_t dl = (int16_t)(l - s_enc_l), dr = (int16_t)(r - s_enc_r);
+        s_enc_l = l; s_enc_r = r;
+        if (!s_test_running) { s_test_running = 1u; s_test_before2 = 0u; }
+        if (dl < -2 || dr < -2 || dl > AV_TEST_ENCODER_STEP || dr > AV_TEST_ENCODER_STEP) {
+            s_line_ready_ms = 0u; return; /* bad pre-trigger data cannot arm */
+        }
+        if (dl + dr > 0) { s_test_before2 += (uint32_t)(dl + dr); }
+        av_speed_sample(ms, (float)(dl + dr) * 0.5f * AV_MM_PER_CNT);
+        if (s_test_used) { return; } /* no legacy obstacle trigger in test mode */
+        const uint8_t *live = Log_LiveFrame();
+        int n = av_count(live[0]);
+        if (!Trace_Online() || live[4] != 1u || !av_line(live[0], n) ||
+            n > 3 || !(live[0] & 0x18u) || (int8_t)live[1] < -10 || (int8_t)live[1] > 10) {
+            s_line_ready_ms = 0u;
+        } else if (!s_line_ready_ms) { s_line_ready_ms = ms; }
+        if (s_test_before2 < 2u * AV_TEST_TRIGGER_CNT || !s_line_ready_ms ||
+            ms - s_line_ready_ms < AV_LINE_READY_MS) { return; }
+        s_test_used = 1u; /* consume BEFORE any possible failed entry */
+        LogGyro g;
+        if (!av_gyro(ms, &g) || !s_bias_ready) { av_fault("AVOID gyro not ready"); return; }
+        if (s_test_direction != 1 && s_test_direction != -1) { av_fault("A02 TEST bad direction"); return; }
+        s_test_active = 1u; s_away = s_test_direction;
+        s_test_trip2 = s_test_phase2 = 0u;
+        s_test_white_ms = s_test_slow_ms = s_test_search_ms = s_test_fast_ms = 0u;
+        s_test_left_line = s_plan_valid = 0u;
+        s_trip_mm = s_x_mm = s_y_mm = s_yaw_deg = 0.0f;
+        s_speed_i = 0.0f;
+        s_pwm_l = (int8_t)live[2]; s_pwm_r = (int8_t)live[3];
+        if (s_pwm_l <= 0 || s_pwm_r <= 0) { av_fault("A02 TEST entry PWM unsafe"); return; }
+        s_test_base = (float)(s_pwm_l + s_pwm_r) * 0.5f;
+        s_steer_out = (float)(s_pwm_l - s_pwm_r) * 0.5f;
+        s_check_ms = 0u; s_check_dir = 0; s_check_bad = 0u;
+        s_tick_ms = s_progress_ms = s_start_ms = ms; s_dt_ms = 0u;
+        av_gyro_report(ms);
+        av_test_phase(AV_TEST_DECEL, ms);
+        return;
+    }
+
+    av_motion(ms);
+    if (s_phase == AV_FAULT) { return; }
+    uint8_t raw;
+    if (!Gr_ReadDigital(&raw)) { av_fault("AVOID gray read failed"); return; }
+    uint8_t bits = (uint8_t)~raw;
+    int n = av_count(bits);
+    if (ms - s_start_ms > AV_TEST_TOTAL_MS || s_test_trip2 > 2u * AV_TEST_TOTAL_CNT ||
+        ms - s_progress_ms > 500u) { av_fault("A02 TEST timeout/no progress"); return; }
+    if (s_test_search_ms && (ms - s_test_search_ms > AV_TEST_SEARCH_MS ||
+        s_test_trip2 - s_test_search2 > 2u * AV_TEST_SEARCH_CNT)) {
+        av_fault("A02 TEST line not found"); return;
+    }
+    if (s_phase == AV_TEST_OUT || s_phase == AV_TEST_FWD) {
+        if (!bits) {
+            if (!s_test_white_ms) { s_test_white_ms = ms; }
+            if (ms - s_test_white_ms >= AV_TEST_WHITE_MS) { s_test_left_line = 1u; }
+        } else { s_test_white_ms = 0u; }
+    }
+    uint32_t progress = (s_test_trip2 - s_test_phase2) / 2u;
+    uint32_t elapsed = ms - s_phase_ms;
+    if (s_phase >= AV_TEST_DECEL && s_phase <= AV_TEST_SEARCH &&
+        elapsed > test_limits[s_phase - AV_TEST_DECEL]) {
+        av_fault("A02 TEST phase timeout"); return;
+    }
+    int base = 0;
+    if (s_phase >= AV_TEST_DECEL && s_phase <= AV_TEST_FWD) {
+        base = av_speed_base(AV_TEST_SPEED_CPS * AV_MM_PER_CNT, 10);
+    }
+    switch (s_phase) {
+    case AV_TEST_DECEL:
+        if (!av_line(bits, n)) { av_fault("A02 TEST lost line before OUT"); break; }
+        av_drive(base, (float)(int8_t)Log_LiveFrame()[1] * 0.1f);
+        if (s_phase == AV_FAULT) { break; }
+        if (s_speed_mm_s <= AV_TEST_SPEED_CPS * AV_MM_PER_CNT + 20.0f &&
+            s_test_base >= AV_TEST_WHEEL_MIN + fabsf(s_steer_out) &&
+            s_test_base <= AV_TEST_WHEEL_MAX - fabsf(s_steer_out) &&
+            fabsf(s_steer_out) <= AV_TEST_TURN_MAX) {
+            if (!s_test_slow_ms) { s_test_slow_ms = ms; }
+            if (ms - s_test_slow_ms >= 150u) { av_test_phase(AV_TEST_OUT, ms); }
+        } else { s_test_slow_ms = 0u; }
+        if (s_phase == AV_TEST_DECEL && progress > 800u) {
+            av_fault("A02 TEST decel failed");
+        }
+        break;
+    case AV_TEST_OUT:
+    case AV_TEST_FWD:
+        av_drive(base, s_phase == AV_TEST_OUT ? (float)s_away * AV_TEST_TURN : 0.0f);
+        if (s_phase == AV_FAULT) { break; }
+        if (s_phase == AV_TEST_OUT) {
+            if (progress >= AV_TEST_OUT_CNT) { av_test_phase(AV_TEST_FWD, ms); }
+        } else {
+            if (progress >= AV_TEST_FWD_CNT) {
+                if (!s_test_left_line) { av_fault("A02 TEST did not leave line"); }
+                else { av_test_phase(AV_TEST_RETURN, ms); }
+            }
+        }
+        break;
+    case AV_TEST_RETURN:
+    case AV_TEST_SEARCH:
+        if (s_test_left_line && av_line(bits, n) &&
+            (s_phase == AV_TEST_SEARCH || progress >= AV_TEST_CAPTURE_MIN)) {
+            s_line_ms = 0u; s_line_d = 0.0f;
+            av_test_phase(AV_RECOVER, ms);
+            av_recover(ms, bits, n);
+        } else {
+            av_drive(av_speed_base(AV_TEST_SEARCH_CPS * AV_MM_PER_CNT, 10),
+                     n >= 5 ? 0.0f : -(float)s_away * AV_TEST_TURN);
+            if (s_phase == AV_TEST_RETURN) {
+                if (progress >= AV_TEST_RETURN_CNT) { av_test_search(ms); }
+            }
+        }
+        break;
+    case AV_RECOVER:
+        av_recover(ms, bits, n);
+        break;
+    default:
+        av_fault("A02 TEST invalid phase"); break;
+    }
+    if (s_phase != AV_IDLE) { av_emit(ms, bits, n); }
 }
 
 void Avoid_Step(void)
 {
     uint32_t ms = HAL_GetTick();
     if (!Trace_GetDrive()) {
+        s_test_running = 0u;
         /* 仅在编码器不动的待机状态估计零偏，不把正常弯道当零偏。 */
         int16_t l = En_Count(ENC_L), r = En_Count(ENC_R);
-        if (l == s_enc_l && r == s_enc_r) {
-            s_gz_bias += 0.02f * ((float)Log_GetGz() - s_gz_bias);
+        LogGyro g;
+        uint8_t good = av_gyro(ms, &g);
+        if (!good || l != s_enc_l || r != s_enc_r) {
+            s_bias_ready = s_bias_n = 0u;
+        } else if (g.seq != s_bias_seq) {
+            s_bias_seq = g.seq;
+            if (fabsf((float)g.raw) > AV_BIAS_MAX_RAW ||
+                (s_bias_n && fabsf((float)g.raw - s_gz_bias) > AV_BIAS_STABLE_RAW)) {
+                s_bias_ready = s_bias_n = 0u;
+            } else {
+                if (s_bias_n < AV_BIAS_SAMPLES) { s_bias_n++; }
+                s_gz_bias += ((float)g.raw - s_gz_bias) / (float)s_bias_n;
+                s_bias_ready = s_bias_n >= AV_BIAS_SAMPLES;
+            }
         }
+        if ((ms - s_gyro_report_ms) >= 1000u) { av_gyro_report(ms); }
         s_enc_l = l; s_enc_r = r;
         s_speed_ms = ms; s_speed_dist = s_speed_mm_s = 0.0f;
         s_speed_dt = 0u; s_curve_live = 0.0f;
@@ -452,6 +819,14 @@ void Avoid_Step(void)
         return;
     }
     if (!s_drive) { return; }
+    if (s_phase == AV_FAULT) {
+        Mo_Brake(); s_pwm_l = s_pwm_r = 0;
+        uint8_t bits = Log_LiveFrame()[0]; /* cached gray, not invented all-white */
+        av_emit(ms, bits, av_count(bits)); /* keep polling, never re-enter control */
+        return;
+    }
+
+    if (s_test_enabled) { av_test_step(ms); return; }
 
     if (s_phase == AV_IDLE) {
         int16_t l = En_Count(ENC_L), r = En_Count(ENC_R);
@@ -468,8 +843,11 @@ void Avoid_Step(void)
         } else if (!s_line_ready_ms) {
             s_line_ready_ms = ms;
         }
-        if (live[4] == 1u && count >= 1 && count <= 3 && s_speed_mm_s >= 50.0f) {
-            float rate = -((float)Log_GetGz() - s_gz_bias) / 131.0f;
+        LogGyro g;
+        uint8_t gyro_ok = av_gyro(ms, &g);
+        if (!gyro_ok) { s_bias_ready = s_bias_n = 0u; }
+        if (gyro_ok && live[4] == 1u && count >= 1 && count <= 3 && s_speed_mm_s >= 50.0f) {
+            float rate = -((float)g.raw - s_gz_bias) / 131.0f;
             float curve = av_clip(rate * AV_DEG_TO_RAD / s_speed_mm_s, -0.002f, 0.002f);
             s_curve_live += 0.05f * (curve - s_curve_live);
         }
@@ -480,9 +858,14 @@ void Avoid_Step(void)
         int found = av_scan(ms, ready, &side, &mm);
         if (found < 0) { av_fault("AVOID emergency <=30mm"); return; }
         if (!found) { return; }
+        if (!gyro_ok || !s_bias_ready) { av_fault("AVOID gyro not ready"); return; }
+        av_gyro_report(ms);
+        char bias[40];
+        snprintf(bias, sizeof bias, "AVOID bias=%ld n=%u", (long)s_gz_bias, s_bias_n);
+        Tlm_SendEvent(3, bias);
         s_obstacle_side = (UsId)side;
         s_away = side == US_L ? 1 : -1;
-        float entry_rate = -((float)Log_GetGz() - s_gz_bias) / 131.0f;
+        float entry_rate = -((float)g.raw - s_gz_bias) / 131.0f;
         float entry_curve = s_speed_mm_s >= 50.0f ?
                             entry_rate * AV_DEG_TO_RAD / s_speed_mm_s : 0.0f;
         /* 15:44-3先急弯、再直行：滤波器还记着旧曲率，实际角速度已归零。
@@ -530,6 +913,10 @@ void Avoid_Step(void)
     }
 
     av_motion(ms);
+    if (s_phase == AV_FAULT) {
+        uint8_t bits = Log_LiveFrame()[0];
+        av_emit(ms, bits, av_count(bits)); return;
+    }
     uint8_t raw = 0xffu;
     if (!Gr_ReadDigital(&raw)) { av_fault("AVOID gray read failed"); }
     uint8_t bits = (uint8_t)~raw;
@@ -581,6 +968,12 @@ void Avoid_Step(void)
     case AV_RETURN:
     case AV_SEARCH:
         if (av_line(bits, count)) {
+            /* A single gray bar cannot identify the original line. A candidate
+             * outside the bounded predicted corridor is ambiguous: stop rather
+             * than latch an arbitrary black mark. Inside still needs centering. */
+            if (fabsf(s_y_mm - av_line_y(s_x_mm)) > AV_SEARCH_BAND_MM) {
+                av_fault("AVOID ambiguous line"); break;
+            }
             av_phase(AV_RECOVER, ms, "AVOID line seen, center now");
             av_recover(ms, bits, count); /* 见线这一拍就纠偏，不再沿用旧舵量。 */
             if (s_phase == AV_IDLE) { return; }

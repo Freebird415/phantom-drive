@@ -13,7 +13,24 @@ u, syms = arm.u, arm.symbols
 US = 0x2000d000
 LIVE = 0x2000d100
 sim = {}
-extra = {syms[n][0] & ~1: n for n in ['HAL_GetTick', 'En_Count', 'Trace_GetDrive', 'Trace_Online', 'Log_GetGz', 'Log_LiveFrame', 'Us_Get', 'Gr_ReadDigital']}
+extra = {syms[n][0] & ~1: n for n in ['En_Count', 'Trace_GetDrive', 'Trace_Online', 'Log_GetGz', 'Log_LiveFrame', 'Us_Get', 'Gr_ReadDigital']}
+
+
+def gyro():
+    # Nominal sensor produces an accepted sample every 40ms, even though the
+    # controller reads cached data at 100Hz. Fault tests override metadata/raw.
+    ms = sim['ms']
+    if 'gyro_stamp' not in sim or (not sim.get('gyro_frozen') and ms - sim['gyro_stamp'] >= 40):
+        sim['gyro_stamp'] = ms
+        sim['gyro_seq'] = sim.get('gyro_seq', 0) + 1
+        sim['gyro_raw'] = round(-sim['rate'] * 131) + sim.get('sensor_bias_raw', 0)
+    return struct.pack('<IIhHBBxx', sim['gyro_stamp'], sim['gyro_seq'],
+                       sim.get('raw_override', sim['gyro_raw']),
+                       sim.get('gyro_failures', 0), sim.get('gyro_valid', 1),
+                       sim.get('gyro_status', 0))
+
+
+arm.gyro_provider = gyro
 
 
 def hw(uc, address, size, user):
@@ -38,6 +55,7 @@ def hw(uc, address, size, user):
         result = US + r0 * 64
     elif name == 'Gr_ReadDigital':
         uc.mem_write(r0, bytes([sim['bits'] ^ 0xff]))
+        arm.clock += sim.get('gray_delay_ms', 0)
         result = 0 if sim.get('gray_fail') else 1
     uc.reg_write(UC_ARM_REG_R0, result)
     uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
@@ -48,6 +66,7 @@ for address in extra:
 
 
 def call(name, *args):
+    arm.clock = sim['ms']
     u.reg_write(UC_ARM_REG_CPSR, 0x20)
     u.reg_write(UC_ARM_REG_SP, 0x2000f000)
     u.reg_write(UC_ARM_REG_LR, arm.STOP | 1)
@@ -68,7 +87,9 @@ def init():
                  's_pwm_l', 's_pwm_r', 's_speed_ms', 's_speed_dt', 's_search_ms',
                  's_speed_dist', 's_speed_mm_s', 's_speed_i', 's_curve_live', 's_curve_entry',
                  's_offset_mm', 's_shift_x', 's_obstacle_x', 's_obstacle_end', 's_obstacle_y', 's_search_x',
-                 's_search_trip', 's_plan_valid', 's_heading_target', 's_pass_y', 's_return_offset'):
+                 's_search_trip', 's_plan_valid', 's_heading_target', 's_pass_y', 's_return_offset',
+                 's_bias_seq', 's_gyro_report_ms', 's_check_ms', 's_bias_n', 's_bias_ready',
+                 's_check_bad', 's_check_dir', 's_check_diff', 's_check_total', 's_check_angle', 's_check_raw_zero'):
         addr, size = syms[name]
         u.mem_write(addr, b'\0' * size)
     sim.clear()
@@ -76,6 +97,10 @@ def init():
     u.mem_write(US, b'\0' * 128)
     u.mem_write(LIVE, bytes([0x18, 0, 22, 22, 1, 0, 0, 0]))
     arm.put('s_drive', 1)
+    # Plant trials start AFTER parked calibration; exercise calibration itself
+    # separately rather than fabricate physical bias/encoder calibration.
+    arm.put('s_bias_ready', 1)
+    arm.put('s_bias_n', 16)
     arm.events.clear()
     arm.motors.clear()
 
@@ -193,7 +218,8 @@ def run(side, bend=0.0, no_line=False, motor_gain=7.5, unseen_bend=False,
     heading_error = abs(math.degrees(yaw-tangent))
     print('MODEL', side, bend, no_line, motor_gain, 'unseen', unseen_bend,
           'stale', stale_curve, 'tau', motor_tau, 'gyro-ticks', gyro_period,
-          'handoff-angle', round(heading_error,1), result, flush=True)
+          'handoff-angle', round(heading_error,1), 'phase/clearance', result[:2],
+          'last-events', result[2][-3:], flush=True)
     if no_line or expected_fault:
         assert result[0] == 7 and (expected_fault or 'AVOID line not found') in result[2], result
         assert arm.motors[-1] == (0,0)
@@ -218,6 +244,21 @@ if __name__ == '__main__':
     # A bend beginning only after all line sensing is lost is unobservable.
     # Keep this failed-recovery case: it must brake, not masquerade as success.
     run(0, -.0005, unseen_bend=True, expected_fault='AVOID line not found')
+    # Narrow-looking black outside the limited corridor is not the known line.
+    init(); sim['ms']=2000; arm.put('s_phase',5); arm.put('s_start_ms',1900)
+    arm.put('s_tick_ms',1990); arm.put('s_progress_ms',2000)
+    arm.put('s_search_ms',1900); arm.put('s_y_mm',150.0)
+    call('Avoid_Step')
+    assert arm.get('s_phase') == 7 and 'AVOID ambiguous line' in arm.events
+    assert arm.motors[-1] == (0,0) and 'AVOID line recovered' not in arm.events
+    # A sample fresh at motion integration can expire during a peripheral call.
+    init(); sim['ms']=2000; arm.put('s_phase',1); arm.put('s_start_ms',1900)
+    arm.put('s_tick_ms',1990); arm.put('s_progress_ms',2000)
+    arm.put('s_shift_x',1000.0); arm.put('s_pass_y',133.0)
+    sim['gray_delay_ms']=100
+    call('Avoid_Step')
+    assert arm.get('s_phase') == 7 and 'AVOID gyro invalid/stale' in arm.events
+    assert arm.motors[-1] == (0,0) and not any(l != r for l,r in arm.motors)
     # Real firmware safety paths, independent of plant trajectory.
     init(); sim['ms']=2000; arm.put('s_phase',5); arm.put('s_start_ms',1900)
     arm.put('s_tick_ms',1990); arm.put('s_progress_ms',2000)
@@ -268,3 +309,5 @@ if __name__ == '__main__':
     print('PASS: tight-bend residual rejected, mirrored entry slew, delayed gyro and inertial wheels')
     print('PASS: nominal straight/curved recovery, drive gain variation, bounded white search, gray failure and emergency brake')
     print('PASS: fresh double confirmation, stale rejection, insufficient room, speed-related lead, footprint/fault latch and scheduling guard')
+    print('PASS: out-of-corridor narrow black cannot masquerade as original line')
+    print('PASS: peripheral delay cannot bypass final fresh-gyro motor-write gate')

@@ -64,6 +64,17 @@ uint16_t Log_BleDrop(void);             /* 队列满丢弃字节数 */
 void     Log_BleTick(void);             /* main 主循环调（每拍一次）*/
 const uint8_t *Log_LiveFrame(void);     /* 最新一帧的 8 字节（不论是否在记录）*/
 
+/* No BLE/Flash frame-layout change. stamp_ms is start of the last GOOD read;
+ * seq advances only on accepted data. raw remains cached on failure, but valid
+ * becomes false. Reading this structure never performs I2C or advances time. */
+typedef struct {
+    uint32_t stamp_ms, seq;
+    int16_t raw;
+    uint16_t failures;
+    uint8_t valid, status;
+} LogGyro;
+void     Log_GetGyro(LogGyro *out);
+
 void     Log_Status(void);                       /* SNAP? 打印状态 */
 void     Log_FlashInfo(void);                     /* SNAPFLASH：直读 Flash 头，排查用 */
 void     Log_Dump(void);                         /* DUMP：以 $T 帧格式吐出所有数据 */

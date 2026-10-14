@@ -9,6 +9,7 @@
  *      [16..]   帧数据，5 字节/帧，紧排
  * ========================================================================== */
 #include "app/app_log.h"
+#include "app/app_trace.h"        /* parked-only MPU recovery; no A01 algorithm change */
 #include "bsp/bsp_board.h"    /* Bsp_Uart2Tx：BLE 实时回传（非阻塞）*/
 #include "drv/drv_encoder.h"      /* 每帧记左右轮编码器增量 ⇒ 事后重建轨迹 */
 #include "drv/drv_mpu6050.h"      /* 陀螺仪偏航率 ⇒ 交叉验证轨迹 */
@@ -57,15 +58,29 @@ static int8_t sat_i8(int v)
 
 static int16_t s_prev_l, s_prev_r;    /* 上一帧编码器计数 */
 static int16_t s_gz;                  /* 缓存的陀螺仪 Z 轴原始值（低频率刷新，节省 I2C 开销）*/
-static uint8_t s_gz_tick;
+static LogGyro s_gyro;
+static uint32_t s_gz_poll_ms;
+static uint8_t s_gz_started;
 
 /* 陀螺仪：每 4 拍（约 25Hz）读一次，其余帧用缓存 ——
    100Hz 都读 I2C 会吃掉太多主循环时间 */
 static void log_poll_gyro(void)
 {
-    if ((s_gz_tick++ & 3u) != 0u) { return; }
+    uint32_t ms = HAL_GetTick();
+    if (s_gz_started && (ms - s_gz_poll_ms) < 40u) { return; }
+    s_gz_started = 1u; s_gz_poll_ms = ms;
+    Mpu_Service(!Trace_GetDrive());
+    ms = HAL_GetTick(); /* recovery may have consumed time; never pre-date data */
     int16_t raw[7];
-    if (Mpu_Read(raw)) { s_gz = raw[6]; }      /* raw[6] = gz（±250°/s 量程 ⇒ 131 LSB/(°/s)）*/
+    if (Mpu_Read(raw)) {
+        s_gz = raw[6]; s_gyro.raw = s_gz;
+        s_gyro.stamp_ms = ms; s_gyro.seq++;
+        s_gyro.valid = 1u; s_gyro.failures = 0u;
+    } else {
+        s_gyro.valid = 0u;
+        if (s_gyro.failures < 65535u) { s_gyro.failures++; }
+    }
+    s_gyro.status = Mpu_Status();
 }
 
 static uint32_t log_sum(const uint8_t *p, uint32_t n)
@@ -88,6 +103,7 @@ void Log_Stop(void)
 uint8_t Log_IsRecording(void) { return s_rec; }
 /* v3：把缓存的陀螺仪原始值给算法层用（不要让算法再单开 I2C 读，省总线时间）*/
 int16_t Log_GetGz(void) { return s_gz; }
+void Log_GetGyro(LogGyro *out) { *out = s_gyro; }
 uint16_t Log_Count(void)  { return s_n; }
 
 /* 组一帧（不论录不录都要组：录进 RAM、也用于 BLE 实时回传）*/
@@ -221,7 +237,14 @@ void Log_BleEvent(uint8_t code, const char *note)
     if (!s_ble_on) { return; }
     n = snprintf(buf, sizeof buf, "$E,%u,%u,%s\r\n",
                  (unsigned)HAL_GetTick(), (unsigned)code, note ? note : "");
-    if (n > 0) { Bsp_Uart2Tx((const uint8_t *)buf, (uint16_t)n); }
+    if (n > 0) {
+        /* snprintf returns the untruncated length, never read past the buffer. */
+        if ((unsigned)n >= sizeof buf) {
+            n = sizeof buf - 1;
+            buf[n - 2] = '\r'; buf[n - 1] = '\n';
+        }
+        Bsp_Uart2Tx((const uint8_t *)buf, (uint16_t)n);
+    }
 }
 
 /* ------------------------------ Flash ------------------------------ */
