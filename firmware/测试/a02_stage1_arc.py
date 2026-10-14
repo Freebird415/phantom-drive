@@ -100,9 +100,9 @@ assert call('Avoid_Mode') == 1, 'A02 must own the very first control tick'
 step(1100)
 assert motors[-1] == (0, 0)
 step(3000)
-for tick in range(3010, 3110, 10):
+for tick in range(3010, 3170, 10):
     step(tick)
-assert motors[-1] == (8, 8), motors[-1]
+assert motors[-1] == (16, 16), motors[-1]
 step(4000)
 for tick in range(4010, 4050, 10):
     step(tick)
@@ -116,17 +116,20 @@ assert motors[-1][0] > motors[-1][1], motors[-1]
 # Gray read failure and more than 10 seconds of all white must not auto-stop.
 step(15000, 0x00, read_ok=False)
 step(20000, 0x00)
-assert motors[-1] == (7, 5), motors[-1]
+assert motors[-1] == (14, 10), motors[-1]
 assert not any('timeout' in event or 'failed' in event for event in events)
-step(20010, 0x01)
-assert motors[-1] == (0, 0)
-assert 'A02 TEST black found; stopped' in events
-
-# Manual stop and the next button press start the same test, never normal A01.
-call('Avoid_SetDrive', 0)
+# 见黑 -> 交还 A01：A02 松手，Avoid_Mode 变 0，不再由 A02 循迹
+now, bits, gray_ok = 20010, 0x01, True
+call('Avoid_Step')
+assert 'A02 TEST line found; handoff to A01' in events
+assert call('Avoid_Mode') == 0, 'handoff must release control to A01'
+# A02 已放手：后续 Avoid_Step 应直接返回、不改电机
+call('Avoid_Step')
 assert call('Avoid_Mode') == 0
+
+# 手动重新武装：下一趟仍进入同一测试（不发车，只验证入口）
 call('Avoid_SetDrive', 1)
 assert call('Avoid_Mode') == 1
-step(20100)
+step(21000)
 assert motors[-1] == (0, 0)
-print('PASS: exclusive button entry, 2s wait, 1s gray follow, left then right, no timeout, black stop, manual restart')
+print('PASS: exclusive button entry, 2s wait, 1s gray follow (x2), left then right (x2), black -> handoff to A01, manual restart')
