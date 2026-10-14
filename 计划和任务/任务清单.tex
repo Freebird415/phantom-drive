@@ -14,7 +14,7 @@
 \begin{center}
 {\LARGE\bfseries 工创小车 · 任务清单}\par\vspace{4pt}
 {\small 重走古丝路 · 自动循迹避障小车（华南理工大学 · 工程训练分散项目）}\par\vspace{2pt}
-{\small 5 人 · 13 项任务 · v2.10 · 更新：2026-10-12}\par
+{\small 5 人 · 13 项任务 · v2.10 · 更新：2026-10-14}\par
 \end{center}
 \vspace{-2pt}
 
@@ -23,8 +23,8 @@
 \toprule
 \textbf{项} & \textbf{内容}\tabularnewline
 \midrule
-现在 & 10/12（周一）—— \textbf{比赛日期已确定：10/21（周三）开始}（第 8 周周三；比原预测 10/26\textasciitilde{}11/1 提前 5 天）\tabularnewline
-课满，不排任务 & \textbf{10/12（周一）\textasciitilde{}10/13（周二）}——课多，连续两天不安排任务；重心放在 \textbf{10/16（周五）、10/17（周六）}\tabularnewline
+现在 & \textbf{10/14（周三 · 工创课，全组在场）} —— 距死线 \textbf{4 天}；\textbf{今天到期：15° 探头几何标测 ＋ A02 第 1 步（左右各 10/10）}\tabularnewline
+已过（不排任务） & \textbf{10/12（周一）\textasciitilde{}10/13（周二）} 课满、未排任务；重心已压到 \textbf{10/16（周五）、10/17（周六）}\tabularnewline
 全部任务死线 & \textbf{10/18（周日）24:00} —— 此后不再动功能，只做彩排与备份\tabularnewline
 剩余差距 & 只差两件：\textbf{A02 避障闭环}（陀螺零反馈 + 回线）＋ \textbf{避障 × 循迹 × 精停 融合}\tabularnewline
 缓冲 & 10/19\textasciitilde{}10/20 不排新功能：彩排 / 备份 / 备件 / 现场标定预演\tabularnewline
@@ -254,7 +254,7 @@ P2 不做 & 提速（时间分） & 冻结期不动 A01 基线（E-35）；提�
 D01 仓库与协作规范 & 仓库骨架、一键脚本（拉取/提交/工具箱/蓝牙日志）、说明书、各工作目录 README 就绪；\textbf{结构 v2 + AI 留言板}（2026-10-10）；5 人全部入仓\tabularnewline
 P01 阶段 1 & 一键烧录 ＋ 100Hz 遥测 ＋ 自动存档出图 ＋ 在线调参命令（9/13 跑通）\tabularnewline
 引脚与电气设计 v3.0 & \texttt{docs/引脚分配表.md}（\textbf{9/23 提前冻结}）、\texttt{hardware/电气设计/}（4 张图 ＋《电气连接规范》＋ \texttt{完整接线.md} ＋ \texttt{netlist.json} ＋ 可执行 \texttt{自检.py}，106 项全过）\tabularnewline
-P02 驱动与接口 & 8 个器件驱动全部实机验收（除已放弃的 OLED）；\texttt{firmware/文档/驱动接口说明.md} 已交并在用；算法层代码缝（A01 \texttt{app\_trace.c} / A02 \texttt{app\_avoid.c}，默认只算不发）\tabularnewline
+P02 驱动与接口 & \textbf{6 个驱动源文件（覆盖 8 个器件）}全部实机验收（OLED 已放弃、驱动已移除）；\texttt{firmware/文档/驱动接口说明.md} 已交并在用；算法层代码缝（A01 \texttt{app\_trace.c} / A02 \texttt{app\_avoid.c}，默认只算不发）\tabularnewline
 P01 阶段 2 · 板载快照 & \texttt{\$T} 接真实灰度；\textbf{板载快照全链路}（RAM 记录 → 停车写 Flash → 掉电不丢 → \texttt{tools/snapshot.py} 读出图）；\texttt{track.py} 重建实际轨迹\tabularnewline
 P01 · 无线日志工具链（网页界面） & 双击「蓝牙日志.bat」→ 浏览器界面实时看帧；\textbf{监测模式}（只显示不写文件 + 空格一键记录 + 最近 \textasciitilde{}65s 回溯入库）；拖入 CSV 导入；按键导出片段（自动带 \texttt{derived.csv} + \texttt{note.md} 摘要）；超声波两列 + 存在性保证\tabularnewline
 H01 选型与采购 & BOM 与器件资料索引定稿；万向轮、编码器座、HC-SR04、电源座等已下单；电机确认带编码器；避障定案 HC-SR04 ×2；\textbf{PCB v2.1 到货并装车（10/10）}\tabularnewline
