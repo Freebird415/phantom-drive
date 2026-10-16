@@ -137,6 +137,9 @@
   .usrow small{display:block; font:400 10px/1.4 "Segoe UI",sans-serif; color:var(--fg3); margin-top:2px}
   .usrow .near{border-color:#7a5320; background:#241a0d; color:var(--orange)}
   .usrow .bad{border-color:#5e3036; background:#241114; color:var(--red)}
+  #avoid-state{font:600 13px/1.3 "Segoe UI",sans-serif; white-space:nowrap}
+  #avoid-state.avoid-left,#avoid-state.avoid-right{border-color:#39735b;background:#10241c;color:var(--green)}
+  #avoid-state.avoid-none{color:var(--fg2)}
   .hint{margin-top:8px; font-size:11.5px; color:var(--fg2); line-height:1.6}
 
   /* 事件流（填满左列下半段） */
@@ -293,7 +296,9 @@
       <div class="usrow">
         <div id="us-l">—<small>左探头</small></div>
         <div id="us-r">—<small>右探头</small></div>
+        <div id="avoid-state"><span id="avoid-text">—</span><small>避障预判 · 仅面板</small></div>
       </div>
+      <div class="hint" id="avoid-detail">等待实时超声数据；此状态不会控制小车。</div>
       <div class="hint" id="us-hint">等 $U 帧…（点「开始接收」或「监测」）</div>
     </div>
     <div class="card" style="flex:1;min-height:120px;display:flex;flex-direction:column">
@@ -464,6 +469,116 @@ const CAR = { len:200, wf:180, wr:140 };
 
 /* ============ 状态 ============ */
 let st = {}, us = {l:null, r:null, t:0}, frameMs = 20;
+/* ============ 避障预判：只在网页里算，不给小车发运动命令 ============
+ * $U 两侧是“最近值”，不保证一帧内两颗探头都重新测过。
+ * 所以连续两帧只是面板显示消抖；以后车端要用各自 stamp_ms 判新样本。 */
+const AVOID_PREVIEW = { enter:195, leave:225, split:30, holdMs:600, staleMs:750 };
+let avoidPreview = {
+  mode:"none", candidate:"none", votes:0, blocked:"", clearVotes:0,
+  lastAt:0, lastTick:null, last:{l:null,r:null}, lastAtSide:{l:0,r:0}, detail:"等待实时超声数据"
+};
+
+function resetAvoidPreview(detail) {
+  avoidPreview = {
+    mode:"none", candidate:"none", votes:0, blocked:"", clearVotes:0,
+    lastAt:0, lastTick:null, last:{l:null,r:null}, lastAtSide:{l:0,r:0},
+    detail:detail || "等待实时超声数据"
+  };
+}
+
+function avoidSideValue(side, raw, at) {
+  const v = Number(raw);
+  if (raw !== null && raw !== undefined && Number.isFinite(v) && v > 0) {
+    avoidPreview.last[side] = v;
+    avoidPreview.lastAtSide[side] = at;
+    return v;
+  }
+  if (v === -2) {                 // 没回波：本侧没有可用近障碍
+    avoidPreview.last[side] = null;
+    return Infinity;
+  }
+  if (v === -3 || v === -6) {     // 本轮跳过：短暂沿用上一个正数
+    return at - avoidPreview.lastAtSide[side] <= AVOID_PREVIEW.holdMs
+      ? avoidPreview.last[side] : null;
+  }
+  avoidPreview.last[side] = null; // 其它负值/缺值：不能当成安全距离
+  return null;
+}
+
+function updateAvoidPreview(frame, at) {
+  expireAvoidPreview(at);  // 断流后第一帧重新算作第 1 次，而不是接着旧候选确认。
+  if (frame.t !== null && frame.t !== undefined) {
+    if (frame.t === avoidPreview.lastTick) return; // 同一 $U 重发不能凑齐两次确认。
+    if (avoidPreview.lastTick !== null && frame.t < avoidPreview.lastTick) {
+      resetAvoidPreview("固件重新计时，等待新读数");
+    }
+    avoidPreview.lastTick = frame.t;
+  }
+  avoidPreview.lastAt = at;
+  const l = avoidSideValue("l", frame.l, at);
+  const r = avoidSideValue("r", frame.r, at);
+  const leftHit = l !== null && l <= AVOID_PREVIEW.enter;
+  const rightHit = r !== null && r <= AVOID_PREVIEW.enter;
+  let choice = "none";
+  if (leftHit && rightHit) {
+    // 差值恰好 30mm 也选更近的一侧；差值较小按约定默认向左。
+    choice = Math.abs(l - r) >= AVOID_PREVIEW.split ? (l < r ? "right" : "left") : "left";
+  } else if (leftHit) choice = "right";
+  else if (rightHit) choice = "left";
+
+  if (avoidPreview.mode !== "none") {
+    // 确认后锁定方向；只看最初触发侧是否确实离开 225mm 范围。
+    const obstacle = avoidPreview.blocked === "l" ? l : r;
+    if (obstacle === null) {
+      resetAvoidPreview("触发侧读数无效，已撤销预判");
+      avoidPreview.lastAt = at;
+      return;
+    }
+    avoidPreview.clearVotes = obstacle > AVOID_PREVIEW.leave ? avoidPreview.clearVotes + 1 : 0;
+    if (avoidPreview.clearVotes >= 2) {
+      resetAvoidPreview("障碍已离开退出范围，等待重新判断");
+      avoidPreview.lastAt = at;
+      return;
+    }
+    avoidPreview.detail = avoidPreview.clearVotes ? "退出候选 1/2；方向暂时锁定"
+      : `方向已确认；${avoidPreview.blocked === "l" ? "左" : "右"}侧障碍触发`;
+    return;
+  }
+
+  avoidPreview.votes = choice !== "none" && choice === avoidPreview.candidate ? avoidPreview.votes + 1 : 1;
+  avoidPreview.candidate = choice;
+  if (choice === "none") {
+    avoidPreview.votes = 0;
+    avoidPreview.detail = l === null && r === null ? "测距数据无效／不足，未判定前方安全"
+      : "当前没有读数进入 195mm；仅面板预判";
+  } else if (avoidPreview.votes < 2) {
+    avoidPreview.detail = `候选：向${choice === "left" ? "左" : "右"}避障，待第 2 帧确认`;
+  } else {
+    avoidPreview.mode = choice;
+    avoidPreview.blocked = choice === "left" ? "r" : "l";
+    avoidPreview.clearVotes = 0;
+    avoidPreview.detail = `方向已确认；${avoidPreview.blocked === "l" ? "左" : "右"}侧障碍触发`;
+  }
+}
+
+function expireAvoidPreview(at) {
+  if (avoidPreview.lastAt && at - avoidPreview.lastAt > AVOID_PREVIEW.staleMs) {
+    resetAvoidPreview("超声数据已过期，未判定前方安全");
+  }
+}
+
+function renderAvoidPreview() {
+  const active = st.recording || st.monitoring;
+  // 退出实时接收时丢弃候选和已锁定方向，避免快速重新开始时沿用上一次测试。
+  if (!active && avoidPreview.lastAt) resetAvoidPreview();
+  const mode = active ? avoidPreview.mode : "none";
+  $("avoid-text").textContent = !active ? "—" :
+    (mode === "left" ? "向左避障" : mode === "right" ? "向右避障" : "不进行避障");
+  $("avoid-state").className = active ? "avoid-" + mode : "";
+  $("avoid-detail").textContent = active ? avoidPreview.detail + "；不会控制小车"
+    : "等待实时超声数据；此状态不会控制小车。";
+}
+
 let grayNow = "00000000", errNow = "0.0";
 let spdHist = [], gyroHist = [], lastFields = null;
 let yawGyro = 0, yawEnc = 0, nDrawn = 0, fpsWin = [];
@@ -504,6 +619,7 @@ function connect() {
     //    （2026-10-01 用户定：打开了旧日志只看日志部分，不显示超声 ✗）
     if (!(st.recording || st.monitoring)) return;
     us = JSON.parse(e.data);
+    updateAvoidPreview(us, nowMs());
     // 事件的 ms 是【固件绝对 tick】，而表格是【帧号×帧间隔（相对）】⇒ 差几百秒，没法看 ✗
     // 用“刚收到的那一帧的 ms”当作零点来对齐 ✓（误差 = 两者到达的时间差，~0.1s，够用 ✓）
     if (lastFrameMs) absOffsetMs = us.t - lastFrameMs;
@@ -516,7 +632,7 @@ function connect() {
     const ev = JSON.parse(e.data);
     addEvent(ev);                      // 固件事件直接进左下角列表（不再弹窗 ✓）
   });
-  es.addEventListener("status", e => { st = JSON.parse(e.data); applyStatus(); });
+  es.addEventListener("status", e => { st = JSON.parse(e.data); applyStatus(); renderAvoidPreview(); });
   es.onerror = () => { $("dot").className = "dot err"; };   // 服务断了（自动重连）
 }
 
@@ -808,6 +924,7 @@ function drawTrend() {
 /* ============ 超声波俯视图（SVG）============ */
 function drawMap() {
   const svg = $("map"), W = 360, H = 330;
+  renderAvoidPreview();
   // ⭐ 浏览旧日志时不画超声图：只看日志部分（用户 2026-10-01 要求 ✓）
   if (!(st.recording || st.monitoring)) {
     $("us-l").innerHTML = '—<small>左探头</small>';
@@ -985,6 +1102,7 @@ setInterval(() => {
   const pf = $("st-perf");
   if (pf) pf.textContent = `渲染 ${perfFlushMs.toFixed(1)}ms(峰 ${perfMaxMs.toFixed(0)}) · 行 ${perfRows} · 队列 ${renderQ.length}`;
 }, 500);
+setInterval(() => { expireAvoidPreview(nowMs()); renderAvoidPreview(); }, 250);
 
 /* ============ 交互 ============ */
 $("btn-start").onclick = () => {
@@ -1035,6 +1153,7 @@ function resetView() {
   grayNow = "00000000"; errNow = "0.0";
   spdHist = []; gyroHist = []; yawGyro = 0; yawEnc = 0; lastFields = null;
   us = { l: null, r: null, t: 0 };
+  resetAvoidPreview();
   $("evlist").innerHTML = '<div class="empty">固件事件（$E）与界面操作（开始/停止/打点/导出）都记在这里 ✓</div>';
   evCount = 0; $("ev-n").textContent = "0 条";
   $("marks").innerHTML = '<span class="muted">（还没打点）</span>';

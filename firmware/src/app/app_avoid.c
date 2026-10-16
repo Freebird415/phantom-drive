@@ -1,59 +1,66 @@
-/* A02 手推轨迹开环复现试验（2026-10-16，未上车标定）
- *
- * 长按车载按钮启动后：直行 2s -> 左弧 -> 右弧 -> 停车。
- * 本文件独占电机控制，不读取灰度、超声、编码器或陀螺仪作控制。
- * 仅依据手推日志 dl/dr 和旧实跑日志估出下面的 PWM / 时长；
- * 不能据此保证真实轨迹、避障间隙或回线。首次测试必须架空。
- *
- * 原右侧障碍 A02 版本已存放在 firmware/算法快照/，不编入本固件。
- */
+/* A02 融合入口：平时由 A01 循迹；近障时 A02 接管左右固定轨迹。
+ * 回摆时限由 avoidl.c/avoidr.c 管理：低速搜线见黑后再走短弧交还 A01，
+ * 到时未完成则锁存停车。轨迹参数在 avoidl.c/avoidr.c。
+ * 长按按钮人工停车仍由 main.c 调用 Avoid_SetDrive(0)。 */
 #include "app/app_avoid.h"
 #include "app/app_log.h"
 #include "app/app_telemetry.h"
+#include "app/app_trace.h"
+#include "drv/drv_grayscale.h"
 #include "drv/drv_motor.h"
+#include "drv/drv_ultrasonic.h"
 
 #include <stdint.h>
 
-/* ===================== 平时调参只看这里 =====================
- * _MS = 毫秒：1000u = 1 秒；_PWM = 电机占空比命令，不等于实测转速。
- * 三段动作按“直行 -> 左弧 -> 右弧”依次执行，最后自动停车。
- * 想改变转弯半径，先调两轮 PWM 的差；想改变转弯走多久，才调 _MS。
- * 右弧的 21/11 是毕烨恺现场改过的值，整理注释时不改动。
- *
- * 原始 0~3s 手推直行不重播，改由按钮后直行 2s 代替。
- * 手推 3~5s：左轮约 128mm / 右轮约 201mm；
- * 手推 5~13s：左轮约 910mm / 右轮约 558mm。
- * 这些 mm 用尚未精标的 0.115mm/计数及 BLE 2 倍分频估算。
- */
-#define A02_STRAIGHT_MS   2000u  /* 直行 2.0 秒 */
-#define A02_STRAIGHT_PWM    16   /* 直行时，左右轮同为 16% */
+/* ===================== 共用触发参数，只在这里调 ===================== */
+#define A02_TRIGGER_MM       300   /* 任一探头的新鲜有效读数 <=300mm 即触发 */
+#define A02_CENTER_SPLIT_MM   30   /* 两侧都近且差值 <30mm：默认向左 */
+#define A02_US_FRESH_MS     350u   /* 超过 350ms 的缓存读数不用 */
+#define A02_PWM_STEP          2   /* 每 10ms 单轮最多改变 2% */
+#define A02_LINE_IGNORE_MS  500u   /* 接管后前 500ms 不以黑位启动回线 */
+#define A02_LINE_WINDOW_MS  100u   /* 100ms 内累计各路曾经变黑 */
+#define A02_LINE_GAP_MS      30u   /* 采样中断超过 30ms 则重新累计 */
+#define A02_LINE_BLACK_COUNT  6u   /* 至少 6 个不同灰度通道见黑 */
 
-#define A02_LEFT_MS       1000u  /* 向左推出：1.0 秒 */
-#define A02_LEFT_L_PWM       9   /* 左轮慢、右轮快 -> 车向左转 */
-#define A02_LEFT_R_PWM      23
+/* 满 500ms 后用短时六路黑位启动摆正；摆正后按固定低速弧线搜线。
+ * 左避障后左轮 A／右轮 B；右避障时交换。搜线首次见黑后继续转一小段。 */
+#define A02_CAPTURE_A_PWM       8
+#define A02_CAPTURE_B_PWM      18
+#define A02_SEARCH_MS        4500u  /* 摆正结束后，最多低速找线 4 秒 */
+#define A02_CAPTURE_AFTER_BLACK_MS 300u /* 首次见黑后保持搜线慢弧，再交还 A01 */
 
-#define A02_RIGHT_MS     10000u  /* 向右回摆：10.0 秒，到时停车 */
-#define A02_RIGHT_L_PWM     21   /* 左轮快、右轮慢 -> 车向右转 */
-#define A02_RIGHT_R_PWM     11   /* 轮差 10；轮差越小，通常转弯越缓 */
+/* 回线摆正：左避障后左轮 A、右轮 B；右避障时交换左右轮。
+ * _MS 包含升速、可能的保持和降回捕线低速，不是在到达目标后再计时。 */
+#define A02_ALIGN_A_PWM         -50
+#define A02_ALIGN_B_PWM        50
+#define A02_ALIGN_MS         380u
+#define A02_ALIGN_STEP         5   /* 仅摆正段每 10ms 最多变化 5%；原轨迹仍用 2% */
 
-#define A02_PWM_STEP         2   /* 每 10ms 单轮最多改变 2%，避免突然变速 */
+/* 左右两份轨迹各自管理转弯时长和 PWM；原型只供本文件调度。 */
+void AvoidL_Start(uint32_t now, int pwm_l, int pwm_r);
+void AvoidL_Stop(void);
+uint8_t AvoidL_Step(uint32_t now, int *pwm_l, int *pwm_r);
+uint8_t AvoidL_Returning(void);
+uint8_t AvoidL_ReturnExpired(uint32_t now);
+void AvoidL_SyncPwm(int pwm_l, int pwm_r);
+void AvoidR_Start(uint32_t now, int pwm_l, int pwm_r);
+void AvoidR_Stop(void);
+uint8_t AvoidR_Step(uint32_t now, int *pwm_l, int *pwm_r);
+uint8_t AvoidR_Returning(void);
+uint8_t AvoidR_ReturnExpired(uint32_t now);
+void AvoidR_SyncPwm(int pwm_l, int pwm_r);
 
-/* 这几个名字只是程序内部的“当前阶段”，不需要为调速而修改。 */
-typedef enum {
-    A02_OFF,
-    A02_STRAIGHT,
-    A02_LEFT,
-    A02_RIGHT,
-    A02_DONE
-} A02Phase;
+typedef enum { A02_WAIT, A02_LEFT, A02_RIGHT } A02Direction;
+typedef enum { LINE_ARC, LINE_ALIGN, LINE_CAPTURE, LINE_AFTER_BLACK, LINE_FAULT } LinePhase;
+static uint8_t s_armed;
+static A02Direction s_direction;
+static LinePhase s_line_phase;
+static uint8_t s_recent_black;
+static uint32_t s_last_l_stamp, s_last_r_stamp;
+static uint32_t s_avoid_ms, s_align_ms, s_search_ms, s_black_found_ms, s_line_last_ms;
+static uint32_t s_black_ms[8];
+static int s_pwm_l, s_pwm_r;
 
-static A02Phase s_phase;    /* 当前走到直行、左弧、右弧还是停车 */
-static uint8_t s_armed;     /* 1 = 按钮已发车，A02 独占电机 */
-static uint32_t s_phase_ms; /* 当前阶段开始时刻，单位毫秒 */
-static int s_pwm_l, s_pwm_r; /* 此刻实际下发的左右 PWM 命令 */
-
-/* “缓变”：每拍向目标 PWM 靠近一点，不会从 9% 瞬间跳到 21%。
- * 这是辅助函数，不决定直行/转弯持续时间。 */
 static int slew(int current, int target)
 {
     if (current < target - A02_PWM_STEP) { return current + A02_PWM_STEP; }
@@ -61,95 +68,262 @@ static int slew(int current, int target)
     return target;
 }
 
-/* 保留 $T 和板载快照中的左右 PWM / state，便于比对首次实跑与手推日志。
- * 灰度统一填白（0），表示本试验完全不使用灰度；不能用于分析回线。 */
-static void record(uint32_t now, int state)
+static int align_slew(int current, int target)
 {
-    static const int white[8] = {0};
-    Log_Note(0u, 0.0f, s_pwm_l, s_pwm_r, state);
-    Tlm_SendT(now, white, 0.0f, s_pwm_l, s_pwm_r, state);
+    if (current < target - A02_ALIGN_STEP) { return current + A02_ALIGN_STEP; }
+    if (current > target + A02_ALIGN_STEP) { return current - A02_ALIGN_STEP; }
+    return target;
 }
 
-/* 上电初始化：只清状态、打版本标记；不会启动电机。 */
+/* A02 每拍只发一帧真实灰度；A01 循迹时由 Trace_Step 自行上报。 */
+static void record_avoid(uint32_t now, uint8_t bits, int state)
+{
+    int gray[8];
+    for (int i = 0; i < 8; ++i) { gray[i] = (bits >> i) & 1u; }
+    Log_Note(bits, 0.0f, s_pwm_l, s_pwm_r, state);
+    Tlm_SendT(now, gray, 0.0f, s_pwm_l, s_pwm_r, state);
+}
+
+/* 仅在“有效且未过期”时把 mm 当成距离；负数都是驱动状态码。 */
+static int32_t fresh_mm(const UsDev *sensor, uint32_t now)
+{
+    if (sensor->stamp_ms == 0u ||
+        (uint32_t)(now - sensor->stamp_ms) > A02_US_FRESH_MS || sensor->mm <= 0) {
+        return 0;
+    }
+    return sensor->mm;
+}
+
+/* 与面板约定一致：单侧近就向另一侧；双侧近时避开更近的一侧，
+ * 差值不足 30mm 视作中间障碍，左右测试版都统一走左轨迹。 */
+static A02Direction choose_direction(int32_t l, int32_t r)
+{
+    uint8_t l_near = (l > 0 && l <= A02_TRIGGER_MM);
+    uint8_t r_near = (r > 0 && r <= A02_TRIGGER_MM);
+    if (l_near && r_near) {
+        if (r - l >= A02_CENTER_SPLIT_MM) { return A02_RIGHT; }
+        return A02_LEFT; /* 右侧更近 >=30mm，或中间差值 <30mm */
+    }
+    if (l_near) { return A02_RIGHT; }
+    if (r_near) { return A02_LEFT; }
+    return A02_WAIT;
+}
+
+/* 灰度驱动低有效：原始 0=黑，统一翻成遥测约定的 1=黑。 */
+static uint8_t read_gray(uint8_t *bits)
+{
+    uint8_t raw;
+    if (!Gr_ReadDigital(&raw)) { return 0u; }
+    *bits = (uint8_t)~raw;
+    return 1u;
+}
+
+/* 每路只计一次，次序不限：中心先黑、边缘先黑或同一帧多路黑均可。
+ * 整排全白／读失败会清零；字中只有部分通道变白仍可能被累计。
+ * s_black_ms 记录各路最近见黑时刻，使窗口随时间滑动，而非固定分段。 */
+static uint8_t line_six_seen(uint32_t now, uint8_t bits, uint8_t gray_ok)
+{
+    if (!gray_ok || bits == 0u) { s_recent_black = 0u; return 0u; }
+    if (s_recent_black && now - s_line_last_ms > A02_LINE_GAP_MS) {
+        s_recent_black = 0u;
+    }
+    s_line_last_ms = now;
+    uint8_t count = 0u;
+    for (int i = 0; i < 8; ++i) {
+        uint8_t bit = (uint8_t)(1u << i);
+        if (bits & bit) { s_black_ms[i] = now; s_recent_black |= bit; }
+        if ((s_recent_black & bit) && now - s_black_ms[i] > A02_LINE_WINDOW_MS) {
+            s_recent_black &= (uint8_t)~bit;
+        }
+        if (s_recent_black & bit) { ++count; }
+    }
+    return count >= A02_LINE_BLACK_COUNT;
+}
+
+/* 前段向 A/B 加速，末段向低速搜线 PWM 减速；总时长始终是 ALIGN_MS。
+ * 若时长不足以达到目标 PWM，仍按时降速，不延长摆正阶段。 */
+static void align_step(uint32_t now)
+{
+    int align_l = s_direction == A02_LEFT ? A02_ALIGN_A_PWM : A02_ALIGN_B_PWM;
+    int align_r = s_direction == A02_LEFT ? A02_ALIGN_B_PWM : A02_ALIGN_A_PWM;
+    int search_l = s_direction == A02_LEFT ? A02_CAPTURE_A_PWM : A02_CAPTURE_B_PWM;
+    int search_r = s_direction == A02_LEFT ? A02_CAPTURE_B_PWM : A02_CAPTURE_A_PWM;
+    int delta_l = align_l - search_l, delta_r = align_r - search_r;
+    if (delta_l < 0) { delta_l = -delta_l; }
+    if (delta_r < 0) { delta_r = -delta_r; }
+    int delta = delta_l > delta_r ? delta_l : delta_r;
+    uint32_t down_ms = (uint32_t)((delta + A02_ALIGN_STEP - 1) /
+                                   A02_ALIGN_STEP) * 10u;
+    if (down_ms > A02_ALIGN_MS / 2u) { down_ms = A02_ALIGN_MS / 2u; }
+    uint32_t elapsed = now - s_align_ms;
+    int target_l = elapsed >= A02_ALIGN_MS - down_ms ? search_l : align_l;
+    int target_r = elapsed >= A02_ALIGN_MS - down_ms ? search_r : align_r;
+    s_pwm_l = align_slew(s_pwm_l, target_l);
+    s_pwm_r = align_slew(s_pwm_r, target_r);
+    Mo_Set(s_pwm_l, s_pwm_r);
+}
+
+/* 固定低速弧线搜线：左避障后 7/15 向左，右避障后 15/7 向右。
+ * 首次见黑后仍保持这组命令，直到 AFTER_BLACK_MS 结束。 */
+static void capture_step(void)
+{
+    int target_l = s_direction == A02_LEFT ? A02_CAPTURE_A_PWM : A02_CAPTURE_B_PWM;
+    int target_r = s_direction == A02_LEFT ? A02_CAPTURE_B_PWM : A02_CAPTURE_A_PWM;
+    s_pwm_l = slew(s_pwm_l, target_l);
+    s_pwm_r = slew(s_pwm_r, target_r);
+    Mo_Set(s_pwm_l, s_pwm_r);
+}
+
+/* 不停车，只撤销 A02 接管；下一 10ms 拍由 main.c 交给 A01。
+ * 用已有的起步找线入口让 A01 下一拍清旧 PID／速度量，不重置终点精停。 */
+static void handoff(void)
+{
+    AvoidL_Stop(); AvoidR_Stop();
+    Trace_SetSeek(1u);
+    s_direction = A02_WAIT;
+    s_line_phase = LINE_ARC;
+    s_last_l_stamp = Us_Get(US_L)->stamp_ms;
+    s_last_r_stamp = Us_Get(US_R)->stamp_ms;
+    Tlm_SendEvent(4, "A02 search done; A01 handoff");
+}
+
+/* 回摆或低速搜线到时仍未碰到黑位：锁存停车，禁止 A01 接手。 */
+static void no_line_stop(uint32_t now, const char *reason)
+{
+    Mo_Stop();
+    AvoidL_Stop(); AvoidR_Stop();
+    s_pwm_l = s_pwm_r = 0;
+    s_line_phase = LINE_FAULT;
+    Tlm_SendEvent(4, reason);
+    record_avoid(now, 0u, 0);
+    Log_Stop();
+}
+
 void Avoid_Init(void)
 {
-    s_phase = A02_OFF;
     s_armed = 0u;
-    s_phase_ms = 0u;
+    s_direction = A02_WAIT;
+    s_line_phase = LINE_ARC;
+    s_recent_black = 0u;
+    s_line_last_ms = 0u;
+    s_avoid_ms = s_align_ms = s_search_ms = s_black_found_ms = 0u;
     s_pwm_l = s_pwm_r = 0;
-    Tlm_SendEvent(97, "A02 handpush replay v1");
+    s_last_l_stamp = s_last_r_stamp = 0u;
+    AvoidL_Stop();
+    AvoidR_Stop();
+    Tlm_SendEvent(97, "A02 trace-return v3");
 }
 
-/* 主程序识别长按按钮后调用这里：on=1 开始，on=0 人工停止。
- * 实际按钮识别代码在 main.c，本文件只接收“开始/停止”结果。 */
 void Avoid_SetDrive(uint8_t on)
 {
-    if (!on) {
-        Mo_Stop();
-        s_armed = 0u;
-        s_phase = A02_OFF;
-        s_pwm_l = s_pwm_r = 0;
-        return;
-    }
-    /* 第一拍才起计时，按钮蜂鸣器的阻塞时间不算在直行 2s 内。 */
     Mo_Stop();
-    s_armed = 1u;
-    s_phase = A02_STRAIGHT;
-    s_phase_ms = 0u;
+    AvoidL_Stop();
+    AvoidR_Stop();
+    s_armed = on ? 1u : 0u;
+    s_direction = A02_WAIT;
+    s_line_phase = LINE_ARC;
+    s_recent_black = 0u;
+    s_line_last_ms = 0u;
+    s_avoid_ms = s_align_ms = s_search_ms = s_black_found_ms = 0u;
     s_pwm_l = s_pwm_r = 0;
-    Tlm_SendEvent(3, "A02 replay straight");
+    if (on) {
+        /* 发车前的旧测距不能触发本趟避障。 */
+        s_last_l_stamp = Us_Get(US_L)->stamp_ms;
+        s_last_r_stamp = Us_Get(US_R)->stamp_ms;
+        Tlm_SendEvent(3, "A02 A01 trace; wait obstacle");
+    }
 }
 
-/* 供 main.c 查询是否已经发车。 */
 uint8_t Avoid_GetDrive(void) { return s_armed; }
+uint8_t Avoid_Mode(void) { return s_armed && s_direction != A02_WAIT; }
 
-/* DONE 仍保持接管，避免停车后 main.c 放行 A01 自动发车。 */
-uint8_t Avoid_Mode(void) { return s_armed; }
-
-/* 每约 10ms 调用一次：① 到时间换阶段 ② 算目标 PWM ③ 下发电机。
- * 全程没有根据黑线或超声波修正路线，是纯定时开环试验。 */
 void Avoid_Step(void)
 {
     if (!s_armed) { return; }
     uint32_t now = HAL_GetTick();
-    if (s_phase_ms == 0u) { s_phase_ms = now; }
-
-    /* 阶段切换：elapsed 是“现在 - 本阶段开始时刻”，单位毫秒。
-     * 每换一段就重置 s_phase_ms，所以三个 _MS 是各段时长，不是总时长。 */
-    uint32_t elapsed = now - s_phase_ms;
-    if (s_phase == A02_STRAIGHT && elapsed >= A02_STRAIGHT_MS) {
-        s_phase = A02_LEFT;
-        s_phase_ms = now;
-        Tlm_SendEvent(3, "A02 replay left");
-    } else if (s_phase == A02_LEFT && elapsed >= A02_LEFT_MS) {
-        s_phase = A02_RIGHT;
-        s_phase_ms = now;
-        Tlm_SendEvent(3, "A02 replay right");
-    } else if (s_phase == A02_RIGHT && elapsed >= A02_RIGHT_MS) {
-        s_phase = A02_DONE;
-        s_pwm_l = s_pwm_r = 0;
-        Mo_Stop();
-        Tlm_SendEvent(4, "A02 replay stop");
+    if (s_line_phase == LINE_FAULT) { record_avoid(now, 0u, 0); return; }
+    if (s_line_phase == LINE_CAPTURE && now - s_search_ms >= A02_SEARCH_MS) {
+        no_line_stop(now, "A02 search timeout stop");
+        return;
     }
-
-    if (s_phase == A02_DONE) {
-        /* 锁存停车，不调用 A01；需人工再次长按关闭发车开关。 */
-        Mo_Stop();
-        record(now, 0);
+    /* 已进入低速搜线后，给它完整 4 秒；之前仍保留固定回摆的 5 秒保护。 */
+    if ((s_line_phase == LINE_ARC || s_line_phase == LINE_ALIGN) &&
+        ((s_direction == A02_LEFT && AvoidL_ReturnExpired(now)) ||
+         (s_direction == A02_RIGHT && AvoidR_ReturnExpired(now)))) {
+        no_line_stop(now, "A02 return timeout stop");
         return;
     }
 
-    /* 选本阶段的目标速度。真正送到电机前还会经过下方的缓变处理。 */
-    int target_l = A02_STRAIGHT_PWM, target_r = A02_STRAIGHT_PWM;
-    if (s_phase == A02_LEFT) {
-        target_l = A02_LEFT_L_PWM;
-        target_r = A02_LEFT_R_PWM;
-    } else if (s_phase == A02_RIGHT) {
-        target_l = A02_RIGHT_L_PWM;
-        target_r = A02_RIGHT_R_PWM;
+    if (s_direction == A02_WAIT) {
+        /* main.c 此拍已执行 Trace_Step(1)：保持 A01 的电机命令、日志和精停。
+         * A01 已停或灰度离线时，绝不由 A02 独自重新启动车轮。 */
+        if (!Trace_GetDrive() || !Trace_Online()) { return; }
+        const uint8_t *live = Log_LiveFrame();
+        if (live[4] != 1u) { return; } /* A01 正常循迹，不从丢线/精停接管 */
+        const UsDev *left = Us_Get(US_L);
+        const UsDev *right = Us_Get(US_R);
+        uint8_t new_l = left->stamp_ms != s_last_l_stamp;
+        uint8_t new_r = right->stamp_ms != s_last_r_stamp;
+        s_last_l_stamp = left->stamp_ms;
+        s_last_r_stamp = right->stamp_ms;
+        int32_t mm_l = fresh_mm(left, now), mm_r = fresh_mm(right, now);
+        /* 必须有一侧产生本趟的新鲜近障样本；另一侧的新鲜缓存只参与选向。
+         * 不再累计票数，也不让同一个缓存值反复触发。 */
+        if (!((new_l && mm_l > 0 && mm_l <= A02_TRIGGER_MM) ||
+              (new_r && mm_r > 0 && mm_r <= A02_TRIGGER_MM))) { return; }
+        A02Direction choice = choose_direction(mm_l, mm_r);
+        if (choice == A02_WAIT) { return; }
+        s_direction = choice;
+        s_avoid_ms = now;
+        s_search_ms = 0u;
+        s_line_phase = LINE_ARC;
+        s_recent_black = 0u;
+        s_line_last_ms = 0u;
+        /* Trace_Step 本拍刚写入的公开快照里 byte2/3 是实际下发的 PWM。
+         * 以它们为斜坡起点，避免把 A01 巡航直接拉到 0。 */
+        s_pwm_l = (int)(int8_t)live[2];
+        s_pwm_r = (int)(int8_t)live[3];
+        if (choice == A02_LEFT) { AvoidL_Start(now, s_pwm_l, s_pwm_r); }
+        else { AvoidR_Start(now, s_pwm_l, s_pwm_r); }
     }
-    s_pwm_l = slew(s_pwm_l, target_l);
-    s_pwm_r = slew(s_pwm_r, target_r);
-    Mo_Set(s_pwm_l, s_pwm_r);
-    record(now, 2);
+
+    uint8_t bits = 0u;
+    uint8_t gray_ok = read_gray(&bits);
+    uint8_t completed = 0u;
+    if (s_line_phase == LINE_ARC) {
+        if (s_direction == A02_LEFT) { AvoidL_Step(now, &s_pwm_l, &s_pwm_r); }
+        else { AvoidR_Step(now, &s_pwm_l, &s_pwm_r); }
+        if (now - s_avoid_ms >= A02_LINE_IGNORE_MS &&
+            line_six_seen(now, bits, gray_ok)) {
+            s_line_phase = LINE_ALIGN;
+            s_align_ms = now;
+            Tlm_SendEvent(3, "A02 straighten on line");
+            align_step(now);
+        }
+    } else if (s_line_phase == LINE_ALIGN) {
+        if (now - s_align_ms >= A02_ALIGN_MS) {
+            s_line_phase = LINE_CAPTURE;
+            s_search_ms = now;
+            Tlm_SendEvent(3, "A02 capture line");
+            capture_step();
+            if (gray_ok && bits != 0u) {
+                s_line_phase = LINE_AFTER_BLACK;
+                s_black_found_ms = now;
+                Tlm_SendEvent(3, "A02 search black; keep arc");
+            }
+        } else { align_step(now); }
+    } else if (s_line_phase == LINE_CAPTURE) {
+        capture_step();
+        if (gray_ok && bits != 0u) {
+            s_line_phase = LINE_AFTER_BLACK;
+            s_black_found_ms = now;
+            Tlm_SendEvent(3, "A02 search black; keep arc");
+        }
+    } else if (s_line_phase == LINE_AFTER_BLACK) {
+        capture_step();
+        completed = now - s_black_found_ms >= A02_CAPTURE_AFTER_BLACK_MS;
+    }
+    record_avoid(now, gray_ok ? bits : 0u,
+                 completed || s_line_phase != LINE_ARC ? 3 : 2);
+    if (completed) { handoff(); }
 }
