@@ -15,6 +15,7 @@
 /* ===================== 共用触发参数，只在这里调 ===================== */
 #define A02_TRIGGER_MM       300   /* 任一探头的新鲜有效读数 <=300mm 即触发 */
 #define A02_CENTER_SPLIT_MM   30   /* 两侧都近且差值 <30mm：默认向左 */
+#define A02_COOLDOWN_MS     3000u  /* 回线交还 A01 后，暂停超声避障触发的时间 */
 #define A02_US_FRESH_MS     350u   /* 超过 350ms 的缓存读数不用 */
 #define A02_PWM_STEP          2   /* 每 10ms 单轮最多改变 2% */
 #define A02_LINE_IGNORE_MS  500u   /* 接管后前 500ms 不以黑位启动回线 */
@@ -24,16 +25,16 @@
 
 /* 满 500ms 后用短时六路黑位启动摆正；摆正后按固定低速弧线搜线。
  * 左避障后左轮 A／右轮 B；右避障时交换。搜线首次见黑后继续转一小段。 */
-#define A02_CAPTURE_A_PWM       8
-#define A02_CAPTURE_B_PWM      18
-#define A02_SEARCH_MS        4500u  /* 摆正结束后，最多低速找线 4 秒 */
-#define A02_CAPTURE_AFTER_BLACK_MS 300u /* 首次见黑后保持搜线慢弧，再交还 A01 */
+#define A02_CAPTURE_A_PWM       10
+#define A02_CAPTURE_B_PWM      28
+#define A02_SEARCH_MS        4500u  /* 摆正结束后，最多低速找线 4.5 秒 */
+#define A02_CAPTURE_AFTER_BLACK_MS 250u /* 首次见黑后保持搜线慢弧，再交还 A01 */
 
 /* 回线摆正：左避障后左轮 A、右轮 B；右避障时交换左右轮。
  * _MS 包含升速、可能的保持和降回捕线低速，不是在到达目标后再计时。 */
-#define A02_ALIGN_A_PWM         -50
-#define A02_ALIGN_B_PWM        50
-#define A02_ALIGN_MS         380u
+#define A02_ALIGN_A_PWM         -70
+#define A02_ALIGN_B_PWM        20
+#define A02_ALIGN_MS         430u
 #define A02_ALIGN_STEP         5   /* 仅摆正段每 10ms 最多变化 5%；原轨迹仍用 2% */
 
 /* 左右两份轨迹各自管理转弯时长和 PWM；原型只供本文件调度。 */
@@ -53,11 +54,13 @@ void AvoidR_SyncPwm(int pwm_l, int pwm_r);
 typedef enum { A02_WAIT, A02_LEFT, A02_RIGHT } A02Direction;
 typedef enum { LINE_ARC, LINE_ALIGN, LINE_CAPTURE, LINE_AFTER_BLACK, LINE_FAULT } LinePhase;
 static uint8_t s_armed;
+static uint8_t s_cooling;
 static A02Direction s_direction;
 static LinePhase s_line_phase;
 static uint8_t s_recent_black;
 static uint32_t s_last_l_stamp, s_last_r_stamp;
 static uint32_t s_avoid_ms, s_align_ms, s_search_ms, s_black_found_ms, s_line_last_ms;
+static uint32_t s_handoff_ms;
 static uint32_t s_black_ms[8];
 static int s_pwm_l, s_pwm_r;
 
@@ -163,7 +166,7 @@ static void align_step(uint32_t now)
     Mo_Set(s_pwm_l, s_pwm_r);
 }
 
-/* 固定低速弧线搜线：左避障后 7/15 向左，右避障后 15/7 向右。
+/* 固定低速弧线搜线：左避障后 A/B 向左，右避障后 B/A 向右。
  * 首次见黑后仍保持这组命令，直到 AFTER_BLACK_MS 结束。 */
 static void capture_step(void)
 {
@@ -176,12 +179,14 @@ static void capture_step(void)
 
 /* 不停车，只撤销 A02 接管；下一 10ms 拍由 main.c 交给 A01。
  * 用已有的起步找线入口让 A01 下一拍清旧 PID／速度量，不重置终点精停。 */
-static void handoff(void)
+static void handoff(uint32_t now)
 {
     AvoidL_Stop(); AvoidR_Stop();
     Trace_SetSeek(1u);
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
+    s_handoff_ms = now;
+    s_cooling = 1u;
     s_last_l_stamp = Us_Get(US_L)->stamp_ms;
     s_last_r_stamp = Us_Get(US_R)->stamp_ms;
     Tlm_SendEvent(4, "A02 search done; A01 handoff");
@@ -202,11 +207,13 @@ static void no_line_stop(uint32_t now, const char *reason)
 void Avoid_Init(void)
 {
     s_armed = 0u;
+    s_cooling = 0u;
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
     s_recent_black = 0u;
     s_line_last_ms = 0u;
     s_avoid_ms = s_align_ms = s_search_ms = s_black_found_ms = 0u;
+    s_handoff_ms = 0u;
     s_pwm_l = s_pwm_r = 0;
     s_last_l_stamp = s_last_r_stamp = 0u;
     AvoidL_Stop();
@@ -220,11 +227,13 @@ void Avoid_SetDrive(uint8_t on)
     AvoidL_Stop();
     AvoidR_Stop();
     s_armed = on ? 1u : 0u;
+    s_cooling = 0u;
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
     s_recent_black = 0u;
     s_line_last_ms = 0u;
     s_avoid_ms = s_align_ms = s_search_ms = s_black_found_ms = 0u;
+    s_handoff_ms = 0u;
     s_pwm_l = s_pwm_r = 0;
     if (on) {
         /* 发车前的旧测距不能触发本趟避障。 */
@@ -246,7 +255,7 @@ void Avoid_Step(void)
         no_line_stop(now, "A02 search timeout stop");
         return;
     }
-    /* 已进入低速搜线后，给它完整 4 秒；之前仍保留固定回摆的 5 秒保护。 */
+    /* 已进入低速搜线后，给它完整 4.5 秒；之前仍保留固定回摆的 5 秒保护。 */
     if ((s_line_phase == LINE_ARC || s_line_phase == LINE_ALIGN) &&
         ((s_direction == A02_LEFT && AvoidL_ReturnExpired(now)) ||
          (s_direction == A02_RIGHT && AvoidR_ReturnExpired(now)))) {
@@ -255,6 +264,16 @@ void Avoid_Step(void)
     }
 
     if (s_direction == A02_WAIT) {
+        if (s_cooling) {
+            /* 冷却时持续记住两颗探头的最新时间戳；期满当拍也不触发，
+             * 下一次真正的新测量才可发起下一轮避障。 */
+            s_last_l_stamp = Us_Get(US_L)->stamp_ms;
+            s_last_r_stamp = Us_Get(US_R)->stamp_ms;
+            if ((uint32_t)(now - s_handoff_ms) >= A02_COOLDOWN_MS) {
+                s_cooling = 0u;
+            }
+            return;
+        }
         /* main.c 此拍已执行 Trace_Step(1)：保持 A01 的电机命令、日志和精停。
          * A01 已停或灰度离线时，绝不由 A02 独自重新启动车轮。 */
         if (!Trace_GetDrive() || !Trace_Online()) { return; }
@@ -325,5 +344,5 @@ void Avoid_Step(void)
     }
     record_avoid(now, gray_ok ? bits : 0u,
                  completed || s_line_phase != LINE_ARC ? 3 : 2);
-    if (completed) { handoff(); }
+    if (completed) { handoff(now); }
 }
