@@ -26,8 +26,8 @@
  * PWM 是占空比命令，不等于实测轮速；_MS 单位毫秒。改宏后需重新编译烧录。
  * kp/ki/kd 与在线 base_speed 属于 Tlm_Params，可用 SET 临时调整；
  * 它们的上电默认值定义在 app_telemetry.c，TR_BASE_MAX 仍约束 A01 上限。 */
-#define TR_BASE_DEFAULT    22      /* A01 上电默认基准 PWM */
-#define TR_BASE_MAX        22      /* 正常循迹共同速度上限，SET 也不能越过 */
+#define TR_BASE_DEFAULT    45      /* A01 上电默认基准 PWM */
+#define TR_BASE_MAX        50      /* 正常循迹共同速度上限，SET 也不能越过 */
 #define TR_ALL_WHITE_PWM   26      /* 灰度正常但八路全白：左右轮各自的直行 PWM */
 #define TR_POS_CENTER      3.5f    /* 8 路探头编号 0..7 的中心，不是车速 */
 #define TR_WIDE_BLACK_N    5u      /* 同时 >=5 路黑按宽黑区处理，不用质心拐弯 */

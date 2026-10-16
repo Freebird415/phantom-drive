@@ -238,4 +238,41 @@ step(29300, 0x18, 0, 280, 0, 29290)
 assert call("Avoid_Mode") == 0, "cooldown's last cached sample is not new"
 step(29350, 0x18, 0, 280, 0, 29350)
 assert call("Avoid_Mode") == 1, "first new sample after cooldown should trigger"
-print("PASS: opposite-side direction, mirrored capture/A01 handoff, 4.5s no-line stop, 3s post-handoff cooldown")
+
+# The 350mm preparation must affect A01's shared base only for this obstacle.
+base_addr = call("Tlm_Params") + 12
+call("Avoid_SetDrive", 1)
+uc.mem_write(base_addr, struct.pack("<i", 45))
+step(30000, 0x18, 0, 600, 0, 30000)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45
+step(30010, 0x18, 0, 330, 0, 30000)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45, "old cached echo must not slow A01"
+step(30100, 0x18, 0, -2, 0, 30100)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45, "negative ultrasonic status is not distance"
+step(30200, 0x18, 0, 351, 0, 30200)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45
+step(30300, 0x18, 0, 350, 0, 30300)
+assert call("Avoid_Mode") == 0
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 30, "350mm must enter preparation"
+step(30400, 0x18, 0, 330, 0, 30400)
+assert call("Avoid_Mode") == 0
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 30
+step(30500, 0x18, 0, 300, 0, 30500)
+assert call("Avoid_Mode") == 1, "300mm still starts the original avoidance arc"
+step(31000, 0xff)
+step(31430, 0)
+step(31440, 0x18)
+step(31690, 0)
+assert call("Avoid_Mode") == 0, "line capture must hand off to A01"
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45, "handoff must restore cruise base"
+step(31700, 0x18, 0, 330, 0, 31700)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 45, "cooldown must not re-enter preparation"
+
+call("Avoid_SetDrive", 1)
+uc.mem_write(base_addr, struct.pack("<i", 48))
+step(32000, 0x18, 0, 330, 0, 32000)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 30
+call("Avoid_SetDrive", 0)
+assert struct.unpack("<i", uc.mem_read(base_addr, 4))[0] == 48, "manual stop must restore the user's cruise setting"
+
+print("PASS: opposite-side direction, mirrored capture/A01 handoff, 4.5s no-line stop, 3s cooldown, 350mm preparation and cruise restoration")

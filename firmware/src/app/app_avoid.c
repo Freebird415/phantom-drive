@@ -13,6 +13,8 @@
 #include <stdint.h>
 
 /* ===================== 共用触发参数，只在这里调 ===================== */
+#define A02_PREP_MM          350   /* 新鲜有效测距 <=350mm：A01 提前减速 */
+#define A02_PREP_BASE_PWM     30   /* 避障预备速度；只临时覆盖 A01 基准 PWM */
 #define A02_TRIGGER_MM       300   /* 任一探头的新鲜有效读数 <=300mm 即触发 */
 #define A02_CENTER_SPLIT_MM   30   /* 两侧都近且差值 <30mm：默认向左 */
 #define A02_COOLDOWN_MS     3000u  /* 回线交还 A01 后，暂停超声避障触发的时间 */
@@ -22,6 +24,10 @@
 #define A02_LINE_WINDOW_MS  100u   /* 100ms 内累计各路曾经变黑 */
 #define A02_LINE_GAP_MS      30u   /* 采样中断超过 30ms 则重新累计 */
 #define A02_LINE_BLACK_COUNT  6u   /* 至少 6 个不同灰度通道见黑 */
+
+#if A02_PREP_MM <= A02_TRIGGER_MM
+#error "A02_PREP_MM must exceed A02_TRIGGER_MM"
+#endif
 
 /* 满 500ms 后用短时六路黑位启动摆正；摆正后按固定低速弧线搜线。
  * 左避障后左轮 A／右轮 B；右避障时交换。搜线首次见黑后继续转一小段。 */
@@ -55,6 +61,8 @@ typedef enum { A02_WAIT, A02_LEFT, A02_RIGHT } A02Direction;
 typedef enum { LINE_ARC, LINE_ALIGN, LINE_CAPTURE, LINE_AFTER_BLACK, LINE_FAULT } LinePhase;
 static uint8_t s_armed;
 static uint8_t s_cooling;
+static uint8_t s_preparing;
+static int s_cruise_base;
 static A02Direction s_direction;
 static LinePhase s_line_phase;
 static uint8_t s_recent_black;
@@ -63,6 +71,26 @@ static uint32_t s_avoid_ms, s_align_ms, s_search_ms, s_black_found_ms, s_line_la
 static uint32_t s_handoff_ms;
 static uint32_t s_black_ms[8];
 static int s_pwm_l, s_pwm_r;
+
+/* A01 的 PID 和循迹速度上限不变：只暂借在线基准速度，交接/停车时归还。
+ * 若当前已比预备速度慢，不应因发现障碍反而加速。 */
+static void begin_preparation(void)
+{
+    if (s_preparing) { return; }
+    s_cruise_base = Tlm_Params()->base_speed;
+    if (s_cruise_base <= 0 || s_cruise_base > A02_PREP_BASE_PWM) {
+        Tlm_Params()->base_speed = A02_PREP_BASE_PWM;
+    }
+    s_preparing = 1u;
+    Tlm_SendEvent(3, "A02 prepare speed");
+}
+
+static void end_preparation(void)
+{
+    if (!s_preparing) { return; }
+    Tlm_Params()->base_speed = s_cruise_base;
+    s_preparing = 0u;
+}
 
 static int slew(int current, int target)
 {
@@ -182,6 +210,7 @@ static void capture_step(void)
 static void handoff(uint32_t now)
 {
     AvoidL_Stop(); AvoidR_Stop();
+    end_preparation();
     Trace_SetSeek(1u);
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
@@ -197,6 +226,7 @@ static void no_line_stop(uint32_t now, const char *reason)
 {
     Mo_Stop();
     AvoidL_Stop(); AvoidR_Stop();
+    end_preparation();
     s_pwm_l = s_pwm_r = 0;
     s_line_phase = LINE_FAULT;
     Tlm_SendEvent(4, reason);
@@ -208,6 +238,8 @@ void Avoid_Init(void)
 {
     s_armed = 0u;
     s_cooling = 0u;
+    s_preparing = 0u;
+    s_cruise_base = 0;
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
     s_recent_black = 0u;
@@ -223,6 +255,7 @@ void Avoid_Init(void)
 
 void Avoid_SetDrive(uint8_t on)
 {
+    end_preparation();
     Mo_Stop();
     AvoidL_Stop();
     AvoidR_Stop();
@@ -265,8 +298,8 @@ void Avoid_Step(void)
 
     if (s_direction == A02_WAIT) {
         if (s_cooling) {
-            /* 冷却时持续记住两颗探头的最新时间戳；期满当拍也不触发，
-             * 下一次真正的新测量才可发起下一轮避障。 */
+            /* 冷却时只记时间戳供日志/去旧缓存：不判障碍，也不预减速。
+             * 期满当拍也不触发；下一次真正的新测量才重新判断。 */
             s_last_l_stamp = Us_Get(US_L)->stamp_ms;
             s_last_r_stamp = Us_Get(US_R)->stamp_ms;
             if ((uint32_t)(now - s_handoff_ms) >= A02_COOLDOWN_MS) {
@@ -286,6 +319,12 @@ void Avoid_Step(void)
         s_last_l_stamp = left->stamp_ms;
         s_last_r_stamp = right->stamp_ms;
         int32_t mm_l = fresh_mm(left, now), mm_r = fresh_mm(right, now);
+        /* 只让本趟新测量进入 350mm 预备区；不能凭旧缓存降速。
+         * 进入后保持低速，直到 300mm 真正触发或本趟被人工停止。 */
+        if ((new_l && mm_l > 0 && mm_l <= A02_PREP_MM) ||
+            (new_r && mm_r > 0 && mm_r <= A02_PREP_MM)) {
+            begin_preparation();
+        }
         /* 必须有一侧产生本趟的新鲜近障样本；另一侧的新鲜缓存只参与选向。
          * 不再累计票数，也不让同一个缓存值反复触发。 */
         if (!((new_l && mm_l > 0 && mm_l <= A02_TRIGGER_MM) ||
