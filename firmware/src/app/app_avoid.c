@@ -457,7 +457,13 @@ void Avoid_Step(void)
          * A01 已停或灰度离线时，绝不由 A02 独自重新启动车轮。 */
         if (!Trace_GetDrive() || !Trace_Online()) { return; }
         const uint8_t *live = Log_LiveFrame();
-        if (live[4] != 1u) { return; } /* A01 正常循迹，不从丢线/精停接管 */
+        /* ⭐ 只在 A01「正常循迹(1)」时接管，会把最危险的两种状态挡在门外：
+         *   state=5 起步找线、state=6 丢线找线 —— 这两种状态**车仍在往前冲**
+         *   （丢线找线是 26/26 直行），恰恰是最需要躲障碍的时候。
+         *   仍不接管：0 待机/锁存、4 精停（车已停）、2/3（A02 自己已接管）。
+         *   2026-10-18 放行 5/6，见经验与踩坑「看见障碍却不躲」。*/
+        uint8_t a01_state = live[4];
+        if (a01_state != 1u && a01_state != 5u && a01_state != 6u) { return; }
         const UsDev *left = Us_Get(US_L);
         const UsDev *right = Us_Get(US_R);
         uint8_t new_l = left->stamp_ms != s_last_l_stamp;

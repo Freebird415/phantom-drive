@@ -119,7 +119,12 @@ int main(void)
              （`-6` = 驱动自己拦下重复触发，不算故障；而 10/01 台面实测 50 秒零 `-2`/`-1`）
               ⇒ 改回 100ms，**本次实测会重新统计成功率**（看 `-2`/`-1` 而不是看 `-6`）
              若真出现大量 `-2` ⇒ 再改回 200ms 即可（就在这里）*/
-#define US_PERIOD_MS  100u
+/* 节拍 = 每次只测【一颗】，左右交替 ⇒ 单颗频率 = 1/(2×本值)
+ *   100ms → 单颗 5.0Hz ｜ **62ms → 8.06Hz（当前）** ｜ 60ms → 8.3Hz ｜ 55ms → 9.1Hz
+ * 约束：同一颗两次之间 ≥ US_MIN_GAP_MS(60ms) —— 这里每颗间隔 124ms，满足。
+ * ⚠️ 单次读取最坏阻塞 30ms（没回波等超时）⇒ 62ms 节拍下最坏占用 ~48% CPU，
+ *    100Hz 控制环可能掉拍；实测看 $T 的 ms 间隔是否仍是 10ms。*/
+#define US_PERIOD_MS  62u
         if (Tlm_UsAuto() && (int32_t)(HAL_GetTick() - last_us) >= (int32_t)US_PERIOD_MS) {
             uint8_t mode = Tlm_UsAuto();
             if (mode == 2u) {            /* 只测左 */

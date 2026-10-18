@@ -67,8 +67,8 @@
 #define A02_PREP_BASE_PWM     30    /* 预备时的临时巡航 PWM */
 #define A02_TRIGGER_MM       310    /* 新鲜读数 ≤310mm：A02 接管 */
 #define A02_CENTER_SPLIT_MM   30    /* 两侧都近且差 <30mm ⇒ 当作正中障碍，默认向左避 */
-#define A02_COOLDOWN_MS     3000u   /* 交还 A01 后多久内不再触发避障 */
-#define A02_US_FRESH_MS      350u   /* 超过 350ms 的旧测距不用 */
+#define A02_COOLDOWN_MS      800u   /* 交还 A01 后多久内不再触发避障（原 3000 太长会漏障）*/
+#define A02_US_FRESH_MS      500u   /* 超过 500ms 的旧测距不用（容忍一次失败重试）*/
 
 /* ---- 3.3 判线（判「线回来了」）---- */
 #define A02_LEAVE_WHITE_MS   200u   /* 连续全白 ≥200ms = 已离开线（之后才认回线）*/

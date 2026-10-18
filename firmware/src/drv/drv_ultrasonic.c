@@ -74,7 +74,8 @@ int32_t Us_Read(UsId id)
           这时不阻塞等待（那会卡住主循环 200ms），直接跳过本轮，下一轮自愈。 */
     if (HAL_GPIO_ReadPin(d->echo_port, d->echo_pin) == GPIO_PIN_SET) {
         d->mm = US_BUSY;
-        d->last_ok = 0;
+            /* 不置 last_ok=0：这不是"测不到"，只是模块还在吐上次的长脉冲；
+               置 0 会触发失败退避，把一次 -2 放大成"瞎一秒"（2026-10-18 实测）*/
         return d->mm;
     }
 
