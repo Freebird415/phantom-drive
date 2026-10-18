@@ -13,7 +13,7 @@
  * ========================================================================== */
 #include "app/app_trace.h"
 #include "app/app_telemetry.h"
-#include "app/a01_tune.h"      /* ⭐ A01 调参总表（唯一出处）：kp/ki/kd/base/慢速窗口 */
+#include "app/tuning.h"      /* ⭐ A01 调参总表（唯一出处）：kp/ki/kd/base/慢速窗口 */
 #include "drv/drv_grayscale.h"
 #include "drv/drv_motor.h"
 #include "app/app_log.h"       /* 板载 RAM 快照（跑车时插不了串口，靠它事后读）*/
@@ -27,9 +27,19 @@
  * PWM 是占空比命令，不等于实测轮速；_MS 单位毫秒。改宏后需重新编译烧录。
  * kp/ki/kd 与在线 base_speed 属于 Tlm_Params，可用 SET 临时调整；
  * 它们的上电默认值定义在 app_telemetry.c，TR_BASE_MAX 仍约束 A01 上限。 */
-/* ⭐ 下面 4 个值现在来自 app/a01_tune.h（唯一出处）——不要在别处再写一份 */
-#define TR_BASE_DEFAULT    A01_BASE_SPEED   /* A01 上电默认基准 PWM */
-#define TR_BASE_MAX        A01_BASE_MAX     /* 正常循迹共同速度上限，SET 也不能越过 */
+/* ⭐ 下面 4 个值现在来自 app/tuning.h（唯一出处）——不要在别处再写一份 */
+#define TR_BASE_DEFAULT    A01_BASE_SPEED   /* 来自 tuning.h */
+#define TR_BASE_MAX        A01_BASE_MAX     /* 来自 tuning.h */
+#define TR_ALL_WHITE_PWM   26      /* 灰度正常但八路全白：左右轮各自的直行 PWM */
+
+/* ================= 回线后「慢速 A01」（数值在 app/tuning.h §2）=================
+ * A02 交还控制权后，先在慢速下跑 A01_SLOW_MS，基准 PWM 从 A01_SLOW_PWM0 线性升到
+ * A01_SLOW_PWM1，窗口内可用 A01_SLOW_KP/KI/KD 单独整定；窗口结束自动回 base_speed。
+ * 窗口内只压【共同速度】，差速照算（该修方向照修，只是整体慢）。任何参数设 0 = 关闭。
+ * 日志：$E 85 `SLOW A01` 开始 / $E 86 `SLOW A01 end` 结束。*/
+/* ⭐ 下面 4 个值现在来自 app/tuning.h（唯一出处）——不要在别处再写一份 */
+#define TR_BASE_DEFAULT    A01_BASE_SPEED   /* 来自 tuning.h */
+#define TR_BASE_MAX        A01_BASE_MAX     /* 来自 tuning.h */
 #define TR_ALL_WHITE_PWM   26      /* 灰度正常但八路全白：左右轮各自的直行 PWM */
 
 /* ================= 回线后「慢速 A01」：从起始速度线性过渡到结束速度 =================
@@ -56,22 +66,15 @@
  *    （电机低速死区实测约 5%，8% 是留余量的下限），下面用编译期检查拦住。
  * ⚠️ 窗口只【压低】不抬高：若当前 base_speed 比插值更慢，就按更慢的走。
  * 日志里看：$E 85 `SLOW A01` 开始 / $E 86 `SLOW A01 end` 结束；$T 的 pwm 会明显压低。*/
-/* ⭐ 这三个值也来自 app/a01_tune.h（A01_SLOW_MS / A01_SLOW_PWM0 / A01_SLOW_PWM1）*/
-#define TR_SLOW_MS        A01_SLOW_MS
-#define TR_SLOW_PWM0      A01_SLOW_PWM0
-#define TR_SLOW_PWM1      A01_SLOW_PWM1
+/* ⭐ 这三个值也来自 app/tuning.h（A01_SLOW_MS / A01_SLOW_PWM0 / A01_SLOW_PWM1）*/
+#define TR_SLOW_MS         A01_SLOW_MS      /* 来自 tuning.h */
+#define TR_SLOW_PWM0       A01_SLOW_PWM0    /* 来自 tuning.h */
+#define TR_SLOW_PWM1       A01_SLOW_PWM1    /* 来自 tuning.h */
 #define TR_POS_CENTER      3.5f    /* 8 路探头编号 0..7 的中心，不是车速 */
 #define TR_WIDE_BLACK_N    5u      /* 同时 >=5 路黑按宽黑区处理，不用质心拐弯 */
 #define TR_WIDE_HOLD_MS    80u     /* 离开宽黑区后保持直行的时间 */
 
 /* 终点：全黑连续帧 + 窄线武装时间 + 最小里程三道条件。 */
-#define TR_FIN_NEED        3u      /* 连续全黑帧数；100Hz 下 3 帧约 30ms */
-#define TR_FIN_ARM_MS      1500u   /* 在线上累计时间，够了才允许识别终点 */
-#define TR_FIN_MIN_MM      800     /* 名义累计里程门槛；未精标，不能当精确测距 */
-#define TR_FIN_MM_DEF      80      /* 检出终点后再走的毫米数；STOPDIST 可临时改 */
-#define TR_FIN_SPEED_PCT   0       /* 最后一段 PWM；0 表示沿用 base_speed */
-#define TR_FIN_MMPS_EST    195     /* 编码器尺度无效时的退化速度估计 mm/s */
-#define TR_FIN_TIMEOUT_MS  3000u   /* 最后一段即使无编码器进度也必须刹车 */
 #define TR_MM_PER_CNT_DEF  0.115f  /* 名义 mm/编码器计数；现场 DISTCAL 可临时改 */
 
 /* 控制器：需要调弯道灵敏度时先用 SET kp/ki/kd，以下是内部门槛。 */
@@ -91,14 +94,13 @@ static int     s_state;           /* 上报用：0 = 丢线停车，1 = 正常�
 /* 终点精停与 PID 的历史调参依据见项目记录；下方仅保存运行状态。 */
 
 static uint8_t  s_fin;            /* 0=巡线 1=走最后一段 2=已停 */
-static uint8_t  s_fin_need;       /* 全黑连续帧计数 */
-static int32_t  s_fin_mm;         /* 最后一段已走 mm */
-static int16_t  s_fin_l0, s_fin_r0;   /* 进入最后一段时的编码器起点 */
-static uint32_t s_fin_t0;         /* 未标定时退化成按时间 */
+static uint8_t  s_fin_need;       /* 兼容保留（不再使用）*/
+static uint32_t s_fin_t0;         /* 进入冲刺段的时刻 */
 static uint8_t  s_seek;           /* 1 = 起步找线阶段（发车后还没看到线）*/
-static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（终点线武装用）*/
-static uint8_t  s_fin_armed;      /* ⭐ 锁存：一旦在线上跑够时间就置 1（不再被黑条清零）*/
-static int32_t  s_odo_cnt;        /* ⭐ v8：累计里程（编码器计数，绝对值）—— 给精停放“最少跑够多远”的门槛 */
+static uint16_t s_track_ms;       /* 连续“在线上跑”的毫秒数（积分启用门槛用）*/
+static uint32_t s_run_t0;         /* 本趟发车时刻（终点判定的 25s 时间闸）*/
+static uint32_t s_fin_black_ms[8];/* 各路"最后一次变黑"的时刻（300ms 窗口判定用）*/
+static uint8_t  s_fin_swept;      /* 1 = 窗口内八路都黑过（线已从阵列下扫过）*/
 static uint32_t s_wide_until_ms;  /* 离开宽黑区后短暂直行的实际截止时刻 */
 static uint32_t s_startt_t0;      /* 上一次报“经过起始线 T 头”的时刻（限流：2s 最多一条）*/
 /* 名义编码器尺度，允许 DISTCAL 在线覆盖；断电后回到顶部默认值。 */
@@ -111,6 +113,9 @@ static float    s_d_filt;         /* 数字灰度量化跳变的一阶低通，�
 static float    s_last_line_err;  /* 正常丢线前最后看到线的方向 */
 static uint32_t s_slow_until_ms;  /* ⭐ 慢速 A01 窗口的截止时刻（0 = 不在窗口内）*/
 static uint32_t s_slow_t0;        /* 慢速 A01 窗口的起始时刻（线性插值用）*/
+static uint32_t s_white_t0;       /* 本次连续全白的起点（丢线刹停用）*/
+static uint8_t  s_white_run;      /* 1 = 正在连续全白 */
+static uint8_t  s_lost_stop;      /* 1 = 已因丢线锁存刹车（直到下一趟发车）*/
 static int      s_base_actual;    /* 有斜率限制的共同速度 */
 static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
 
@@ -186,7 +191,7 @@ static void tr_mix(int base, int steer, int *l, int *r)
 }
 
 
-static int      s_fin_dist = TR_FIN_MM_DEF;
+static uint16_t s_fin_push_ms = A01_FIN_PUSH_MS;   /* 冲刺段时长（STOPDIST 可在线改）*/
 
 void Trace_DistCal(float meters)
 {
@@ -208,17 +213,19 @@ void Trace_DistCal(float meters)
     }
 }
 
-void Trace_SetStopDist(int mm)
+/* 兼容保留命令名 `STOPDIST`：现在它设的是【终点判定后的冲刺时长 ms】（0 = 立刻刹）*/
+void Trace_SetStopDist(int ms)
 {
-    if (mm < 0)   { mm = 0; }
-    if (mm > 300) { mm = 300; }      /* 车长 200mm ⇒ 上限 300 兜底 */
-    s_fin_dist = mm;
-    printf("# STOPDIST = %d mm\r\n", s_fin_dist);
+    if (ms < 0)    { ms = 0; }
+    if (ms > 1000) { ms = 1000; }    /* 上限 1 秒，防手滑 */
+    s_fin_push_ms = (uint16_t)ms;
+    printf("# STOPDIST(now push ms) = %u ms, PWM %d%%\r\n",
+           (unsigned)s_fin_push_ms, (int)A01_FIN_PUSH_PWM);
 }
 
 void Trace_FinReset(void)
 {
-    s_fin = 0; s_fin_need = 0; s_fin_mm = 0;
+    s_fin = 0; s_fin_need = 0;
     tr_reset_ctrl();
     s_lost = 0u;
     s_base_actual = 0;
@@ -230,10 +237,10 @@ void Trace_FinStatus(void)
     const char *nm[3] = { "0=巡线", "1=走最后一段", "2=已刹车停" };
     char mp[16];
     Bsp_FmtFix(mp, sizeof mp, s_mm_per_cnt, 4, 0);
-    printf("# FIN %s | 全黑连续=%u/%u | 最后一段已走 %ld/%d mm | mm每计数=%s%s\r\n",
-           (s_fin < 3u) ? nm[s_fin] : "?", (unsigned)s_fin_need, (unsigned)TR_FIN_NEED,
-           (long)s_fin_mm, s_fin_dist, mp,
-           (s_mm_per_cnt > 0.0f) ? "" : " (未标定→按时间估算，不准)");
+    printf("# FIN %s | 已扫过线=%u | 发车后 %lums / 允许 %ums | 冲刺 %ums @ %d%%\r\n",
+           (s_fin < 3u) ? nm[s_fin] : "?", (unsigned)s_fin_swept,
+           (unsigned long)(HAL_GetTick() - s_run_t0), (unsigned)A01_FIN_MIN_MS,
+           (unsigned)s_fin_push_ms, (int)A01_FIN_PUSH_PWM);
 }
 
 /* 把 s[0..7] 打包成一个字节（bit0=第1路，1=黑）—— 供板载快照使用 */
@@ -276,9 +283,11 @@ void Trace_StartRun(void)
     Trace_FinReset();
     s_seek = 1u;
     s_track_ms = 0u;
-    s_fin_armed = 0u;                 /* v6：新一趟重新武装（锁存清 0）*/
+
     s_wide_until_ms = 0u;
-    s_odo_cnt = 0;                    /* v8：里程清零（每趟重新计）*/
+    s_run_t0 = HAL_GetTick();         /* 本趟发车时刻（终点 25s 时间闸）*/
+    s_fin_swept = 0u;
+    for (int i = 0; i < 8; i++) { s_fin_black_ms[i] = 0u; }
     s_last_line_err = 0.0f;
     s_risk = 0u; s_clear_frames = 0u;
     s_slow_until_ms = 0u;             /* 新一趟：清掉上一趟残留的慢速窗口 */
@@ -307,6 +316,16 @@ void Trace_Step(uint8_t allow_drive)
     Params  *p  = Tlm_Params();
     int      s[8];
     float    err;
+
+    /* 丢线锁存：一直保持刹车，直到下一次发车（Trace_StartRun 清标志）*/
+    if (s_lost_stop) {
+        for (int i = 0; i < 8; i++) { s[i] = 0; }
+        Mo_Brake();
+        Log_Note(0u, 0.0f, 0, 0, 0);
+        Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
+        s_state = 0;
+        return;
+    }
 
     if (s_online) {
         /* ---- 读灰度（bit0 = 第 1 路 … bit7 = 第 8 路）----
@@ -358,67 +377,48 @@ void Trace_Step(uint8_t allow_drive)
    证据：场地那趟 8 路全黑持续 8 秒（268 帧）也毫无反应，整趟 state 里没有 4 ✓
    修法：用【锁存标志】s_fin_armed（跑够时间置 1，只有新一趟开始时才清 ✓）*/
 
-/* ①-1 “终点线武装”（锁存式）：
-      黑条期间不累计；但只要累计够过，就把锁存置 1 —— **不可被后续黑条清掉** ✓
-   ⭐ v8（2026-10-01 桌面实踩）：武装条件必须限定在【窄线】上 ✗
-      事故：车在灰色地板上被推着滚 → 灰度看到 1~7 路黑（当成“跟线”）→ 攒够 1.5s ⇒ 武装 ✗
-            → 再遇全黑（灰地板/阴影）⇒ **误判成终点线** ⇒ 进精停、车就地停住，看起来“卡住”✗
-      依据：真赛道实测巡线时黑的是 **1~2 路**（43% / 47%），**3 路及以上只占 0.1%**
-      ⇒ 只在 `1 <= cnt <= 3` 时累计；宽黑（4~8 路）不算“在跟线”✓ */
-if (!s_fin_armed) {
-    if (cnt >= 1 && cnt <= 3) {
-        if ((s_track_ms += 10u) >= TR_FIN_ARM_MS) { s_fin_armed = 1u; }
-    } else {
-        s_track_ms = 0u;   /* 离开窄线后重新累计；已武装则保持锁存 */
-    }
-}
-
-/* ①-1c 累计里程（只累计数，不累 mm —— 免得 0.115mm 被取整成 0 ✗）
-   ⚠️ 为什么需要：桌面推几把只有几百 mm，也会触发精停（2026-10-01 实踩）✗
-   ✓ 有了它：要有 TR_FIN_MIN_MM（默认 800mm）的里程才可能认终点
-      ⇒ 桌面推车（几百 mm）永远进不了精停 ✓，也顺手挡住“中途误放的黑块”✓
-   ⚠️ mm/计数是**名义值**（0.115mm，未精标，±20~40%）⇒ 门槛只当“米级尺子”用 ✓ */
-{
-    static int16_t odo_l0, odo_r0;
-    static uint8_t odo_init;
-    int16_t cl = En_Count(ENC_L), cr = En_Count(ENC_R);
-    if (!odo_init) { odo_l0 = cl; odo_r0 = cr; odo_init = 1u; }
-    int32_t dc = ((int32_t)(cl - odo_l0) + (int32_t)(cr - odo_r0)) / 2;
-    if (dc < 0) { dc = -dc; }            /* 前后推都算里程（绝对值）*/
-    s_odo_cnt += dc;
-    odo_l0 = cl; odo_r0 = cr;
+/* ①-1 在窄线上累计时间：只给"积分项启用门槛"用（不再用于终点判定）*/
+if (cnt >= 1 && cnt <= 3) {
+    if (s_track_ms < 60000u) { s_track_ms += 10u; }
+} else {
+    s_track_ms = 0u;   /* 离开窄线后重新累计 */
 }
 
 /* ①-1b 用真实时钟算保持期；主循环被超声波读数阻塞时也不会延长盲走。 */
 if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
 
-        /* ①-2 终止线检测：8 路全黑连续 TR_FIN_NEED 帧，且【已武装】+【里程够】
-             ⭐ v8：里程门槛（TR_FIN_MIN_MM）是桌面误判的第二道闸 ✓ */
+        /* ①-2 终点判定（两段，缺一不可）：
+         *   ⓐ A01_FIN_WINDOW_MS 窗口内，**八路分别都黑过一次**（不必同时）
+         *      ⇒ 说明整条终点标识刚从阵列下面扫过
+         *   ⓑ 紧接着出现**八路全白**（线已冲出阵列）⇒ 认定过终点 ⇒ 立即刹车
+         *   + 时间闸：发车满 A01_FIN_MIN_MS（25s）才允许；之前只打 $E 83 不动作
+         * ⚠️ 与 A02 回线的"过线全白刹停"是两回事：那个在避障接管期间由 A02 判。
+         * ⚠️ 用"实时窗口"而不是锁存：否则起点 T 头会一直被记住，25s 后随便一次
+         *    丢线全白就被误判成终点。*/
         {
-            float mmpc = (s_mm_per_cnt > 0.0f) ? s_mm_per_cnt : 0.115f;
-            int32_t odo_mm = (int32_t)((float)s_odo_cnt * mmpc);
-            if (cnt >= 8) {
-                if (s_fin_need < 250u) { s_fin_need++; }
-                if (s_fin_need >= TR_FIN_NEED && s_fin == 0u) {
-                    if (s_fin_armed && odo_mm >= TR_FIN_MIN_MM) {
-                        s_fin = 1u;                              /* 进入"走最后一段" */
-                        s_fin_l0 = En_Count(ENC_L);
-                        s_fin_r0 = En_Count(ENC_R);
-                        s_fin_mm = 0;
-                        s_fin_t0 = HAL_GetTick();
-                        Tlm_SendEvent(80, "FINISH LINE");
-                    } else if ((ms - s_startt_t0) >= 2000u) {
-                        /* 全黑但不认（事件跟流：2 秒最多一条，避免刷屏 ✗） */
-                        s_startt_t0 = ms;
-                        if (!s_fin_armed) {
-                            Tlm_SendEvent(83, "START T ignored");
-                        } else {
-                            Tlm_SendEvent(84, "FIN gated: too short");   /* 里程不够 ⇒ 不当终点 ✓ */
-                        }
-                    }
+            for (int i = 0; i < 8; i++) {
+                if (s[i]) { s_fin_black_ms[i] = ms; }
+            }
+            uint8_t swept = 1u;
+            for (int i = 0; i < 8; i++) {
+                if ((uint32_t)(ms - s_fin_black_ms[i]) > A01_FIN_WINDOW_MS) { swept = 0u; break; }
+            }
+            s_fin_swept = swept;                       /* 只用于 FINSTAT 显示 */
+
+            if (s_fin == 0u && swept && cnt == 0) {
+                if ((uint32_t)(ms - s_run_t0) >= A01_FIN_MIN_MS) {
+                    s_fin = 1u;                        /* 进入冲刺段 */
+                    s_fin_t0 = ms;
+                    Tlm_SendEvent(80, "FINISH LINE");
+                } else if ((ms - s_startt_t0) >= 2000u) {
+                    s_startt_t0 = ms;
+                    Tlm_SendEvent(83, "FIN ignored: <A01_FIN_MIN_MS");
                 }
-            } else {
-                s_fin_need = 0u;
+            } else if (s_fin == 0u && cnt >= 8) {
+                if ((ms - s_startt_t0) >= 2000u) {
+                    s_startt_t0 = ms;
+                    Tlm_SendEvent(83, "START T ignored");
+                }
             }
         }
 
@@ -426,30 +426,20 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
               不让下面的“丢线停车 / 循迹 PID”插手）*/
         if (s_fin != 0u) {
             tr_reset_ctrl(); s_lost = 0u; s_base_actual = 0;
-            int spd = p->base_speed;
-            if (spd <= 0) { spd = TR_BASE_DEFAULT; }
-            if (TR_FIN_SPEED_PCT > 0) { spd = TR_FIN_SPEED_PCT; }
+
 
             if (s_fin == 1u) {
-                int16_t cl = En_Count(ENC_L), cr = En_Count(ENC_R);
-                int32_t dc = ((int32_t)(cl - s_fin_l0) + (int32_t)(cr - s_fin_r0)) / 2;
-                if (dc < 0) { dc = -dc; }
-                if (s_mm_per_cnt > 0.0f) {
-                    s_fin_mm = (int32_t)((float)dc * s_mm_per_cnt);
-                } else {
-                    /* 未标定：退化成按时间估（TR_FIN_MMPS_EST，不准，但安全窗口很宽）*/
-                    s_fin_mm = (int32_t)((HAL_GetTick() - s_fin_t0) * TR_FIN_MMPS_EST / 1000u);
-                }
-                uint8_t timeout = (uint8_t)((ms - s_fin_t0) >= TR_FIN_TIMEOUT_MS);
-                if (s_fin_mm >= s_fin_dist || timeout) {
-                    s_fin = 2u;                              /* 到位（或超时）⇒ 刹车停 */
+                /* 冲刺段：直行 A01_FIN_PUSH_MS，PWM = A01_FIN_PUSH_PWM（左右相同）*/
+                if (s_fin_push_ms == 0u ||
+                    (uint32_t)(ms - s_fin_t0) >= (uint32_t)s_fin_push_ms) {
+                    s_fin = 2u;                              /* 时间到 ⇒ 刹车停 */
                     if (s_drive && allow_drive) { Mo_Brake(); }
                     Trace_SetDrive(0u);                      /* 关发车开关，防继续跑 */
-                    Log_Stop();                              /* 停止记录 + 自动存 Flash ✓ */
-                    Tlm_SendEvent(timeout ? 82 : 81, timeout ? "FINISH TIMEOUT" : "FINISH STOP");
-                    Hmi_Beep(120); HAL_Delay(90); Hmi_Beep(120);   /* 两声=到终点，好辨认 ✓ */
+                    Log_Stop();                              /* 停止记录 + 自动存 Flash */
+                    Tlm_SendEvent(81, "FINISH STOP");
+                    Hmi_Beep(120); HAL_Delay(90); Hmi_Beep(120);   /* 两声=到终点 */
                 } else if (s_drive && allow_drive) {
-                    Mo_Set(spd, spd);                        /* 直行走完最后一段 */
+                    Mo_Set(A01_FIN_PUSH_PWM, A01_FIN_PUSH_PWM);   /* 冲刺 */
                 }
             } else {
                 if (s_drive && allow_drive) { Mo_Brake(); }  /* 状态 2：保持刹车 */
@@ -458,34 +448,62 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
             /* ⭐ 上报【实际】占空比：状态 2 是刹车 ⇒ 报 0，别再报"打算给的 spd"
                （以前两种状态都报 spd，会让事后分析误以为"命令了却没走"）*/
             {
-                int rl = (s_fin == 1u) ? spd : 0;
-                int rr = (s_fin == 1u) ? spd : 0;
+                int rl = (s_fin == 1u) ? (int)A01_FIN_PUSH_PWM : 0;
+                int rr = (s_fin == 1u) ? (int)A01_FIN_PUSH_PWM : 0;
                 Log_Note(tr_pack(s), 0.0f, rl, rr, 4);
                 Tlm_SendT(ms, s, 0.0f, rl, rr, 4);
             }
             return;
         }
 
-        /* ============ ② 全白直行 / 起步找线 ============*/
+        /* ============ ② 八路全白 ============*/
         if (cnt == 0) {
-            /* 精停已在上面处理；这里只处理灰度读取成功后的八路全白。
-             * 起步仍报 state=5，其余丢线报 state=6；见黑后原 PID 重新起速。
-             * 按用户本轮要求持续 26/26 直行，不再按旧时限/里程停车。 */
+            /* 精停已在上面处理。
+             * ① 起步找线（s_seek=1）：正常全白 ⇒ 26/26 直行找线（设计行为）
+             * ② 行驶中意外全白（丢线）：先直行 A01_LOST_STOP_MS 抢救，
+             *    仍全白 ⇒ Mo_Brake() 刹停并**锁存**（直到下一次发车）
+             * ③ 未驱动（TRACE 0 / 避障接管）：只上报，不动电机 */
             tr_reset_ctrl(); s_base_actual = 0;
-            if (s_drive && allow_drive) {
+
+            if (!s_white_run) { s_white_run = 1u; s_white_t0 = ms; }
+
+            if (s_drive && allow_drive && !s_seek) {
+                /* —— 意外全白（丢线）—— */
+                if (A01_LOST_STOP_MS > 0u &&
+                    (uint32_t)(ms - s_white_t0) >= (uint32_t)A01_LOST_STOP_MS) {
+                    Mo_Brake();                       /* 直接刹停（不是滑行）*/
+                    s_lost_stop = 1u;
+                    s_state = 0;
+                    Tlm_SendEvent(88, "LOST LINE > A01_LOST_STOP_MS -> BRAKE");
+                    Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
+                    Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
+                    return;
+                }
                 s_lost = 1u;
-                s_state = s_seek ? 5 : 6;
+                s_state = 6;
                 Mo_Set(TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM);
                 Log_Note(tr_pack(s), 0.0f, TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM, s_state);
                 Tlm_SendT(ms, s, 0.0f, TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM, s_state);
                 return;
             }
+
+            if (s_drive && allow_drive && s_seek) {
+                /* —— 起步找线：正常全白 —— */
+                s_lost = 1u;
+                s_state = 5;
+                Mo_Set(TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM);
+                Log_Note(tr_pack(s), 0.0f, TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM, s_state);
+                Tlm_SendT(ms, s, 0.0f, TR_ALL_WHITE_PWM, TR_ALL_WHITE_PWM, s_state);
+                return;
+            }
+
             s_lost = 0u;
             Log_Note(tr_pack(s), 0.0f, 0, 0, 0);
             Tlm_SendT(ms, s, 0.0f, 0, 0, 0);
             s_state = 0;
             return;
         }
+        s_white_run = 0u;            /* 看到黑 ⇒ 连续全白被打断 */
         if ((s_seek && cnt < 8) || s_lost || (s_state != 1 && !s_seek)) {
             tr_reset_ctrl(); s_base_actual = 0;
             s_risk = 2u; s_clear_frames = 0u;
@@ -559,7 +577,9 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
           ① 只有窗口被翻开时才会走到这里（翻开时已要求两个 PWM 都 >0）
           ② 这里再要求两个 PWM 都 >0、时长 >0
           ③ 插值结果只往下压（当前 base 更小时按 base 走），不会抬到巡航以上 */
+    uint8_t in_slow = 0u;                    /* 1 = 处于「慢速 A01」窗口内 */
     if (s_slow_until_ms != 0u) {
+        in_slow = 1u;
         if ((int32_t)(s_slow_until_ms - ms) > 0) {
             if (TR_SLOW_PWM0 > 0 && TR_SLOW_PWM1 > 0 && TR_SLOW_MS > 0u) {
                 uint32_t off  = ms - s_slow_t0;                  /* 窗口内已走毫秒 */
@@ -616,7 +636,11 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
     if (s_base_actual < target) { s_base_actual += 1; if (s_base_actual > target) { s_base_actual = target; } }
     if (s_base_actual > target) { s_base_actual -= 3; if (s_base_actual < target) { s_base_actual = target; } }
     s_last_line_err = err;
-    float d_term = p->kd * s_d_filt;
+    /* 慢速窗口内可用 A01_SLOW_KP/KI/KD 单独调；窗口外一律用巡航值 */
+    float kp_eff = in_slow ? A01_SLOW_KP : p->kp;
+    float ki_eff = in_slow ? A01_SLOW_KI : p->ki;
+    float kd_eff = in_slow ? A01_SLOW_KD : p->kd;
+    float d_term = kd_eff * s_d_filt;
     if (d_term >  12.0f) { d_term =  12.0f; }
     if (d_term < -12.0f) { d_term = -12.0f; }
 
@@ -625,14 +649,14 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
        本质就是 err 持续偏一侧时，舵量应该**稳定维持一个值**，而不是“拽一下、又直一下”。
        ⇒ 加小积分；带抗饱和（|ki·I| 不超过 TR_I_MAX），且起步头 0.3s 不积（防起步瞬间累积）*/
 
-    if (p->ki > 0.0001f && s_track_ms > TR_I_START_MS) {
+    if (ki_eff > 0.0001f && s_track_ms > TR_I_START_MS) {
         s_ierr += err * (float)(dt_ms ? dt_ms : 10u) * 0.001f;   /* err*秒（ki=0 时根本不积）*/
     }
-    float i_term = p->ki * s_ierr;
-    if (i_term >  TR_I_MAX) { i_term =  TR_I_MAX; if (p->ki > 0.0001f) { s_ierr = TR_I_MAX / p->ki; } }
-    if (i_term < -TR_I_MAX) { i_term = -TR_I_MAX; if (p->ki > 0.0001f) { s_ierr = -TR_I_MAX / p->ki; } }
+    float i_term = ki_eff * s_ierr;
+    if (i_term >  TR_I_MAX) { i_term =  TR_I_MAX; if (ki_eff > 0.0001f) { s_ierr = TR_I_MAX / ki_eff; } }
+    if (i_term < -TR_I_MAX) { i_term = -TR_I_MAX; if (ki_eff > 0.0001f) { s_ierr = -TR_I_MAX / ki_eff; } }
 
-    float steer_f = p->kp * err + i_term + d_term;
+    float steer_f = kp_eff * err + i_term + d_term;
 
     /* ================= v3 ④ 陀螺仪阻尼（GYROD 1 时才生效）=================
        拿偏航率抵消一部分舵量，抑制摆动；⚠️ 它也可能抵抗掉“需要持续转向”的弯道，

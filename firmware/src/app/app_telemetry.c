@@ -13,7 +13,7 @@
 #include "app_trace.h"          /* 算法开关命令 TRACE 用 */
 #include "app_avoid.h"          /* 算法开关命令 AVOID 用 */
 #include "app_log.h"            /* 板载快照命令 SNAP / DUMP 用 */
-#include "a01_tune.h"           /* ⭐ A01 调参总表：kp/ki/kd/base_speed 默认值都在那里 */
+#include "app/tuning.h"           /* ⭐ A01 调参总表：kp/ki/kd/base_speed 默认值都在那里 */
 
 #include <stdio.h>
 #include <string.h>
