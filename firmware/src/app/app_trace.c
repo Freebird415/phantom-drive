@@ -13,6 +13,7 @@
  * ========================================================================== */
 #include "app/app_trace.h"
 #include "app/app_telemetry.h"
+#include "app/a01_tune.h"      /* ⭐ A01 调参总表（唯一出处）：kp/ki/kd/base/慢速窗口 */
 #include "drv/drv_grayscale.h"
 #include "drv/drv_motor.h"
 #include "app/app_log.h"       /* 板载 RAM 快照（跑车时插不了串口，靠它事后读）*/
@@ -26,9 +27,39 @@
  * PWM 是占空比命令，不等于实测轮速；_MS 单位毫秒。改宏后需重新编译烧录。
  * kp/ki/kd 与在线 base_speed 属于 Tlm_Params，可用 SET 临时调整；
  * 它们的上电默认值定义在 app_telemetry.c，TR_BASE_MAX 仍约束 A01 上限。 */
-#define TR_BASE_DEFAULT    45      /* A01 上电默认基准 PWM */
-#define TR_BASE_MAX        50      /* 正常循迹共同速度上限，SET 也不能越过 */
+/* ⭐ 下面 4 个值现在来自 app/a01_tune.h（唯一出处）——不要在别处再写一份 */
+#define TR_BASE_DEFAULT    A01_BASE_SPEED   /* A01 上电默认基准 PWM */
+#define TR_BASE_MAX        A01_BASE_MAX     /* 正常循迹共同速度上限，SET 也不能越过 */
 #define TR_ALL_WHITE_PWM   26      /* 灰度正常但八路全白：左右轮各自的直行 PWM */
+
+/* ================= 回线后「慢速 A01」：从起始速度线性过渡到结束速度 =================
+ * 场景：A02 绕完障看到黑线、把控制权交回 A01 的那一瞬，车还是斜的 / 带着惯性；
+ *       以前是**直接满速 A01** 接手 ⇒ 第一拍就按满速去抢方向，回线那一下容易甩。
+ * 做法：回线（A02 交还，或 A01 自己丢线找回）之后 TR_SLOW_MS 毫秒内，
+ *       A01 的基准 PWM 从 TR_SLOW_PWM0 **线性**过渡到 TR_SLOW_PWM1；
+ *       窗口结束后自动交回正常 base_speed（速度斜坡会接着往上爬）。
+ *
+ *        速度
+ *   PWM1 -+                          /   <- 窗口末尾（到点交回 base_speed）
+ *         |                        /
+ *         |                     /
+ *   PWM0 -+------------------/
+ *         +--+--------------+--------- 时间
+ *            0        TR_SLOW_MS
+ *
+ *   例：PWM0 25 / PWM1 30 / MS 500u  ⇒ 0ms 25%、250ms 27.5%、500ms 30%
+ *   想"固定 25" ⇒ PWM0 与 PWM1 都填 25
+ *
+ * 关掉：TR_SLOW_MS = 0，或 PWM0 / PWM1 任一填 0 ⇒ 直接不开窗口，
+ *       行为与加这个功能之前完全一样（也不会去动 PID / 速度）。
+ * ⚠️ 别填 1~7：窗口内只降「共同速度」，而差速上限 = base ⇒ 太小会"打舵无力"
+ *    （电机低速死区实测约 5%，8% 是留余量的下限），下面用编译期检查拦住。
+ * ⚠️ 窗口只【压低】不抬高：若当前 base_speed 比插值更慢，就按更慢的走。
+ * 日志里看：$E 85 `SLOW A01` 开始 / $E 86 `SLOW A01 end` 结束；$T 的 pwm 会明显压低。*/
+/* ⭐ 这三个值也来自 app/a01_tune.h（A01_SLOW_MS / A01_SLOW_PWM0 / A01_SLOW_PWM1）*/
+#define TR_SLOW_MS        A01_SLOW_MS
+#define TR_SLOW_PWM0      A01_SLOW_PWM0
+#define TR_SLOW_PWM1      A01_SLOW_PWM1
 #define TR_POS_CENTER      3.5f    /* 8 路探头编号 0..7 的中心，不是车速 */
 #define TR_WIDE_BLACK_N    5u      /* 同时 >=5 路黑按宽黑区处理，不用质心拐弯 */
 #define TR_WIDE_HOLD_MS    80u     /* 离开宽黑区后保持直行的时间 */
@@ -78,6 +109,8 @@ static float    s_err_prev;       /* 上一拍 err（算 D 项用）*/
 static uint32_t s_ms_prev;        /* 上一拍时刻（D 项要用真实 dt，不能用假设的 10ms）*/
 static float    s_d_filt;         /* 数字灰度量化跳变的一阶低通，单位 err/s */
 static float    s_last_line_err;  /* 正常丢线前最后看到线的方向 */
+static uint32_t s_slow_until_ms;  /* ⭐ 慢速 A01 窗口的截止时刻（0 = 不在窗口内）*/
+static uint32_t s_slow_t0;        /* 慢速 A01 窗口的起始时刻（线性插值用）*/
 static int      s_base_actual;    /* 有斜率限制的共同速度 */
 static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
 
@@ -220,6 +253,21 @@ void Trace_SetDrive(uint8_t on)
 }
 void    Trace_SetSeek(uint8_t on)  { s_seek = on ? 1u : 0u; }
 
+/* ⭐ 让接下来的一段先用「慢速 A01」跑（ms = 0 ⇒ 用顶部 TR_SLOW_MS）。
+   典型调用点：main.c 检测到 A02 把控制权交回的那一拍（避障刚回线）。
+   这里顺带把 PID/速度清一遍 ⇒ 不会沿用接管前的满速和舵量。*/
+void Trace_BeginSlow(uint16_t ms)
+{
+    uint32_t d = (ms != 0u) ? (uint32_t)ms : (uint32_t)TR_SLOW_MS;
+    /* 任一为 0 ⇒ 功能关闭：**完全不动任何状态**（等价于没加这个功能）*/
+    if (d == 0u || TR_SLOW_PWM0 <= 0 || TR_SLOW_PWM1 <= 0) { return; }
+    tr_reset_ctrl();
+    s_base_actual = 0;                           /* 从 0 重新爬，不沿用接管前的满速 */
+    s_slow_t0 = HAL_GetTick();
+    s_slow_until_ms = HAL_GetTick() + d;
+    Tlm_SendEvent(85, "SLOW A01");
+}
+
 /* ⭐ 发车统一入口（按钮 / 以后加命令都调它）：复位精停 + 打开【起步找线】
    为什么必须有 seek：起始线是个 T 头，车摆在它【前】面 ⇒ 发车瞬间就是全白，
    旧逻辑会立刻“丢线停车” ⇒ 车一动不动（2026-10-01 场地实测 ✗）*/
@@ -233,6 +281,8 @@ void Trace_StartRun(void)
     s_odo_cnt = 0;                    /* v8：里程清零（每趟重新计）*/
     s_last_line_err = 0.0f;
     s_risk = 0u; s_clear_frames = 0u;
+    s_slow_until_ms = 0u;             /* 新一趟：清掉上一趟残留的慢速窗口 */
+    s_slow_t0 = 0u;
 }
 uint8_t Trace_GetDrive(void)       { return s_drive; }
 uint8_t Trace_Online(void)         { return s_online; }
@@ -439,6 +489,13 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
         if ((s_seek && cnt < 8) || s_lost || (s_state != 1 && !s_seek)) {
             tr_reset_ctrl(); s_base_actual = 0;
             s_risk = 2u; s_clear_frames = 0u;
+            /* ⭐ 丢线后找回线：先慢速 TR_SLOW_MS，稳住再放满速
+               （起步找线 s_seek 不额外限速，保持原有起步手感）*/
+            if (s_lost && TR_SLOW_MS > 0u && TR_SLOW_PWM0 > 0 && TR_SLOW_PWM1 > 0) {
+                if (s_slow_until_ms == 0u) { Tlm_SendEvent(85, "SLOW A01"); }
+                s_slow_t0 = ms;
+                s_slow_until_ms = ms + (uint32_t)TR_SLOW_MS;
+            }
         }
         if (cnt < 8) { s_seek = 0u; } /* 起点全黑 T 头不代表已找到窄线 */
         s_lost = 0u;                 /* 找回线后重新起速 */
@@ -495,6 +552,28 @@ if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
     int base = p->base_speed;
     if (base <= 0) { base = TR_BASE_DEFAULT; }
     if (base > TR_BASE_MAX) { base = TR_BASE_MAX; }
+
+    /* ---- 慢速 A01 窗口：PWM 从 TR_SLOW_PWM0 线性过渡到 TR_SLOW_PWM1 ----
+       只压【共同速度】，差速照常算 ⇒ 该修的方向照修，只是整体慢下来。
+       ⚠️ 三道守门，保证永远不会把 base 压成 0（不会停车）：
+          ① 只有窗口被翻开时才会走到这里（翻开时已要求两个 PWM 都 >0）
+          ② 这里再要求两个 PWM 都 >0、时长 >0
+          ③ 插值结果只往下压（当前 base 更小时按 base 走），不会抬到巡航以上 */
+    if (s_slow_until_ms != 0u) {
+        if ((int32_t)(s_slow_until_ms - ms) > 0) {
+            if (TR_SLOW_PWM0 > 0 && TR_SLOW_PWM1 > 0 && TR_SLOW_MS > 0u) {
+                uint32_t off  = ms - s_slow_t0;                  /* 窗口内已走毫秒 */
+                int32_t  span = (int32_t)TR_SLOW_PWM1 - (int32_t)TR_SLOW_PWM0;
+                int32_t  slow = (int32_t)TR_SLOW_PWM0 +
+                                span * (int32_t)off / (int32_t)TR_SLOW_MS;
+                if (slow < 1) { slow = 1; }                      /* 双保险：不会到 0 */
+                if (slow < base) { base = (int)slow; }
+            }
+        } else {
+            s_slow_until_ms = 0u;               /* 窗口结束：自动回 base_speed */
+            Tlm_SendEvent(86, "SLOW A01 end");
+        }
+    }
 
     /* ---- P + D（⚠️ D 项必须用【真实 dt】+ 钳位）----
        用假设的固定 10ms 会在“主循环被拖慢”时算出虚假的巨大变化率 ⇒ 车猛打舵 ✗

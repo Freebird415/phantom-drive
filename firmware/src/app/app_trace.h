@@ -34,6 +34,8 @@ void    Trace_Step(uint8_t allow_drive);
 
 void    Trace_SetDrive(uint8_t on);     /* 命令 `TRACE 0|1` 用 */
 void    Trace_StartRun(void);           /* ⭐ 发车统一入口：复位精停 + 开启起步找线 */
+void    Trace_BeginSlow(uint16_t ms);   /* ⭐ 回线后先慢速 A01：ms=0 用固件默认 TR_SLOW_MS
+                                            （main.c 在 A02 交还控制权的那一拍调它）*/
 void    Trace_SetSeek(uint8_t on);
 void    Trace_SetAnalog(uint8_t on);    /* 命令 `ANALOG 0|1`：用灰度模拟量求连续误差（v3）*/
 uint8_t Trace_GetAnalog(void);

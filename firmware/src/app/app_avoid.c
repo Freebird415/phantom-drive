@@ -1,6 +1,6 @@
 /* A02 融合入口：平时由 A01 循迹；近障时 A02 接管左右固定轨迹。
- * 回摆时限由 avoidl.c/avoidr.c 管理：低速搜线见黑后再走短弧交还 A01，
- * 到时未完成则锁存停车。轨迹参数在 avoidl.c/avoidr.c。
+ * 轨迹与回摆时限在 avoid_path.c（左右共用一个实现，PWM 自动镜像）；
+ * 低速搜线见黑后再走短弧交还 A01，到时未完成则锁存停车。
  * 长按按钮人工停车仍由 main.c 调用 Avoid_SetDrive(0)。 */
 #include "app/app_avoid.h"
 #include "app/app_log.h"
@@ -15,15 +15,15 @@
 /* ===================== 共用触发参数，只在这里调 ===================== */
 #define A02_PREP_MM          350   /* 新鲜有效测距 <=350mm：A01 提前减速 */
 #define A02_PREP_BASE_PWM     30   /* 避障预备速度；只临时覆盖 A01 基准 PWM */
-#define A02_TRIGGER_MM       300   /* 任一探头的新鲜有效读数 <=300mm 即触发 */
+#define A02_TRIGGER_MM       310   /* 任一探头的新鲜有效读数 <=300mm 即触发 */
 #define A02_CENTER_SPLIT_MM   30   /* 两侧都近且差值 <30mm：默认向左 */
 #define A02_COOLDOWN_MS     3000u  /* 回线交还 A01 后，暂停超声避障触发的时间 */
 #define A02_US_FRESH_MS     350u   /* 超过 350ms 的缓存读数不用 */
 #define A02_PWM_STEP          2   /* 每 10ms 单轮最多改变 2% */
-#define A02_LINE_IGNORE_MS  500u   /* 接管后前 500ms 不以黑位启动回线 */
+#define A02_LINE_IGNORE_MS  250u   /* 接管后前 500ms 不以黑位启动回线 */
 #define A02_LINE_WINDOW_MS  100u   /* 100ms 内累计各路曾经变黑 */
 #define A02_LINE_GAP_MS      30u   /* 采样中断超过 30ms 则重新累计 */
-#define A02_LINE_BLACK_COUNT  6u   /* 至少 6 个不同灰度通道见黑 */
+#define A02_LINE_BLACK_COUNT  5u   /* 至少 6 个不同灰度通道见黑 */
 
 #if A02_PREP_MM <= A02_TRIGGER_MM
 #error "A02_PREP_MM must exceed A02_TRIGGER_MM"
@@ -31,31 +31,26 @@
 
 /* 满 500ms 后用短时六路黑位启动摆正；摆正后按固定低速弧线搜线。
  * 左避障后左轮 A／右轮 B；右避障时交换。搜线首次见黑后继续转一小段。 */
-#define A02_CAPTURE_A_PWM       10
-#define A02_CAPTURE_B_PWM      28
+#define A02_CAPTURE_A_PWM       9
+#define A02_CAPTURE_B_PWM      15
 #define A02_SEARCH_MS        4500u  /* 摆正结束后，最多低速找线 4.5 秒 */
-#define A02_CAPTURE_AFTER_BLACK_MS 250u /* 首次见黑后保持搜线慢弧，再交还 A01 */
+#define A02_CAPTURE_AFTER_BLACK_MS 500u /* 首次见黑后保持搜线慢弧，再交还 A01 */
 
 /* 回线摆正：左避障后左轮 A、右轮 B；右避障时交换左右轮。
  * _MS 包含升速、可能的保持和降回捕线低速，不是在到达目标后再计时。 */
 #define A02_ALIGN_A_PWM         -70
-#define A02_ALIGN_B_PWM        20
+#define A02_ALIGN_B_PWM        5
 #define A02_ALIGN_MS         430u
 #define A02_ALIGN_STEP         5   /* 仅摆正段每 10ms 最多变化 5%；原轨迹仍用 2% */
 
 /* 左右两份轨迹各自管理转弯时长和 PWM；原型只供本文件调度。 */
-void AvoidL_Start(uint32_t now, int pwm_l, int pwm_r);
-void AvoidL_Stop(void);
-uint8_t AvoidL_Step(uint32_t now, int *pwm_l, int *pwm_r);
-uint8_t AvoidL_Returning(void);
-uint8_t AvoidL_ReturnExpired(uint32_t now);
-void AvoidL_SyncPwm(int pwm_l, int pwm_r);
-void AvoidR_Start(uint32_t now, int pwm_l, int pwm_r);
-void AvoidR_Stop(void);
-uint8_t AvoidR_Step(uint32_t now, int *pwm_l, int *pwm_r);
-uint8_t AvoidR_Returning(void);
-uint8_t AvoidR_ReturnExpired(uint32_t now);
-void AvoidR_SyncPwm(int pwm_l, int pwm_r);
+/* 固定轨迹引擎（avoid_path.c）：左/右避共用一个实现，PWM 数值自动镜像。
+   dir_left = 1 表示"向左避"（右侧有障碍）*/
+void    Path_Start(uint8_t dir_left, uint32_t now, int pwm_l, int pwm_r);
+void    Path_Stop(void);
+void    Path_Step(uint32_t now, int *pwm_l, int *pwm_r);
+uint8_t Path_ReturnExpired(uint32_t now);
+uint8_t Path_AlignExpired(uint32_t now);
 
 typedef enum { A02_WAIT, A02_LEFT, A02_RIGHT } A02Direction;
 typedef enum { LINE_ARC, LINE_ALIGN, LINE_CAPTURE, LINE_AFTER_BLACK, LINE_FAULT } LinePhase;
@@ -209,7 +204,7 @@ static void capture_step(void)
  * 用已有的起步找线入口让 A01 下一拍清旧 PID／速度量，不重置终点精停。 */
 static void handoff(uint32_t now)
 {
-    AvoidL_Stop(); AvoidR_Stop();
+    Path_Stop();
     end_preparation();
     Trace_SetSeek(1u);
     s_direction = A02_WAIT;
@@ -225,12 +220,17 @@ static void handoff(uint32_t now)
 static void no_line_stop(uint32_t now, const char *reason)
 {
     Mo_Stop();
-    AvoidL_Stop(); AvoidR_Stop();
+    Path_Stop();
     end_preparation();
     s_pwm_l = s_pwm_r = 0;
     s_line_phase = LINE_FAULT;
     Tlm_SendEvent(4, reason);
-    record_avoid(now, 0u, 0);
+    Tlm_SendEvent(87, "A02 LATCHED: send AVOID 0 (or reboot) to release");
+    {
+        uint8_t fb = 0u;
+        uint8_t fok = read_gray(&fb);
+        record_avoid(now, fok ? fb : 0u, 0);
+    }
     Log_Stop();
 }
 
@@ -248,8 +248,7 @@ void Avoid_Init(void)
     s_handoff_ms = 0u;
     s_pwm_l = s_pwm_r = 0;
     s_last_l_stamp = s_last_r_stamp = 0u;
-    AvoidL_Stop();
-    AvoidR_Stop();
+    Path_Stop();
     Tlm_SendEvent(97, "A02 trace-return v3");
 }
 
@@ -257,8 +256,7 @@ void Avoid_SetDrive(uint8_t on)
 {
     end_preparation();
     Mo_Stop();
-    AvoidL_Stop();
-    AvoidR_Stop();
+    Path_Stop();
     s_armed = on ? 1u : 0u;
     s_cooling = 0u;
     s_direction = A02_WAIT;
@@ -283,15 +281,22 @@ void Avoid_Step(void)
 {
     if (!s_armed) { return; }
     uint32_t now = HAL_GetTick();
-    if (s_line_phase == LINE_FAULT) { record_avoid(now, 0u, 0); return; }
+    if (s_line_phase == LINE_FAULT) {
+        /* 锁存停车：电机不动，但**仍然上报真实灰度**。
+           以前这里固定发 0 ⇒ BLE/日志里"灰度全 0"，看起来像蓝牙坏了/传感器死了 ✗
+           （2026-10-18 实测：GR 明明看到 4 路黑，而 $T 全 0，真因就是这一行）*/
+        uint8_t fb = 0u;
+        uint8_t fok = read_gray(&fb);
+        record_avoid(now, fok ? fb : 0u, 0);
+        return;
+    }
     if (s_line_phase == LINE_CAPTURE && now - s_search_ms >= A02_SEARCH_MS) {
         no_line_stop(now, "A02 search timeout stop");
         return;
     }
     /* 已进入低速搜线后，给它完整 4.5 秒；之前仍保留固定回摆的 5 秒保护。 */
     if ((s_line_phase == LINE_ARC || s_line_phase == LINE_ALIGN) &&
-        ((s_direction == A02_LEFT && AvoidL_ReturnExpired(now)) ||
-         (s_direction == A02_RIGHT && AvoidR_ReturnExpired(now)))) {
+        (Path_ReturnExpired(now) || Path_AlignExpired(now))) {
         no_line_stop(now, "A02 return timeout stop");
         return;
     }
@@ -341,16 +346,14 @@ void Avoid_Step(void)
          * 以它们为斜坡起点，避免把 A01 巡航直接拉到 0。 */
         s_pwm_l = (int)(int8_t)live[2];
         s_pwm_r = (int)(int8_t)live[3];
-        if (choice == A02_LEFT) { AvoidL_Start(now, s_pwm_l, s_pwm_r); }
-        else { AvoidR_Start(now, s_pwm_l, s_pwm_r); }
+        Path_Start((uint8_t)(choice == A02_LEFT), now, s_pwm_l, s_pwm_r);
     }
 
     uint8_t bits = 0u;
     uint8_t gray_ok = read_gray(&bits);
     uint8_t completed = 0u;
     if (s_line_phase == LINE_ARC) {
-        if (s_direction == A02_LEFT) { AvoidL_Step(now, &s_pwm_l, &s_pwm_r); }
-        else { AvoidR_Step(now, &s_pwm_l, &s_pwm_r); }
+        Path_Step(now, &s_pwm_l, &s_pwm_r);
         if (now - s_avoid_ms >= A02_LINE_IGNORE_MS &&
             line_six_seen(now, bits, gray_ok)) {
             s_line_phase = LINE_ALIGN;

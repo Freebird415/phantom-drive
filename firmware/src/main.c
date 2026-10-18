@@ -56,6 +56,7 @@ int main(void)
     uint32_t last_us = HAL_GetTick() - 100;  /* 超声波：上一发结束时刻（从完成时刻计时，避免追赶补发） */
     uint32_t next_led = HAL_GetTick();  /* 心跳灯：2 Hz */
     uint8_t  us_idx  = 0;               /* 0 = 下次测左，1 = 下次测右 */
+    uint8_t  avoid_on = 0;              /* 上一拍 A02 是否在接管（用于检测“交还 A01”那一刻）*/
 
     while (1) {
         /* ---- 电脑命令（在中断里只收行，到这里才执行） ---- */
@@ -140,8 +141,12 @@ int main(void)
         if ((int32_t)(HAL_GetTick() - next_t) >= 0) {
             next_t += 10;
             if (Avoid_Mode()) {
+                avoid_on = 1u;
                 Avoid_Step();
             } else {
+                /* ⭐ A02 刚把控制权交回（回线了）：先让 A01 用慢速跑 TR_SLOW_MS，
+                   等姿态稳下来再自动放回满速 —— 否则交还第一拍就按满速抢方向 ✗ */
+                if (avoid_on) { avoid_on = 0u; Trace_BeginSlow(0u); }
                 Trace_Step(1u);
                 Avoid_Step();  /* 用新鲜 $U 测量触发接管；下一拍起 A02 负责 $T */
             }
