@@ -33,13 +33,10 @@
 #define TR_ALL_WHITE_PWM   26      /* 灰度正常但八路全白：左右轮各自的直行 PWM */
 
 
-/* §1b 丢线找回的「原地旋转」数值 —— **直接沿用 A02 回线那一套**（同一台底盘）。
-   单一出处仍是 tuning.h §3.4 的 A02_ROT_L_PWM(+8) / A02_ROT_R_PWM(-20)：
-     车头向右摆（车向左冲出）⇒ L=+8 / R=-20
-     车头向左摆（车向右冲出）⇒ L=-20 / R=+8 */
+/* §1b 旋转数值：与 A02 回线共用（单一出处 tuning.h §3.4）*/
 #if A01_LOST_SEARCH
-#define TR_ROT_L_PWM       A02_ROT_L_PWM   /* =  8 */
-#define TR_ROT_R_PWM       A02_ROT_R_PWM   /* = -20 */
+#define TR_ROT_L_PWM       A02_ROT_L_PWM
+#define TR_ROT_R_PWM       A02_ROT_R_PWM
 #endif
 
 /* ================= 回线后「慢速 A01」（数值在 app/tuning.h §2）=================
@@ -126,18 +123,17 @@ static int      s_base_actual;    /* 有斜率限制的共同速度 */
 static uint8_t  s_launch_fast;     /* 1 = 发车第一拍直接给到目标速度（不做 0→目标 的爬升）*/
 static uint8_t  s_d_valid, s_lost, s_risk, s_clear_frames;
 
-/* ---- §1b 丢线兜底（数值见 tuning.h）----
- * 只在「A01 正常循迹中突然八路全白」时用；A02 接管期这段代码根本不会被调用。*/
+/* ---- §1b 丢线兜底（参数在 tuning.h）---- */
 #if A01_LOST_SEARCH
 typedef enum { LP_IDLE = 0, LP_HOLD, LP_STOPWAIT, LP_ROTATE, LP_VERIFY } LostPhase;
-static volatile uint8_t s_lost_cnt;   /* 本趟执行了几次脱线找回（诊断用；volatile 防 -Os 优化掉）*/
-static uint8_t   s_lost_mode;      /* 0 = 保守（直行→刹停）；1 = 停车→旋转找线 */
-static int8_t    s_lost_turn;      /* +1 = 车头向右摆；-1 = 车头向左摆；0 = 未定 */
-static uint8_t   s_lost_active;    /* 1 = 正在执行找回动作（期间接管电机，不走 PID）*/
+static volatile uint8_t s_lost_cnt;   /* 本趟找回次数（诊断）*/
+static uint8_t   s_lost_mode;      /* 0=保守；1=停车旋转找线 */
+static int8_t    s_lost_turn;      /* +1=车头右摆；-1=左摆 */
+static uint8_t   s_lost_active;    /* 1=找回进行中（接管电机）*/
 static LostPhase s_lost_phase;
-static uint32_t  s_lost_phase_ms;  /* 当前阶段的起始时刻 */
+static uint32_t  s_lost_phase_ms;
 static int       s_lost_pwm_l, s_lost_pwm_r;
-static uint32_t  s_all8_ms;        /* 最近一次「同一拍八路全黑」的时刻（黑条签名）*/
+static uint32_t  s_all8_ms;        /* 最近一次「同一拍八路全黑」时刻 */
 #endif
 
 /* ---- v3 新增状态（接管“段落感”：斜坡限速 + 小积分 + 可选的模拟量/陀螺仪）---- */
@@ -365,10 +361,9 @@ void Trace_Init(void)
 }
 
 #if A01_LOST_SEARCH
-/* ===================== §1b 丢线找回：判据与动作 =====================
- * 与 app_avoid.c 的 line_centered() **同源**（掩码是 tuning.h 里的唯一出处）。
- * 灰度位约定两边一致（1 = 黑），所以直接用 tr_pack(s)。
- * 「线已居中」= 第 3~6 路里有相邻两路全黑，且第 1/2/7/8 路全白。*/
+/* ===== §1b 丢线找回：判据与动作 =====
+ * 居中判据与 A02 回线同一套（掩码见 tuning.h §3.4）：
+ *   第 3~6 路有相邻两路黑，且第 1/2/7/8 路全白。*/
 static uint8_t tr_center_ok(uint8_t bits)
 {
     uint8_t nib = (uint8_t)((bits & A02_MID_MASK) >> 2);
@@ -385,7 +380,7 @@ static int tr_lost_slew(int cur, int tgt)
     return tgt;
 }
 
-/* 本段全白的第一拍：把「要不要找回 / 往哪边转」定下来并锁存（之后不再改）*/
+/* 全白第一拍调用：定下"要不要找回 / 往哪边转"，之后不再改 */
 static void tr_lost_decide(uint32_t ms)
 {
     s_lost_mode = 0u;
@@ -394,19 +389,13 @@ static void tr_lost_decide(uint32_t ms)
     s_lost_phase = LP_IDLE;
     s_lost_pwm_l = s_lost_pwm_r = 0;
 
-    /* ① 刚压过横向黑条（T 头/标识）⇒ 全白是"黑条走完"，不是脱线 ⇒ 不转 */
-    if (s_all8_ms != 0u && (uint32_t)(ms - s_all8_ms) <= A01_LOST_TBAR_MS) { return; }
-
-    /* ② 方向：err 的符号 = 线落在阵列的哪一侧（参照系见 tuning.h §1b 的警告）
-          err > 0 ⇒ 车向左冲出、线在右侧 ⇒ 车头向右摆
-          err < 0 ⇒ 车向右冲出、线在左侧 ⇒ 车头向左摆 */
-    if (s_last_line_err_raw > A01_LOST_DIR_ERR)       { s_lost_mode = 1u; s_lost_turn =  1; }
-    else if (s_last_line_err_raw < -A01_LOST_DIR_ERR) { s_lost_mode = 1u; s_lost_turn = -1; }
-    /* ③ |err| 太小 ⇒ 判不出 ⇒ 保持 mode = 0（保守：直行 → 刹停）*/
+    if (s_all8_ms != 0u && (uint32_t)(ms - s_all8_ms) <= A01_LOST_TBAR_MS) { return; }  /* 刚过黑条 */
+    if (s_last_line_err_raw > A01_LOST_DIR_ERR)       { s_lost_mode = 1u; s_lost_turn =  1; }  /* 线在右 ⇒ 右摆 */
+    else if (s_last_line_err_raw < -A01_LOST_DIR_ERR) { s_lost_mode = 1u; s_lost_turn = -1; }  /* 线在左 ⇒ 左摆 */
+    /* 其余：|err| 太小，保持保守 */
 }
 
-/* 丢线找回状态机：直行 → 刹停 → 原地旋转 → 居中保持 → 交回循迹。
- * 期间由本函数独占电机（调用方 return，不走 PID）。*/
+/* 找回状态机：直行 → 刹停 → 原地旋转 → 居中保持 → 交回循迹（期间独占电机）*/
 static void tr_lost_run(uint32_t ms, const int s[8])
 {
     uint8_t  bits = tr_pack(s);
@@ -575,8 +564,7 @@ if (cnt >= 1 && cnt <= 3) {
 /* ①-1b 用真实时钟算保持期；主循环被超声波读数阻塞时也不会延长盲走。 */
 if (cnt >= (int)TR_WIDE_BLACK_N) { s_wide_until_ms = ms + TR_WIDE_HOLD_MS; }
 #if A01_LOST_SEARCH
-/* 「同一拍八路全黑」= 压过横向黑条（T 头/标识）的签名。
-   横向脱线时线只有 2~3 路宽，**不可能**八路同时黑 ⇒ 两者互斥，用它区分终点与脱线。*/
+/* 同一拍八路全黑 = 压过横向黑条（T 头/标识）的签名，用于区分终点与脱线 */
 if (cnt >= 8) { s_all8_ms = ms; }
 #endif
 
@@ -649,9 +637,7 @@ if (cnt >= 8) { s_all8_ms = ms; }
             return;
         }
 
-        /* ============ ①-4 丢线找回状态机（进行中则接管电机，跳过下面的 ② / PID）============
-           只有 s_lost_active=1 时进入；它只能由「② 八路全白」那条分支置位，
-           因此 A02 接管期（根本不会调用 Trace_Step）、起步找线、精停段都不会走到这里。*/
+        /* ①-4 找回进行中：接管电机，跳过下面的 ②/PID */
 #if A01_LOST_SEARCH
         if (s_lost_active) { tr_lost_run(ms, s); return; }
 #endif
@@ -673,10 +659,7 @@ if (cnt >= 8) { s_all8_ms = ms; }
             }
 
             if (s_drive && allow_drive && !s_seek) {
-                /* —— 意外全白（丢线）——
-                 * A01_LOST_SEARCH=1 且判出方向、且不是刚压过黑条 ⇒ 停车 → 原地旋转找线（见 tuning.h §1b）
-                 * 否则（判不出方向 / 刚过黑条 / 开关=0）⇒ 旧行为：直行 A01_LOST_STOP_MS 后刹停
-                 * ⚠️ 这一段只决定"全白时怎么动电机"，不碰 PID / 终点判定 / A02。*/
+                /* 意外全白：能判出方向就停车旋转找线，否则直行后刹停（见 tuning.h §1b）*/
 #if A01_LOST_SEARCH
                 if (s_lost_mode != 0u) {
                     if (!s_lost_active) {          /* 进入找回：从"直行跨接缝"阶段开始 */

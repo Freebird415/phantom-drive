@@ -107,10 +107,7 @@ int main(void)
                         Log_SetBle(1u);            /* ⭐ 顺便开无线回传：跑车时插不了串口，
                                                       长按按钮就把数据推到电脑 ✓ */
                         Log_Start(); Avoid_SetDrive(1u); Trace_SetDrive(1u);
-                        /* ⭐ 1 短声 = 已发车。改【非阻塞】：原来 Hmi_Beep(150) 会
-                           HAL_Delay(150) 卡住主循环 ⇒ 按下按钮后 150ms 车才动。
-                           现在只点亮蜂鸣器，关断交给主循环。*/
-                        Hmi_BeepOn();
+                        Hmi_BeepOn();              /* 1 短声 = 已发车（非阻塞，主循环关断）*/
                         beep_off_at = HAL_GetTick() + 150u;
                         printf("# BTN(长按1s): 开始记录 + 发车 + BLE回传（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
