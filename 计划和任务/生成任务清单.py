@@ -18,17 +18,36 @@ from __future__ import annotations
 
 import argparse
 import re
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MIK = Path(r"C:\Users\35276\AppData\Local\Programs\MiKTeX\miktex\bin\x64")
+def _find_miktex() -> Path:
+    """MiKTeX 的 bin 目录：优先环境变量 MIKTEX_BIN，其次 PATH 里的 xelatex，最后常见安装位置。"""
+    env = os.environ.get("MIKTEX_BIN")
+    if env and Path(env).is_dir():
+        return Path(env)
+    exe = shutil.which("xelatex")
+    if exe:
+        return Path(exe).resolve().parent
+    cands = [Path("C:/Program Files/MiKTeX/miktex/bin/x64")]
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        cands.append(Path(la) / "Programs" / "MiKTeX" / "miktex" / "bin" / "x64")
+    for c in cands:
+        if c.is_dir():
+            return c
+    return Path("miktex/bin/x64")
+
+
+MIK = _find_miktex()
 
 TITLE = "工创小车 · 任务清单"
 SUBTITLE = "重走古丝路 · 自动循迹避障小车（华南理工大学 · 工程训练分散项目）"
-META = "5 人 · 13 项任务 · v2.10 · 更新：2026-10-14"
+META = "5 人 · 13 项任务 · v2.11 · 更新：2026-10-21（项目结束）"
 LEAD = ("本清单只讲两件事：**已经完成了什么**、**接下来谁做什么**。"
         "与 `项目记录/开发记录.md` 同步；如两份说法不一致，以《开发记录》为准。所有截止时间统一用日期表示。")
 
@@ -36,12 +55,13 @@ LEAD = ("本清单只讲两件事：**已经完成了什么**、**接下来谁�
 # 0. 关键时间与红线
 # ---------------------------------------------------------------------------
 KEY_TIME = [
-    ("现在", "**10/14（周三 · 工创课，全组在场）** —— 距死线 **4 天**；**今天到期：15° 探头几何标测 ＋ A02 第 1 步（左右各 10/10）**"),
+    ("最后状态（10/21 赛后）", "**比赛完成、二等奖**；固件冻结为 **v12 比赛最终版**（`firmware/算法快照/v12_2026-10-21_比赛最终版/`），仓库转公开（报销与原始日志不入库）。本清单以下内容为**赛前计划的原样留档**"),
     ("已过（不排任务）", "**10/12（周一）~10/13（周二）** 课满、未排任务；重心已压到 **10/16（周五）、10/17（周六）**"),
     ("全部任务死线", "**10/18（周日）24:00** —— 此后不再动功能，只做彩排与备份"),
     ("剩余差距", "只差两件：**A02 避障闭环**（陀螺零反馈 + 回线）＋ **避障 × 循迹 × 精停 融合**"),
     ("缓冲", "10/19~10/20 不排新功能：彩排 / 备份 / 备件 / 现场标定预演"),
     ("比赛", "10/21（周三）起 —— 比赛 ＋ 演讲"),
+    ("结果", "**2026-10-21 比赛完成，二等奖** —— 项目按计划收尾；本清单转为**赛后留档**，不再更新任务状态"),
 ]
 
 RED_LINES = [
@@ -357,7 +377,7 @@ def row_cell(r) -> str:
 
 def emit_md() -> str:
     L: list[str] = []
-    L.append(f"# {TITLE}（v2.10）")
+    L.append(f"# {TITLE}（v2.11）")
     L.append("")
     L.append(f"> {SUBTITLE}")
     L.append(f"> {META}")

@@ -17,13 +17,32 @@ import json
 import shutil
 import subprocess
 import sys
+import os
 import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "图纸"          # 图纸源码与产物都放这里
 OUT.mkdir(exist_ok=True)
-MIK = Path(r"C:\Users\35276\AppData\Local\Programs\MiKTeX\miktex\bin\x64")
+def _find_miktex() -> Path:
+    """MiKTeX 的 bin 目录：优先环境变量 MIKTEX_BIN，其次 PATH 里的 xelatex，最后常见安装位置。"""
+    env = os.environ.get("MIKTEX_BIN")
+    if env and Path(env).is_dir():
+        return Path(env)
+    exe = shutil.which("xelatex")
+    if exe:
+        return Path(exe).resolve().parent
+    cands = [Path("C:/Program Files/MiKTeX/miktex/bin/x64")]
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        cands.append(Path(la) / "Programs" / "MiKTeX" / "miktex" / "bin" / "x64")
+    for c in cands:
+        if c.is_dir():
+            return c
+    return Path("miktex/bin/x64")   # 兜底：报错信息会提示需要 MiKTeX
+
+
+MIK = _find_miktex()
 
 VERSION = "v3.2"
 DATE = "2026-09-20"
@@ -341,7 +360,8 @@ def emit_json() -> str:
 def build(stems: list[str]) -> bool:
     ok = True
     tmp = Path(tempfile.mkdtemp(prefix="pd_schem_"))
-    trim = Path(r"C:\Users\35276\.pi\agent\skills\circuitikz-circuit-renderer\scripts\trim-white.ps1")
+    # 裁白边脚本（可选）：优先环境变量 TRIM_WHITE_PS1；找不到就跳过裁剪，不影响出图
+    trim = Path(os.environ.get("TRIM_WHITE_PS1", "trim-white.ps1"))
     for stem in stems:
         for f in list(tmp.glob("fig.*")) + list(tmp.glob("*.png")):
             try:

@@ -24,6 +24,7 @@ typedef enum { LINE_ARC, LINE_ALIGN, LINE_CAPTURE, LINE_AFTER_BLACK, LINE_FAULT,
 static uint8_t s_armed;
 static uint8_t s_cooling;
 static uint8_t s_preparing;
+static uint32_t s_prep_seen_ms;   /* 最后一次看到「≤A02_PREP_MM」新鲜读数的时刻（预备降速的撤销计时）*/
 static int s_cruise_base;
 static A02Direction s_direction;
 static LinePhase s_line_phase;
@@ -274,6 +275,7 @@ void Avoid_Init(void)
     s_armed = 0u;
     s_cooling = 0u;
     s_preparing = 0u;
+    s_prep_seen_ms = 0u;
     s_cruise_base = 0;
     s_direction = A02_WAIT;
     s_line_phase = LINE_ARC;
@@ -303,6 +305,7 @@ void Avoid_SetDrive(uint8_t on)
     end_preparation();
     Mo_Stop();
     Path_Stop();
+    s_prep_seen_ms = HAL_GetTick();   /* 发车/停车：预备计时从这里重新起算 */
     s_armed = on ? 1u : 0u;
     s_cooling = 0u;
     s_direction = A02_WAIT;
@@ -476,6 +479,14 @@ void Avoid_Step(void)
         if ((new_l && mm_l > 0 && mm_l <= A02_PREP_MM) ||
             (new_r && mm_r > 0 && mm_r <= A02_PREP_MM)) {
             begin_preparation();
+            s_prep_seen_ms = now;      /* 还在"看着障碍" ⇒ 续命 */
+        } else if (s_preparing &&
+                   (uint32_t)(now - s_prep_seen_ms) >= A02_PREP_HOLD_MS) {
+            /* ⭐ 300~400mm 是"只降速、不接管"的灰色地带：障碍拐出波束 / 一次假近读数
+               ⇒ 永远不会触发 handoff()，end_preparation() 也永远不会被调用
+               ⇒ base_speed 会永久停在 PREP_BASE_PWM（整趟慢 40%）。
+               这里给一条恢复路径：连续 A02_PREP_HOLD_MS 没再看到近障就把速度还回去。*/
+            end_preparation();
         }
         /* 必须有一侧产生本趟的新鲜近障样本；另一侧的新鲜缓存只参与选向。
          * 不再累计票数，也不让同一个缓存值反复触发。 */

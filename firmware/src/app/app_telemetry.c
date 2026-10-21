@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static Params s_p = { A01_KP, A01_KI, A01_KD, A01_BASE_SPEED };   /* 默认值在 app/a01_tune.h */
+static Params s_p = { A01_KP, A01_KI, A01_KD, A01_BASE_SPEED };   /* 默认值在 app/tuning.h（唯一出处）*/
 /* ↑ 2026-10-01 晚【v6 再提速】：20→30（实测 v5 均速已到 ~120mm/s，但用户仍觉慢）
    kp/kd 按 30/20 同步放大；太快就 SET base_speed 24（kp/kd 相应降）*/
 /* ↑ 2026-10-01 晚【v5 提速档】：base 12→20（约 1.7 倍），kp 9→14、kd 0.30→0.45 同步放大

@@ -57,8 +57,15 @@ int main(void)
     uint32_t next_led = HAL_GetTick();  /* 心跳灯：2 Hz */
     uint8_t  us_idx  = 0;               /* 0 = 下次测左，1 = 下次测右 */
     uint8_t  avoid_on = 0;              /* 上一拍 A02 是否在接管（用于检测“交还 A01”那一刻）*/
+    uint32_t beep_off_at = 0u;          /* 非阻塞蜂鸣：到点关断（0 = 不响）*/
 
     while (1) {
+        /* ---- 非阻塞蜂鸣：到点关断 ---- */
+        if (beep_off_at != 0u && (int32_t)(HAL_GetTick() - beep_off_at) >= 0) {
+            Hmi_BeepOff();
+            beep_off_at = 0u;
+        }
+
         /* ---- 电脑命令（在中断里只收行，到这里才执行） ---- */
         Tlm_Poll();
 
@@ -100,7 +107,11 @@ int main(void)
                         Log_SetBle(1u);            /* ⭐ 顺便开无线回传：跑车时插不了串口，
                                                       长按按钮就把数据推到电脑 ✓ */
                         Log_Start(); Avoid_SetDrive(1u); Trace_SetDrive(1u);
-                        Hmi_Beep(150);             /* ⭐ 1 短声 = 已发车 */
+                        /* ⭐ 1 短声 = 已发车。改【非阻塞】：原来 Hmi_Beep(150) 会
+                           HAL_Delay(150) 卡住主循环 ⇒ 按下按钮后 150ms 车才动。
+                           现在只点亮蜂鸣器，关断交给主循环。*/
+                        Hmi_BeepOn();
+                        beep_off_at = HAL_GetTick() + 150u;
                         printf("# BTN(长按1s): 开始记录 + 发车 + BLE回传（从 n=%u 接着记）\r\n",
                                (unsigned)Log_Count());
                     }

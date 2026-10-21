@@ -19,7 +19,7 @@
 #define A01_KP              35.00f   /* 比例：偏一点打多少舵（太大甩头/振荡，太小切弯）*/
 #define A01_KI               0.30f   /* 积分：消除长弧道稳态偏差（太小≈纯 PD）*/
 #define A01_KD               0.90f   /* 微分：阻尼/提前量（对灰度跳变敏感）*/
-#define A01_BASE_SPEED         50    /* 巡航 PWM（%）：这就是"循迹基本速度" */
+#define A01_BASE_SPEED         55    /* 巡航 PWM（%）：这就是"循迹基本速度" */
 #define A01_BASE_MAX           90    /* 速度上限：SET 也越不过，运行时把 base 夹到这 */
 
 /* ═══════════════════════ §2 A01「回线后慢速窗口」═══════════════════════════
@@ -32,8 +32,38 @@
 #define A01_SLOW_PWM1         45     /* ③ 窗口终点 PWM（%）= "电机末速度" */
 
 /* 窗口内的 PID（默认与巡航相同；想让"慢速循迹"更软/更硬就改这三个）*/
-/* §1b 丢线保护：正常全白（起步找线）不算；**行驶中意外全白**超过这个时间就刹停 */
-#define A01_LOST_STOP_MS     200u   /* 全白持续多久 ⇒ 刹车锁存（0 = 关闭，退化为一直直行）*/
+/* ═══════════════════════ §1b A01 丢线兜底（行驶中意外八路全白）═══════════════
+ * 只作用于「**A01 正常循迹中**突然八路全白」。
+ * 不作用于：起步找线(state=5)、A02 避障/回线全过程、精停冲刺段(state=4)、灰度离线。
+ *
+ * A01_LOST_SEARCH = 1（默认）：判定方向 → 停车 → **原地旋转找线** → 居中并保持 → 交回循迹
+ *    ① 0 ~ A01_LOST_HOLD_MS        直行 TR_ALL_WHITE_PWM(26/26)，跨胶带接缝/磨损
+ *    ② 刹停 A01_LOST_STOP_WAIT_MS   消掉前进惯性
+ *    ③ 原地旋转（PWM 沿用 A02 回线那套 L=+8 / R=-20），**方向按 err 符号**
+ *    ④ 「第 3~6 路相邻两路黑 + 第 1/2/7/8 路全白」= 线已居中 ⇒ 刹停并保持
+ *       A01_LOST_CENTER_HOLD_MS 复核 ⇒ 交回 A01 循迹（自动进 §2 慢速窗口）
+ *    · 超时 A01_LOST_ROT_TIMEOUT_MS（≈一整圈）仍找不到 ⇒ 刹停 + 锁存（同旧行为）
+ *
+ * ⚠️⚠️ 方向必须这么理解（参照系容易搞反，务必按这张表现场核对）：
+ *      err > 0  ⇒ **车向左冲出去了**（线落在阵列右侧）⇒ 车头要**向右摆** ⇒ L=+8 / R=-20
+ *      err < 0  ⇒ **车向右冲出去了**（线落在阵列左侧）⇒ 车头要**向左摆** ⇒ L=-20 / R=+8
+ *      |err| ≤ A01_LOST_DIR_ERR ⇒ 判不出方向 ⇒ 走保守路径（不转）
+ *
+ * ⚠️ 两种"不做旋转"的保守情况（直接沿用旧行为：直行 A01_LOST_STOP_MS 后刹停）：
+ *      ① A01_LOST_TBAR_MS 内出现过「同一拍八路全黑」= 刚压过横向黑条
+ *         （**终点 T 头 / 赛道标识都在这里，绝不能被当成脱线去转圈**）
+ *      ② |err| 太小、判不出线在哪一侧
+ *
+ * A01_LOST_SEARCH = 0：完全退回旧行为（直行 A01_LOST_STOP_MS 后刹停，**不旋转**）。
+ * 锁存释放：按按钮重新发车（Trace_StartRun）、串口 `FINRESET`、或断电。*/
+#define A01_LOST_SEARCH         1    /* 1=停车→原地旋转找线；0=旧行为（直行后刹停）*/
+#define A01_LOST_STOP_MS     200u    /* 保守路径：全白持续多久 ⇒ 刹停+锁存（0 = 关闭保护）*/
+#define A01_LOST_HOLD_MS     150u    /* SEARCH=1：先直行多久（跨接缝）；设 0 = 立刻停车 */
+#define A01_LOST_STOP_WAIT_MS 60u    /* SEARCH=1：刹停后等多久再开始旋转（消惯性）*/
+#define A01_LOST_ROT_TIMEOUT_MS 3000u/* SEARCH=1：旋转找线上限（按差分估算 ≈ 一整圈）*/
+#define A01_LOST_CENTER_HOLD_MS 100u /* SEARCH=1：线居中后保持多久才交回循迹 */
+#define A01_LOST_DIR_ERR     0.5f    /* |err| > 它才认方向；否则算"判不出"（保守刹车）*/
+#define A01_LOST_TBAR_MS     300u    /* 这么久内出现过"八路同黑"⇒ 认为刚过黑条，不找回 */
 
 #define A01_SLOW_KP         38.00f   /* 慢速段 kp（取小一点会更柔和，但弯里欠修正）*/
 #define A01_SLOW_KI          0.30f   /* 慢速段 ki */
@@ -49,7 +79,7 @@
  *      → 然后刹车 + 2 声长鸣 + 存 Flash
  * ⚠️ 与 A02 回线的"过线全白刹停"完全不同：那个在避障接管期间由 A02 判，
  *    这里的全白是 A01 循迹时判。 */
-#define A01_FIN_MIN_MS      25000u  /* 发车后多久才允许判终点（替代原"里程 ≥800mm"）*/
+#define A01_FIN_MIN_MS      30000u  /* 发车后多久才允许判终点（替代原"里程 ≥800mm"）*/
 #define A01_FIN_WINDOW_MS     300u  /* 窗口内八路都黑过一次就算"压到过终点线" */
 #define A01_FIN_PUSH_MS       100u  /* 判到终点后再直行多久（ms）；0 = 立刻刹停 */
 #define A01_FIN_PUSH_PWM       70   /* 冲刺段左右轮 PWM（%）*/
@@ -63,8 +93,10 @@
 #define A02_LINE_STOP_TEST     1    /* 1=回线 v3（过线刹停→旋转摆正→交还 A01）；0=旧流程 */
 
 /* ---- 3.2 障碍触发与预减速 ---- */
-#define A02_PREP_MM          400    /* 新鲜读数 ≤350mm：A01 提前降速 */
+#define A02_PREP_MM          400    /* 新鲜读数 ≤400mm：A01 提前降速（只降速、不接管）*/
 #define A02_PREP_BASE_PWM     30    /* 预备时的临时巡航 PWM */
+#define A02_PREP_HOLD_MS    1500u   /* 预备后连续这么久【没有再看到】≤PREP_MM 的读数 ⇒ 撤销预备、把速度还回去
+                                     * （没有它的话，一次"看见但没触发"会让 base 永久停在 PREP_BASE_PWM）*/
 #define A02_TRIGGER_MM       310    /* 新鲜读数 ≤310mm：A02 接管 */
 #define A02_CENTER_SPLIT_MM   30    /* 两侧都近且差 <30mm ⇒ 当作正中障碍，默认向左避 */
 #define A02_COOLDOWN_MS      800u   /* 交还 A01 后多久内不再触发避障（原 3000 太长会漏障）*/
@@ -137,6 +169,16 @@
 #endif
 #if A02_PREP_MM <= A02_TRIGGER_MM
 #error "A02_PREP_MM must exceed A02_TRIGGER_MM"
+#endif
+#if A01_LOST_SEARCH
+#  if (A01_LOST_HOLD_MS >= A01_LOST_ROT_TIMEOUT_MS)
+#    error "A01_LOST_HOLD_MS must be < A01_LOST_ROT_TIMEOUT_MS"
+#  endif
+   /* 注：A01_LOST_DIR_ERR 是浮点，**不能**放进 #if（预处理器只认整数），
+      取值只能在 (0, 3.5] 之间，改的时候自己看一眼。*/
+#endif
+#if (A02_MID_MASK & A02_OUT_MASK) != 0
+#  error "A02_MID_MASK / A02_OUT_MASK overlap"
 #endif
 
 #endif /* APP_TUNING_H */
